@@ -48,6 +48,10 @@ data class CallUiState(
     val cameraEnabled: Boolean = true, val muted: Boolean = false, val stats: MediaStats = MediaStats(),
     val pendingInvite: String = "", val contacts: List<Contact> = emptyList(), val contactsStatus: String = "",
     val peerName: String = "对方",
+    val localBack: VideoFeed? = null, val remoteBack: VideoFeed? = null,
+    val showMe: com.zisee.app.rtc.ShowMeState = com.zisee.app.rtc.ShowMeState(),
+    val speakerOn: Boolean = true, val showMeHint: Boolean = false,
+    val remotePresentation: com.zisee.app.rtc.CameraPresentation = com.zisee.app.rtc.CameraPresentation(com.zisee.app.rtc.CameraMode.FACE, true),
 )
 
 /** Serial foreground call owner. Backgrounding cancels capture and ends the remote call. */
@@ -60,7 +64,13 @@ class CallViewModel(application: Application, private val container: AppContaine
     private val commands = Channel<String>(4)
     private var foreground = false
     private var idleJob: Job? = null
+    private var cameraJob: Job? = null
     private val removals = Channel<String>(4)
+    private var showMeHintSeen = true
+
+    init {
+        viewModelScope.launch { container.callPreferences.showMeHintSeen.collect { showMeHintSeen = it } }
+    }
 
     fun observeIdentity(value: LocalIdentity) {
         if (identity?.identityId != value.identityId) {
@@ -153,6 +163,27 @@ class CallViewModel(application: Application, private val container: AppContaine
         val token = InviteLink.token(invite) ?: return
         mutable.update { it.copy(pendingInvite = token, status = "已填入邀请码，点\u201C呼叫对方\u201D开始通话。") }
     }
+    fun toggleShowMe(preferDual: Boolean = true) {
+        val media = rtc ?: return
+        if (cameraJob?.isActive == true) return
+        cameraJob = viewModelScope.launch { media.toggleShowMe(preferDual) }
+    }
+    fun toggleSpeaker() {
+        val current = rtc ?: return
+        val target = !mutable.value.speakerOn
+        viewModelScope.launch {
+            val applied = current.setSpeaker(target)
+            if (rtc === current) mutable.update { it.copy(speakerOn = applied) }
+        }
+    }
+
+    /** The Show Me hint teaches the swap gesture once per install, never on every call. */
+    fun dismissShowMeHint() {
+        showMeHintSeen = true
+        mutable.update { it.copy(showMeHint = false) }
+        viewModelScope.launch { container.callPreferences.markShowMeHintSeen() }
+    }
+
     fun toggleMute() {
         val current = rtc ?: return
         val enabled = mutable.value.muted
@@ -198,6 +229,7 @@ class CallViewModel(application: Application, private val container: AppContaine
             val calls = CallApi(api)
             var ended = false
             var mediaObservation: Job? = null
+            var cameraObservation: Job? = null
             var networkWatcher: com.zisee.app.rtc.DefaultNetworkWatcher? = null
             var networkObservation: Job? = null
             var machine = CallState()
@@ -290,7 +322,15 @@ class CallViewModel(application: Application, private val container: AppContaine
                                                 mutable.update { it.copy(stats = stats) }
                                             }
                                     }
-                                    mutable.update { it.copy(local = media.localFeed, remote = media.remoteFeed) }
+                                    cameraObservation = launch {
+                                        combine(media.showMe, media.remotePresentation) { local, remote -> local to remote }.collect { (local, remote) ->
+                                            // The hint explains swapping the main view, so it waits for a
+                                            // second remote view to actually exist.
+                                            val hint = !showMeHintSeen && remote.mode == com.zisee.app.rtc.CameraMode.DUAL
+                                            mutable.update { it.copy(showMe = local, remotePresentation = remote, showMeHint = it.showMeHint || hint) }
+                                        }
+                                    }
+                                    mutable.update { it.copy(local = media.localFeed, remote = media.remoteFeed, localBack = media.localBackFeed, remoteBack = media.remoteBackFeed) }
                                     negotiator = com.zisee.app.signaling.MediaNegotiator(media, current.caller == identity.identityId) {
                                         calls.iceServers(requireNotNull(session))
                                     }
@@ -344,11 +384,13 @@ class CallViewModel(application: Application, private val container: AppContaine
             } finally {
                 socket?.close()
                 withContext(NonCancellable) {
+                    cameraJob?.cancelAndJoin(); cameraJob = null
+                    cameraObservation?.cancelAndJoin()
                     networkObservation?.cancelAndJoin()
                     networkWatcher?.close()
                     mediaObservation?.cancelAndJoin()
                     val media = rtc; rtc = null
-                    mutable.update { it.copy(local = null, remote = null, invite = "") }
+                    mutable.update { it.copy(local = null, remote = null, localBack = null, remoteBack = null, invite = "") }
                     try { media?.release() } catch (error: Exception) { container.logger.error(AppEvent.RTC_RELEASE_FAILED) }
                     val token = session
                     if (token != null) {

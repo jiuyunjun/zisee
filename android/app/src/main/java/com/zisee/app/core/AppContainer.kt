@@ -10,17 +10,20 @@ import com.zisee.app.BuildConfig
 import com.zisee.app.auth.remote.BackendApi
 import com.zisee.app.auth.remote.BackendConnection
 import com.zisee.app.auth.remote.KeystoreDeviceSigner
+import com.zisee.app.call.CallPreferences
 import com.zisee.app.auth.remote.backendHttpClient
 import com.zisee.app.signaling.AuthenticatedSession
 import okhttp3.HttpUrl.Companion.toHttpUrl
 
 private val Context.identityStore by preferencesDataStore(name = "local_identity")
 private val Context.deviceStore by preferencesDataStore(name = "device_public_keys")
+private val Context.callStore by preferencesDataStore(name = "call_preferences")
 
 /** Application-scoped composition root. Media resources must later have a call-scoped owner. */
 class AppContainer(context: Context) {
     val identityRepository: IdentityRepository =
         DataStoreIdentityRepository(context.applicationContext.identityStore)
+    val callPreferences = CallPreferences(context.applicationContext.callStore)
     val logger: AppLogger = AndroidAppLogger
     private val signers = mutableMapOf<String, KeystoreDeviceSigner>()
     val httpClient = backendHttpClient()

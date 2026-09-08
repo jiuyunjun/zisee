@@ -1,4 +1,5 @@
 [versions]
+camerax = "1.5.1"
 agp = "8.9.1"
 kotlin = "2.0.21"
 compose-bom = "2024.09.00"
@@ -12,6 +13,9 @@ webrtc = "144.7559.15"
 zxing = "3.5.3"
 
 [libraries]
+camera-core = { module = "androidx.camera:camera-core", version.ref = "camerax" }
+camera-camera2 = { module = "androidx.camera:camera-camera2", version.ref = "camerax" }
+camera-lifecycle = { module = "androidx.camera:camera-lifecycle", version.ref = "camerax" }
 webrtc = { module = "io.github.webrtc-sdk:android", version.ref = "webrtc" }
 compose-bom = { module = "androidx.compose:compose-bom", version.ref = "compose-bom" }
 compose-ui = { module = "androidx.compose.ui:ui" }

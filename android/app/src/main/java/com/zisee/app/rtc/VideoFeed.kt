@@ -6,14 +6,19 @@ import org.webrtc.VideoFrame
 import org.webrtc.VideoSink
 
 /** Serializes frame delivery with detach; renderers are explicitly released before parent EGL. */
-class VideoFeed(val eglContext: EglBase.Context, val mirrored: Boolean, private val onFirstFrame: () -> Unit = {}) : VideoSink {
+class VideoFeed(val eglContext: EglBase.Context, mirrored: Boolean, private val onFirstFrame: () -> Unit = {}) : VideoSink {
     private val renderers = mutableSetOf<SurfaceViewRenderer>()
     private var closed = false
     private var receivedFrame = false
+    private var mirror = mirrored
+    @Synchronized fun setMirrored(value: Boolean) {
+        mirror = value
+        renderers.forEach { it.setMirror(value) }
+    }
     @Synchronized fun attach(renderer: SurfaceViewRenderer) {
         if (closed) return
         renderer.init(eglContext, null)
-        renderer.setMirror(mirrored)
+        renderer.setMirror(mirror)
         // Keep the display surface stable across capture/decoder size changes. Resizing the
         // SurfaceHolder can discard its displayed buffer and briefly flash on some devices.
         // The existing EGL buffer holds the last image during capture reconfiguration;

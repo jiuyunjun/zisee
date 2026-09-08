@@ -50,6 +50,22 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var videoTrack: VideoTrack? = null
     private var audioTrack: AudioTrack? = null
     private var remoteTrack: VideoTrack? = null
+    private var remoteBackTrack: VideoTrack? = null
+    private var backSource: VideoSource? = null
+    private var backTrack: VideoTrack? = null
+    private var backSender: RtpSender? = null
+    var localBackFeed: VideoFeed? = null; private set
+    var remoteBackFeed: VideoFeed? = null; private set
+    val showMe = MutableStateFlow(ShowMeState())
+    val remotePresentation = MutableStateFlow(CameraPresentation(CameraMode.FACE, true))
+    private var presentationMode = CameraMode.FACE
+    private var cameraEnabled = true
+    private var frontName: String? = null
+    private var backName: String? = null
+    private var frontSupportsFullHd = false
+    private var dualCapture: DualCameraCapture? = null
+    private var control: DataChannel? = null
+    private var changingCamera = false
     var localFeed: VideoFeed? = null; private set
     var remoteFeed: VideoFeed? = null; private set
     private val candidates = mutableListOf<IceCandidate>()
@@ -82,6 +98,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var previousMode = AudioManager.MODE_NORMAL
     private var previousSpeaker = false
     private var focus: AudioFocusRequest? = null
+    private var speakerOn = true
 
     suspend fun start(iceServers: List<IceServerConfig>) = withContext(dispatcher) {
         initialize(context, logger)
@@ -141,6 +158,13 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             logger.error(AppEvent.RTC_CAPABILITY_UNAVAILABLE)
             false
         }
+        frontSupportsFullHd = supportsFullHd
+        frontName = name.takeIf { enumerator.isFrontFacing(it) }
+        backName = enumerator.deviceNames.firstOrNull { enumerator.isBackFacing(it) }
+        if (frontName == null) {
+            presentationMode = CameraMode.BACK_ONLY
+            showMe.value = ShowMeState(CameraMode.BACK_ONLY, "此设备仅有后摄")
+        }
         qualityPolicy = VideoQualityPolicy(supportsFullHd, preferFullHd = true)
         localFeed = VideoFeed(shared, enumerator.isFrontFacing(name))
         remoteFeed = VideoFeed(shared, false) {
@@ -157,10 +181,28 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         texture = SurfaceTextureHelper.create("ZiseeCapture", shared)
         videoSource = requireNotNull(factory).createVideoSource(false)
         requireNotNull(camera).initialize(texture, context, requireNotNull(videoSource).capturerObserver)
-        val cameraId = if (enumerator.isFrontFacing(name)) MediaTrack.FRONT_CAMERA else MediaTrack.BACK_CAMERA
+        val cameraId = MediaTrack.FRONT_CAMERA // Primary single-camera slot, including back-only devices.
         videoTrack = requireNotNull(factory).createVideoTrack(cameraId.wireId, videoSource).also {
             it.addSink(localFeed); videoSender = requireNotNull(peer).addTrack(it, listOf("zisee"))
         }
+        backSource = requireNotNull(factory).createVideoSource(false)
+        localBackFeed = VideoFeed(shared, false)
+        remoteBackFeed = VideoFeed(shared, false)
+        backTrack = requireNotNull(factory).createVideoTrack(MediaTrack.BACK_CAMERA.wireId, backSource).also {
+            it.setEnabled(false); it.addSink(localBackFeed)
+            backSender = requireNotNull(peer).addTrack(it, listOf("zisee"))
+        }
+        control = requireNotNull(peer).createDataChannel("camera-state", DataChannel.Init().apply { negotiated = true; id = 0 })
+        control?.registerObserver(object : DataChannel.Observer {
+            override fun onBufferedAmountChange(previousAmount: Long) = Unit
+            override fun onStateChange() { scope.launch { if (!released) sendPresentation() } }
+            override fun onMessage(buffer: DataChannel.Buffer) {
+                if (buffer.binary || buffer.data.remaining() > 32) return
+                val bytes = ByteArray(buffer.data.remaining()); buffer.data.get(bytes)
+                val value = CameraPresentation.decode(bytes.toString(Charsets.UTF_8)) ?: return
+                scope.launch { if (!released) remotePresentation.value = value }
+            }
+        })
         audioSource = requireNotNull(factory).createAudioSource(MediaConstraints())
         audioTrack = requireNotNull(factory).createAudioTrack(MediaTrack.MICROPHONE.wireId, audioSource).also {
             requireNotNull(peer).addTrack(it, listOf("zisee"))
@@ -180,7 +222,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                     val thermal = if (Build.VERSION.SDK_INT >= 29) powerManager.currentThermalStatus else null
                     val observed = result.copy(thermalStatus = thermal)
                     // Never use idle/muted encoder statistics to make quality decisions.
-                    if (iceState.value == IceState.CONNECTED && videoTrack?.enabled() == true && adaptationEnabled) {
+                    if (iceState.value == IceState.CONNECTED && videoTrack?.enabled() == true && adaptationEnabled && !changingCamera) {
                         applyQuality(qualityPolicy.update(observed, System.nanoTime() / 1_000_000))
                     }
                     sampledStats.value = observed.copy(quality = appliedQuality ?: VideoQuality.HD)
@@ -244,7 +286,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         }
         // Native callback only delivers a report. Mutable sampling state stays on the RTC executor.
         val result = sampler.sample(report.statsMap.values.map { StatsEntry(it.id, it.type, it.members) },
-            System.nanoTime() / 1_000_000)
+            System.nanoTime() / 1_000_000, localBack = dualCapture != null, remoteBack = remotePresentation.value.mode == CameraMode.DUAL)
         val route = "${result.candidateType}/${result.remoteCandidateType}"
         if (route != lastCandidate) { lastCandidate = route; logger.info(AppEvent.RTC_SELECTED_CANDIDATE, route) }
         return@withTimeout result
@@ -252,7 +294,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
 
     private fun applyQuality(decision: QualityDecision, changeCapture: Boolean = true) {
         if (appliedQuality == decision.quality || !adaptationEnabled) return
-        val sender = videoSender ?: return
+        val sender = (if (dualCapture != null) backSender else videoSender) ?: return
         try {
             val parameters = sender.parameters
             if (parameters.encodings.isEmpty()) return // Retry after negotiation produces encodings.
@@ -267,7 +309,15 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 logger.error(AppEvent.RTC_QUALITY_REJECTED)
                 return
             }
-            if (changeCapture) requireNotNull(camera).changeCaptureFormat(
+            if (dualCapture != null) {
+                backSource?.adaptOutputFormat(decision.quality.width, decision.quality.height, decision.quality.fps)
+                videoSource?.adaptOutputFormat(640, 360, 15)
+                videoSender?.let { auxiliary ->
+                    val parameters = auxiliary.parameters
+                    parameters.encodings.forEach { it.maxBitrateBps = 450_000; it.maxFramerate = 15; it.minBitrateBps = null }
+                    if (!auxiliary.setParameters(parameters)) logger.error(AppEvent.RTC_QUALITY_REJECTED)
+                }
+            } else if (changeCapture) requireNotNull(camera).changeCaptureFormat(
                 decision.quality.width, decision.quality.height, decision.quality.fps)
             appliedQuality = decision.quality
             logger.info(AppEvent.RTC_QUALITY_CHANGED, "${decision.quality.name}/${decision.reason.name}")
@@ -281,11 +331,93 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     override suspend fun setTrackEnabled(track: MediaTrack, enabled: Boolean) = withContext(dispatcher) {
         if (!released) when (track) {
             MediaTrack.MICROPHONE -> audioTrack?.setEnabled(enabled)
-            MediaTrack.FRONT_CAMERA, MediaTrack.BACK_CAMERA -> videoTrack?.setEnabled(enabled)
+            MediaTrack.FRONT_CAMERA, MediaTrack.BACK_CAMERA -> {
+                cameraEnabled = enabled
+                videoTrack?.setEnabled(enabled)
+                backTrack?.setEnabled(enabled && presentationMode == CameraMode.DUAL)
+                sendPresentation()
+            }
             MediaTrack.SCREEN -> throw UnsupportedOperationException("screen_not_available")
         }
         Unit
     }
+    private fun sendPresentation() {
+        val channel = control ?: return
+        if (channel.state() != DataChannel.State.OPEN) return
+        val data = CameraPresentation(presentationMode, cameraEnabled).encode().toByteArray(Charsets.UTF_8)
+        if (!channel.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(data), false))) logger.error(AppEvent.RTC_MEDIA_FAILED)
+    }
+
+    suspend fun toggleShowMe(preferDual: Boolean = true) = withContext(dispatcher) {
+        if (released || changingCamera || !cameraEnabled) return@withContext
+        changingCamera = true
+        showMe.value = ShowMeState(CameraMode.STARTING)
+        try {
+            if (presentationMode != CameraMode.FACE) {
+                if (frontName == null) { showMe.value = ShowMeState(presentationMode, "此设备没有可用前摄"); return@withContext }
+                dualCapture?.close(); dualCapture = null
+                backTrack?.setEnabled(false)
+                videoSource?.adaptOutputFormat(1920, 1080, 30)
+                if (presentationMode == CameraMode.BACK_ONLY) switchSingle(requireNotNull(frontName))
+                else requireNotNull(camera).startCapture(1280, 720, 30)
+                localFeed?.setMirrored(true)
+                qualityPolicy = VideoQualityPolicy(frontSupportsFullHd, preferFullHd = true)
+                presentationMode = CameraMode.FACE
+                showMe.value = ShowMeState(CameraMode.FACE)
+            } else {
+                if (backName == null) { showMe.value = ShowMeState(CameraMode.FACE, "此设备没有可用后摄"); return@withContext }
+                val dual = DualCameraCapture(context, requireNotNull(egl).eglBaseContext)
+                var stopped = false
+                var started = false
+                try {
+                    if (preferDual && control?.state() == DataChannel.State.OPEN && withTimeoutOrNull(5_000) { dual.supported() } == true) {
+                        requireNotNull(camera).stopCapture(); stopped = true
+                        videoSource?.adaptOutputFormat(640, 360, 15)
+                        dualCapture = dual
+                        dual.start(requireNotNull(videoSource), requireNotNull(backSource))
+                        backTrack?.setEnabled(true)
+                        presentationMode = CameraMode.DUAL
+                        qualityPolicy = VideoQualityPolicy(false)
+                        showMe.value = ShowMeState(CameraMode.DUAL)
+                        started = true
+                    }
+                } catch (error: kotlinx.coroutines.TimeoutCancellationException) {
+                    logger.error(AppEvent.RTC_CAPABILITY_UNAVAILABLE)
+                } catch (error: CancellationException) { throw error }
+                catch (error: Exception) { logger.error(AppEvent.RTC_CAPABILITY_UNAVAILABLE) }
+                if (!started) {
+                    dual.close(); dualCapture = null
+                    if (stopped) requireNotNull(camera).startCapture(1280, 720, 30)
+                    videoSource?.adaptOutputFormat(1920, 1080, 30)
+                    switchSingle(requireNotNull(backName))
+                    localFeed?.setMirrored(false)
+                    presentationMode = CameraMode.BACK_ONLY
+                    qualityPolicy = VideoQualityPolicy(false)
+                    showMe.value = ShowMeState(CameraMode.BACK_ONLY, "当前使用单摄展示，可点「看我」切回前摄")
+                }
+            }
+            appliedQuality = null
+            applyQuality(qualityPolicy.current)
+            sendPresentation()
+        } catch (error: CancellationException) { throw error }
+        catch (error: Exception) {
+            logger.error(AppEvent.RTC_MEDIA_FAILED)
+            showMe.value = ShowMeState(presentationMode, "摄像头切换失败，请重试")
+        } finally {
+            changingCamera = false
+            if (showMe.value.mode == CameraMode.STARTING) showMe.value = ShowMeState(presentationMode)
+        }
+    }
+
+    private suspend fun switchSingle(name: String) = withTimeout(5_000) {
+        suspendCancellableCoroutine<Unit> { continuation ->
+            requireNotNull(camera).switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
+                override fun onCameraSwitchDone(isFrontCamera: Boolean) { if (continuation.isActive) continuation.resume(Unit) }
+                override fun onCameraSwitchError(error: String) { if (continuation.isActive) continuation.resumeWithException(IOException("camera_switch_failed")) }
+            }, name)
+        }
+    }
+
     suspend fun prepareIceGeneration(iceServers: List<IceServerConfig>) = withContext(dispatcher) {
         acceptingCandidates = false
         candidates.clear()
@@ -319,6 +451,32 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             val speaker = audioManager.availableCommunicationDevices.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
             if (speaker != null && !audioManager.setCommunicationDevice(speaker)) throw IOException("audio_route_failed")
         } else audioManager.isSpeakerphoneOn = true
+        speakerOn = true
+    }
+
+    /**
+     * Routes call audio between the loudspeaker and the earpiece and reports the route actually in
+     * effect. Unlike the initial route, a later failure degrades to the current one: audio the user
+     * can still hear on the wrong speaker beats ending the call.
+     */
+    suspend fun setSpeaker(enabled: Boolean): Boolean = withContext(dispatcher) {
+        if (released || focus == null) return@withContext speakerOn
+        withContext(Dispatchers.Main.immediate) { applyRoute(enabled) }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun applyRoute(enabled: Boolean): Boolean {
+        try {
+            if (Build.VERSION.SDK_INT >= 31) {
+                val type = if (enabled) android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                    else android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+                val device = audioManager.availableCommunicationDevices.firstOrNull { it.type == type }
+                    ?: return speakerOn
+                if (!audioManager.setCommunicationDevice(device)) return speakerOn
+            } else audioManager.isSpeakerphoneOn = enabled
+            speakerOn = enabled
+        } catch (error: Exception) { logger.error(AppEvent.RTC_MEDIA_FAILED) }
+        return speakerOn
     }
 
     @Suppress("DEPRECATION")
@@ -328,21 +486,28 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             released = true
             statsJob?.cancel(); statsJob = null
             withContext(Dispatchers.Main.immediate) {
-                localFeed?.close(); remoteFeed?.close()
+                localFeed?.close(); remoteFeed?.close(); localBackFeed?.close(); remoteBackFeed?.close()
             }
             // Attempt every release even if an OEM operation fails; log only an allowlisted event.
             fun cleanup(block: () -> Unit) { try { block() } catch (error: Exception) { logger.error(AppEvent.RTC_RELEASE_FAILED) } }
+            try { dualCapture?.close() } catch (error: Exception) { logger.error(AppEvent.RTC_RELEASE_FAILED) }
+            dualCapture = null
+            cleanup { control?.unregisterObserver(); control?.close(); control?.dispose() }; control = null
             cleanup { cellularStandby.close() }
             cleanup { if (monitoring) { NetworkMonitor.getInstance().stopMonitoring(); monitoring = false } }
             cleanup { NetworkMonitor.removeNetworkObserver(networkObserver) }
             cleanup { camera?.stopCapture() }
             cleanup { remoteTrack?.removeSink(remoteFeed) }
+            cleanup { remoteBackTrack?.removeSink(remoteBackFeed) }
+            cleanup { backTrack?.removeSink(localBackFeed) }
             cleanup { videoTrack?.removeSink(localFeed) }
             cleanup { peer?.close() }
             cleanup { peer?.dispose() }; peer = null; videoSender = null
             cleanup { camera?.dispose() }; camera = null
             cleanup { videoTrack?.dispose() }; videoTrack = null
             cleanup { audioTrack?.dispose() }; audioTrack = null
+            cleanup { backTrack?.dispose() }; backTrack = null
+            cleanup { backSource?.dispose() }; backSource = null
             cleanup { videoSource?.dispose() }; videoSource = null
             cleanup { audioSource?.dispose() }; audioSource = null
             cleanup { texture?.dispose() }; texture = null
@@ -385,7 +550,11 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         override fun onIceGatheringChange(state: PeerConnection.IceGatheringState) = Unit
         override fun onTrack(transceiver: RtpTransceiver) {
             val track = transceiver.receiver.track()
-            if (track is VideoTrack) scope.launch { if (!released) { remoteTrack?.removeSink(remoteFeed); remoteTrack = track; track.addSink(remoteFeed) } }
+            if (track is VideoTrack) scope.launch { if (!released) {
+                if (track.id() == MediaTrack.BACK_CAMERA.wireId) {
+                    remoteBackTrack?.removeSink(remoteBackFeed); remoteBackTrack = track; track.addSink(remoteBackFeed)
+                } else { remoteTrack?.removeSink(remoteFeed); remoteTrack = track; track.addSink(remoteFeed) }
+            } }
         }
         override fun onSignalingChange(state: PeerConnection.SignalingState) = Unit
         override fun onIceConnectionReceivingChange(receiving: Boolean) = Unit

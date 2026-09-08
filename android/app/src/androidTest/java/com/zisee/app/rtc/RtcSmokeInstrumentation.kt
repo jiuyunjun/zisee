@@ -21,16 +21,35 @@ import org.webrtc.*
 /** Explicit local media smoke, no account/server/TURN or extra test dependency required. */
 class RtcSmokeInstrumentation : Instrumentation() {
     private var expectedQuality: String? = null
+    private var preview = false
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         expectedQuality = arguments?.getString("expectedQuality")
+        preview = arguments?.getString("preview") == "true"
         start()
     }
 
     override fun onStart() {
         val output = Bundle()
         try {
-            runBlocking { withTimeout(30_000) { smoke(output) } }
+            if (preview) {
+                for (scene in listOf(false, true)) {
+                    val activity = startActivitySync(android.content.Intent().setClassName(targetContext.packageName,
+                        "com.zisee.app.ui.CallPreviewActivity").putExtra("scene", scene).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+                    waitForIdleSync()
+                    android.os.SystemClock.sleep(1_000)
+                    val screenshot = requireNotNull(uiAutomation.takeScreenshot())
+                    java.io.File(targetContext.getExternalFilesDir(null), if (scene) "show-me.png" else "face-call.png").outputStream().use {
+                        check(screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it))
+                    }
+                    screenshot.recycle()
+                    runOnMainSync { activity.finish() }
+                }
+                output.putString("stream", "PASS: Face Call and Show Me layout captures\n")
+                finish(Activity.RESULT_OK, output)
+                return
+            }
+            runBlocking { withTimeout(40_000) { smoke(output) } }
             output.putString("stream", "PASS: native camera, ICE, encode/decode, sender ceilings and release\n")
             finish(Activity.RESULT_OK, output)
         } catch (error: Exception) {
@@ -132,6 +151,17 @@ class RtcSmokeInstrumentation : Instrumentation() {
                 delay(100)
             }
             output.putString("iceRestart", "PASS: new credentials and continued decoded frames")
+            val beforeSwitch = receivedFrames.get()
+            session.toggleShowMe(preferDual = false)
+            output.putString("rearMode", session.showMe.value.mode.name)
+            output.putString("cameraEvents", events.joinToString { it.name })
+            check(session.showMe.value.mode == CameraMode.BACK_ONLY)
+            withTimeout(5_000) { while (receivedFrames.get() < beforeSwitch + 10) delay(100) }
+            session.toggleShowMe(preferDual = false)
+            check(session.showMe.value.mode == CameraMode.FACE)
+            val afterSwitch = receivedFrames.get()
+            withTimeout(5_000) { while (receivedFrames.get() < afterSwitch + 10) delay(100) }
+            output.putString("cameraSwitch", "PASS: rear and front decoded without renegotiation")
 
         } finally {
             withContext(NonCancellable) {

@@ -27,7 +27,7 @@ class MediaStatsSampler {
     private var previous = emptyMap<String, StatsEntry>()
     private var previousMs: Long? = null
 
-    fun sample(entries: List<StatsEntry>, nowMs: Long): MediaStats {
+    fun sample(entries: List<StatsEntry>, nowMs: Long, localBack: Boolean = false, remoteBack: Boolean = false): MediaStats {
         val byId = entries.associateBy { it.id }
         val elapsed = previousMs?.let { nowMs - it }?.takeIf { it in 1..5_000 }
         fun delta(entry: StatsEntry?, key: String): Double? {
@@ -46,9 +46,13 @@ class MediaStatsSampler {
         fun rate(type: String): Long = if (elapsed == null) 0 else entries.filter { it.type == type }
             .sumOf { delta(it, if (type == "inbound-rtp") "bytesReceived" else "bytesSent") ?: 0.0 }
             .times(8).div(elapsed).toLong()
-        val inbound = entries.firstOrNull { it.type == "inbound-rtp" && it.kind == "video" }
+        val inboundVideos = entries.filter { it.type == "inbound-rtp" && it.kind == "video" }
+        val inbound = inboundVideos.firstOrNull { it.members["trackIdentifier"] == if (remoteBack) "video_back" else "video_front" }
+            ?: inboundVideos.firstOrNull()
         val audio = entries.firstOrNull { it.type == "inbound-rtp" && it.kind == "audio" }
-        val outbound = entries.firstOrNull { it.type == "outbound-rtp" && it.kind == "video" && it.number("framesEncoded") != null }
+        val outboundVideos = entries.filter { it.type == "outbound-rtp" && it.kind == "video" && it.number("framesEncoded") != null }
+        val outbound = outboundVideos.firstOrNull { byId[it.members["mediaSourceId"]]?.members?.get("trackIdentifier") == if (localBack) "video_back" else "video_front" }
+            ?: outboundVideos.firstOrNull()
         val remote = byId[outbound?.members?.get("remoteId")]
         val transport = entries.firstOrNull { it.type == "transport" && it.members["selectedCandidatePairId"] != null }
         val pair = byId[transport?.members?.get("selectedCandidatePairId")]
