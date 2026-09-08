@@ -1,7 +1,7 @@
 ---
 title: Zisee Cloud Run 部署准备
 document_id: OPS-DEPLOYMENT-001
-version: 1.3.0
+version: 1.4.0
 status: Active
 created: 2026-09-08
 updated: 2026-09-08
@@ -24,7 +24,7 @@ owners:
 | 账单 | 已关联；CLI 核验 `billingEnabled: true` |
 | Cloud Run / Cloud Build / Artifact Registry API | 三项均已启用并通过 CLI 列表核验 |
 | Firestore / Secret Manager API | 已启用 |
-| Cloud Run 服务 | `zisee-api` 已部署，修订版 `zisee-api-00003-qwg` 承载 100% 流量 |
+| Cloud Run 服务 | `zisee-api` 已部署，修订版 `zisee-api-1575ddd` 承载 100% 流量 |
 | 服务 URL | `https://zisee-api-1042746204547.asia-northeast1.run.app` |
 | 部署区域 | `asia-northeast1`（东京） |
 | 数据库 | Firestore Native，`projects/zisee-app/databases/(default)`，asia-northeast1 |
@@ -45,7 +45,7 @@ gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregi
 
 3. 通过 `gcloud services list --enabled --project=zisee-app` 核验上述三项 API。
 
-## 本次部署（裸奔版）
+## 首次部署（裸奔版）
 
 ```powershell
 gcloud run deploy zisee-api --source=server --region=asia-northeast1 --project=zisee-app `
@@ -64,11 +64,28 @@ gcloud firestore indexes composite create --collection-group=calls `
   --field-config=field-path=expiresAt,order=ascending --project=zisee-app
 ```
 
+## 本次升级：Trickle ICE 与换网恢复
+
+部署源码提交为 `1575ddd`，包含 Trickle ICE、`media.restart` 和按协商代次隔离的 SDP / ICE 交换。沿用现有服务配置部署：
+
+```powershell
+gcloud run deploy zisee-api --source=server --region=asia-northeast1 --project=zisee-app --revision-suffix=1575ddd --quiet
+```
+
+- Cloud Build：`f71eaed8-6688-45b9-81a0-102fc1397885`，构建成功。
+- 修订版：`zisee-api-1575ddd`，Ready / ConfigurationsReady / RoutesReady 均为 True，承接 100% 流量。
+- 镜像摘要：`sha256:05f62c81f7921f4a7c49dcb8d044624d1cc52f9fa681be48197b393d97536b2c`。
+- 就绪时间：2026-09-08 14:20:58 UTC。
+- 线上使用 Firestore，无需执行 PostgreSQL 的 `005_ice_restart.sql` 迁移。PostgreSQL 部署仍需按协议文档执行迁移。
+- 双方 Android 客户端均需更新至包含本次换网恢复实现的版本；仅升级服务器不会让旧客户端自动获得此能力。
+
 ## 已核验
 
 `GET /livez` 与 `GET /readyz` 均返回 200，`readyz` 通过说明 Cloud Run 能连上 Firestore；`GET /v1/ice` 未带令牌返回 401；启动日志出现 `turn_enabled`。Android 以 `-Pzisee.backendUrl=<服务 URL>` 构建、单测与 lint 通过。
 
-**尚未验证**：未用真机对线上后端跑通完整通话，因此 TURN 中转路径、公网信令与跨网络通话都还没有实证。
+本次升级后重新核验上述三个 HTTP 探针，并确认新修订版启动日志出现 `turn_enabled`。源码提交的本地验证包括 47 项 JVM 测试、Android 构建与 lint、Go 测试（含 PostgreSQL / Firestore 模拟器），以及 Android 模拟器 ICE restart 冒烟测试；这些不能替代线上真机验收。
+
+**尚未验证**：本次升级尚未用双真机复测线上完整通话、TURN 中转及 Wi-Fi / 蜂窝网络切换；首帧耗时和换网恢复耗时仍需实测。
 
 ## 已知问题
 
@@ -81,6 +98,11 @@ Cloud Run 的 Google 前端会自行应答 `/healthz`，请求到不了容器（
 API 准备依据：[Cloud Run 源码部署文档](https://docs.cloud.google.com/run/docs/deploying-source-code)。
 
 # Changelog
+
+## 1.4.0 - 2026-09-08
+
+- 部署 `1575ddd` 的 Trickle ICE 与版本化 ICE restart 服务端实现，记录构建、修订版、流量及探针验证结果。
+- 明确 Firestore 无需 SQL 迁移，以及双方客户端升级与真机验收要求。
 
 ## 1.3.0 - 2026-09-08
 
