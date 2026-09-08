@@ -65,6 +65,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     }
     private var released = false
     private var lastCandidate: String? = null
+    private var monitoring = false
     private var lastBytesReceived = 0L
     private var lastBytesSent = 0L
     private var lastSampleNanos = 0L
@@ -89,7 +90,23 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 override fun onWebRtcAudioTrackStartError(code: JavaAudioDeviceModule.AudioTrackStartErrorCode, error: String) = fail()
                 override fun onWebRtcAudioTrackError(error: String) = fail()
             }).createAudioDeviceModule()
+        // The Android network monitor is the fast path for noticing a network change, but on some
+        // platforms it reports no interface at all and ICE then gathers zero candidates. Start it
+        // and probe it before the factory exists: a monitor that never reports falls back to
+        // libwebrtc enumerating interfaces itself, which is slower to see a change but always
+        // finds the interfaces that are already there.
+        NetworkMonitor.addNetworkObserver(networkObserver)
+        NetworkMonitor.getInstance().startMonitoring(context, MONITOR_TAG)
+        monitoring = true
+        // isOnline() reports the detector's current view synchronously. The observer only fires on
+        // a later change, so waiting for it alone mistakes an already stable connection for a
+        // monitor that does not work.
+        val monitored = networksSeen || NetworkMonitor.isOnline() ||
+            withTimeoutOrNull(NETWORK_WAIT_MS) { networksReady.await() } != null
+        if (!monitored) logger.info(AppEvent.RTC_ICE_STATE, "network_monitor_unavailable")
+        val options = PeerConnectionFactory.Options().apply { disableNetworkMonitor = !monitored }
         factory = PeerConnectionFactory.builder().setAudioDeviceModule(audioModule)
+            .setOptions(options)
             .setVideoEncoderFactory(DefaultVideoEncoderFactory(shared, true, true))
             .setVideoDecoderFactory(DefaultVideoDecoderFactory(shared)).createPeerConnectionFactory()
         val servers = iceServers.map { entry ->
@@ -101,15 +118,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             iceTransportsType = PeerConnection.IceTransportsType.ALL
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_ONCE
         }
-        // Creating the first peer connection starts the Android network monitor, which fills in
-        // asynchronously. Registering before that guarantees the arrival callback is not missed.
-        NetworkMonitor.addNetworkObserver(networkObserver)
         peer = requireNotNull(factory).createPeerConnection(config, observer) ?: throw IOException("peer_creation_failed")
-        // A timeout here means ICE will gather with no interface known yet, which is the usual
-        // cause of an empty candidate list, so record it rather than silently continuing.
-        if (!networksSeen && withTimeoutOrNull(NETWORK_WAIT_MS) { networksReady.await() } == null) {
-            logger.info(AppEvent.RTC_ICE_STATE, "networks_timeout")
-        }
         val enumerator: CameraEnumerator = if (Camera2Enumerator.isSupported(context)) Camera2Enumerator(context) else Camera1Enumerator(true)
         val name = enumerator.deviceNames.firstOrNull { enumerator.isFrontFacing(it) }
             ?: enumerator.deviceNames.firstOrNull() ?: throw IOException("camera_unavailable")
@@ -279,6 +288,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             }
             // Attempt every release even if an OEM operation fails; log only an allowlisted event.
             fun cleanup(block: () -> Unit) { try { block() } catch (error: Exception) { logger.error(AppEvent.RTC_RELEASE_FAILED) } }
+            cleanup { if (monitoring) { NetworkMonitor.getInstance().stopMonitoring(); monitoring = false } }
             cleanup { NetworkMonitor.removeNetworkObserver(networkObserver) }
             cleanup { camera?.stopCapture() }
             cleanup { remoteTrack?.removeSink(remoteFeed) }
@@ -349,6 +359,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         override fun onSetFailure(error: String) = Unit
     }
     companion object {
+        private const val MONITOR_TAG = "Zisee"
         private const val GATHER_ATTEMPTS = 3
         private const val GATHER_BUDGET_MS = 20_000L
         private const val NETWORK_WAIT_MS = 2_000L
