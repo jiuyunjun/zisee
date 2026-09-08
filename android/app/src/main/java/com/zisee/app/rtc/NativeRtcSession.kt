@@ -134,6 +134,9 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     suspend fun localDescription(offer: Boolean): SessionDescription = withContext(dispatcher) {
         val pc = requireNotNull(peer)
         val attempts = if (offer) GATHER_ATTEMPTS else 1
+        // One budget covers every attempt, so retrying cannot multiply the time a caller waits
+        // before a broken network is reported.
+        val deadline = System.nanoTime() + GATHER_BUDGET_MS * 1_000_000
         repeat(attempts) { attempt ->
             if (attempt > 0) {
                 // The Android network monitor is populated asynchronously after the first peer
@@ -152,9 +155,11 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 if (offer) pc.createOffer(observer, MediaConstraints()) else pc.createAnswer(observer, MediaConstraints())
             } }
             setDescription(description, local = true)
-            // Send the final local SDP including candidates. Gathering may time out on isolated Wi-Fi;
-            // in that case the caller ends the attempt instead of sending incomplete credentials.
-            withTimeout(20_000) { gathered.await() }
+            // Send the final local SDP including candidates. Completion is the normal signal, but
+            // a stack that never reports it must not abort the call: time out into the candidate
+            // check below so the remaining attempts still run and the failure names itself.
+            val remaining = (deadline - System.nanoTime()) / 1_000_000
+            if (remaining > 0) withTimeoutOrNull(remaining) { gathered.await() }
             val final = pc.localDescription ?: throw IOException("local_description_missing")
             if (final.description.contains("\r\na=candidate:")) return@withContext final
         }
@@ -301,6 +306,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     }
     companion object {
         private const val GATHER_ATTEMPTS = 3
+        private const val GATHER_BUDGET_MS = 20_000L
         private const val NETWORK_WAIT_MS = 2_000L
         @Volatile private var networksSeen = false
         private const val GATHER_RETRY_MS = 250L
