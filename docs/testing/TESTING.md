@@ -1,7 +1,7 @@
 ---
 title: Zisee M0 验证指南
 document_id: TEST-GUIDE-001
-version: 1.1.0
+version: 1.2.0
 status: Active
 created: 2026-09-08
 updated: 2026-09-08
@@ -46,19 +46,29 @@ GitHub Actions 使用相同任务；上传报告，不上传用户数据或签�
 
 已实机证明可用：身份 bootstrap、签名挑战、令牌兑换、认证 WebSocket、邀请、呼叫接听与 TURN credential 下发，全部对已部署的 Cloud Run 后端成功。通话状态机进入 accepted 分支必须先依次通过上述全部环节，因此真机硬件 Keystore 与 Android→Go 联调不再依赖 JVM 软件密钥测试。
 
-尚未证明：SDP 交换完成、ICE 连通、任何媒体帧、P2P 与 TURN 判别。两端 ICE 均未进入 CHECKING。
+2026-09-08 首次接通：真机（5G／Wi-Fi）对模拟器建立双向音视频通话，ICE 走 host↔prflx 直连，未经 TURN 中继。手机侧 RTT 5 ms、上行约 1.6 Mbps；模拟器侧收到 640x360 视频流。挂断后资源正常释放。
+
+仍未证明：TURN fallback（本次直连成功，未构造 P2P 失败场景）、Wi-Fi↔蜂窝切换、双机真实广域网组合、长时通话稳定性。这些仍需两台真实设备按路线图验证。
+
+已知问题：setup time 约 23 秒，见下节。
 
 本地 JVM 测试不等于真机媒体测试。M0 不证明 P2P、TURN、相机、编码器、ARCore、Depth、屏幕共享、前后台通话或弱网切换可用。
 
 完成 M1 后按 [路线图](../product/ROADMAP.md) 用两台真实设备测试 Wi-Fi／蜂窝网络组合、TURN fallback 和挂断资源释放。CI 配置存在不代表远端 workflow 已执行。
 
-## 模拟器不能充当通话的第二端
+## 模拟器可用于链路冒烟
 
-2026-09-08 实测：Android 模拟器产不出任何 ICE candidate，不能用于验证通话链路。
+早先判断「模拟器产不出 ICE candidate、不能充当第二端」，该结论已被推翻，原因不在模拟器。
 
-模拟器操作系统层面存在 eth0 10.0.2.15 与 wlan0 10.0.2.16，但 WebRTC 的 NetworkMonitor 未在 2 秒内报告任何接口（日志 `RTC_ICE_STATE networks_timeout`），gathering 也未在 20 秒内完成。主叫真机因此一直等不到 answer。
+WebRTC 的 NetworkMonitor 从未被启动过：代码只调了 `addNetworkObserver`，而「创建 PeerConnection 会启动监视器」在当前 libwebrtc 版本不成立。探测器不跑就报不出接口，ICE 因此拿不到任何 candidate。显式调用 `startMonitoring` 后，模拟器可以正常建立通话。
 
-模拟器仍可用于信令、通话状态机、权限与界面的冒烟，但按 AGENTS.md §27，其结果不得作为 M1 的验证记录。媒体相关的退出条件必须使用两台真实设备。
+模拟器现在可用于呼叫、接听、SDP 协商、ICE 直连与媒体流的冒烟验证。但按 AGENTS.md §27，它仍不能替代真机：模拟器处于 QEMU 用户态 NAT（10.0.2.x）之后，其打洞行为不代表真实网络，也无法切换 Wi-Fi 与蜂窝。**TURN fallback、网络切换和弱网表现必须用两台真实设备验证。**
+
+## 已知问题：setup time 约 23 秒
+
+`RTC_SETUP_MS` 稳定在 23000 上下。原因是 gathering 不上报 COMPLETE，`localDescription()` 每次都要空等满 20 秒的 gathering 预算才发出 SDP，应答方尤其明显。
+
+正解是按路线图实现 trickle ICE：candidate 通过信令逐个发送（ROADMAP 的 M1 信令消息里已列 `ICE_CANDIDATE`），而不是等齐后塞进 SDP。尚未实现。
 
 ## 真机安装
 
@@ -75,3 +85,9 @@ GitHub Actions 使用相同任务；上传报告，不上传用户数据或签�
 - 记录真机实测：认证与信令链路已打通，媒体链路尚未打通。
 - 记录模拟器产不出 ICE candidate，不能充当通话第二端。
 - 记录统一 debug 签名后的安装前提。
+
+## 1.2.0 - 2026-09-08
+
+- 记录首次接通：真机对模拟器 P2P 直连，双向音视频。
+- 推翻 1.1.0 的模拟器结论，根因是网络监视器未被启动。
+- 记录 setup time 约 23 秒及其成因。
