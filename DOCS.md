@@ -32,7 +32,7 @@
 | `AGENTS.md` | Agent / 开发协作规范 | Active |
 | `ARCHITECTURE.md` | 系统总体架构基线 | Active |
 | `DOCS.md` | 文档索引与版本控制规范 | Active |
-| `README.md` | 项目简介、快速开始、开发入口 | Planned |
+| `README.md` | 项目简介、快速开始、开发入口 | Active |
 
 后续正式文档建议放入：
 
@@ -42,9 +42,9 @@ docs/
 
 ---
 
-# 3. 推荐文档目录
+# 3. 仓库结构
 
-建议逐步形成：
+Zisee 是单仓库（mono-repo），按技术栈划分顶层目录，各自持有自己的构建入口：
 
 ```text
 /
@@ -53,11 +53,21 @@ docs/
 ├── ARCHITECTURE.md
 ├── DOCS.md
 │
+├── android/          Android 客户端，Gradle 工程根目录
+│   ├── settings.gradle.kts
+│   ├── gradlew / gradle/
+│   └── app/
+│
+├── server/           Go 后端，单服务；当前为占位
+│
+├── design/           设计画板源文件（*.dc.html）
+│
 └── docs/
     ├── product/
     │   ├── PRODUCT.md
     │   ├── ROADMAP.md
-    │   └── UX.md
+    │   ├── DESIGN.md
+    │   └── ACCOUNT.md
     │
     ├── architecture/
     │   ├── RTC.md
@@ -89,12 +99,18 @@ docs/
     ├── adr/
     │   ├── 0001-use-native-webrtc.md
     │   ├── 0002-p2p-first.md
+    │   ├── 0003-use-camerax.md
+    │   ├── 0004-cloudflare-turn.md
+    │   ├── 0005-multi-track-camera.md
+    │   ├── 0006-identity-first-account-later.md
     │   └── ...
     │
     └── archive/
 ```
 
-目录可以随着项目实际需求逐步创建。
+`docs/` 始终位于仓库根目录，不按端拆分：产品、架构、协议、ADR 同时约束客户端与服务端，拆开会立刻产生两份互相漂移的事实来源。
+
+代码目录可以随着项目实际需求逐步创建。当前 `server/` 只有一份 README 占位，M1 开始实现信令时再初始化 Go module。
 
 禁止为了“看起来完整”一次性创建大量空文档。
 
@@ -557,6 +573,29 @@ DOCS.md 是权威入口。
 
 ## 根目录
 
+### README.md
+
+路径：
+
+```text
+/README.md
+```
+
+用途：
+
+- 项目简介与当前实现边界
+- 仓库结构（mono-repo 顶层目录）
+- 开发环境、构建命令与产物路径
+- 代码入口一览
+
+状态：
+
+```text
+Active
+```
+
+---
+
 ### AGENTS.md
 
 路径：
@@ -634,34 +673,206 @@ Active
 
 ---
 
+## docs/product
+
+### PRODUCT.md
+
+路径：
+
+```text
+/docs/product/PRODUCT.md
+```
+
+`document_id`：
+
+```text
+PROD-001
+```
+
+用途：
+
+- 产品定义与愿景
+- 核心模式：Face Call / Show Me / Dual View / Screen Share / Annotation / AR Assist
+- 目标用户与核心场景
+- MVP 范围与非目标
+- 产品成功指标与待验证假设
+
+状态：
+
+```text
+Active
+```
+
+---
+
+### ROADMAP.md
+
+路径：
+
+```text
+/docs/product/ROADMAP.md
+```
+
+`document_id`：
+
+```text
+ROADMAP-001
+```
+
+用途：
+
+- M0 ~ M5 阶段划分
+- 每个阶段的功能范围与退出条件
+- 连接可靠性、双摄、屏幕共享、标注、AR 的推进顺序
+
+状态：
+
+```text
+Active
+```
+
+---
+
+### DESIGN.md
+
+路径：
+
+```text
+/docs/product/DESIGN.md
+```
+
+`document_id`：
+
+```text
+DESIGN-001
+```
+
+用途：
+
+- UI/UX 设计规范
+- 视觉方向与品牌气质
+- 核心页面与通话模式的设计原则
+- 权限、错误、状态、横竖屏与可访问性要求
+- 可直接交给设计工具使用的设计 Brief
+
+状态：
+
+```text
+Active
+```
+
+---
+
+### ACCOUNT.md
+
+路径：
+
+```text
+/docs/product/ACCOUNT.md
+```
+
+`document_id`：
+
+```text
+ACCOUNT-001
+```
+
+用途：
+
+- Identity First / Account Later 身份模型
+- Local Identity 与 identityId
+- Device Credential 与 Access Token
+- 邀请优先的加人方式
+- 未来账户绑定与多设备演进
+
+状态：
+
+```text
+Active
+```
+
+---
+
+## docs/architecture
+
+### SECURITY.md
+
+路径：
+
+```text
+/docs/architecture/SECURITY.md
+```
+
+`document_id`：
+
+```text
+ARCH-SECURITY-001
+```
+
+用途：
+
+- M0 安全基线
+- 秘密信息与签名密钥处理
+- 权限与数据边界
+
+状态：
+
+```text
+Active
+```
+
+---
+
+## docs/testing
+
+### TESTING.md
+
+路径：
+
+```text
+/docs/testing/TESTING.md
+```
+
+`document_id`：
+
+```text
+TEST-GUIDE-001
+```
+
+用途：
+
+- M0 验证指南
+- 单元测试、lint、构建的执行方式
+- 真机验证要求
+
+状态：
+
+```text
+Active
+```
+
+---
+
+## docs/adr
+
+ADR 使用独立状态词（`Proposed` / `Accepted` / `Superseded` / `Rejected`），不使用文档状态词。
+
+| ADR | 标题 | 状态 | 日期 |
+|---|---|---|---|
+| [0001](./docs/adr/0001-use-native-webrtc.md) | Use Native WebRTC | Accepted | 2026-09-08 |
+| [0002](./docs/adr/0002-p2p-first.md) | P2P First with TURN Fallback | Accepted | 2026-09-08 |
+| [0003](./docs/adr/0003-use-camerax.md) | Use CameraX as the Primary Camera API | Accepted | 2026-09-08 |
+| [0004](./docs/adr/0004-cloudflare-turn.md) | Use Cloudflare TURN for Fallback Relay | Accepted | 2026-09-08 |
+| [0005](./docs/adr/0005-multi-track-camera.md) | Send Front and Back Cameras as Independent Tracks | Accepted | 2026-09-08 |
+| [0006](./docs/adr/0006-identity-first-account-later.md) | Identity First, Account Later | Accepted | 2026-09-08 |
+
+新增 ADR 后必须同时更新本表。
+
+---
+
 # 16. 推荐后续建立的文档
 
 随着实现开始，优先建立：
-
-## PRODUCT.md
-
-定义：
-
-- 产品目标
-- 核心场景
-- 用户价值
-- MVP 功能
-- 非目标
-
----
-
-## ROADMAP.md
-
-定义：
-
-- Phase 1
-- Phase 2
-- Phase 3
-- Milestones
-- 技术债务
-- 长期功能
-
----
 
 ## RTC.md
 
@@ -1310,6 +1521,22 @@ Zisee 的文档遵循：
 ---
 
 # Changelog
+
+## 1.2.0 - 2026-09-08
+
+- 仓库改为 mono-repo：Android 工程移入 `android/`，新增 `server/` 占位。
+- 第 3 章由「推荐文档目录」改为「仓库结构」，同时描述代码目录与文档目录。
+- 明确 `docs/` 保留在仓库根目录，不按端拆分。
+- 索引增加 README.md、`docs/architecture/SECURITY.md`、`docs/testing/TESTING.md`。
+- README.md 状态由 Planned 改为 Active。
+
+## 1.1.0 - 2026-09-08
+
+- 建立 `docs/adr/`，写入 ADR 0001 ~ 0006。
+- 索引增加 `docs/product/`：PRODUCT.md、ROADMAP.md、DESIGN.md、ACCOUNT.md。
+- 索引增加 ADR 一览表，并要求新增 ADR 时同步更新。
+- 推荐目录中的 `UX.md` 更正为实际存在的 `DESIGN.md`，并补充 `ACCOUNT.md`。
+- PRODUCT.md 与 ROADMAP.md 已建立，从「推荐后续建立的文档」移入正式索引。
 
 ## 1.0.0 - 2026-09-08
 
