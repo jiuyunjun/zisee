@@ -6,7 +6,7 @@ import com.zisee.app.auth.remote.BackendApi
 import java.io.Closeable
 import java.io.IOException
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -56,10 +56,10 @@ class MediaSignaling(api: BackendApi, client: OkHttpClient, session: AccessSessi
         return result
     }
 
-    private suspend fun receive(): JSONObject = withTimeout(10_000) {
+    private suspend fun receive(): JSONObject = withTimeoutOrNull(10_000) {
         val json = JSONObject(incoming.receive())
         if (json.optInt("v") != 1) throw AuthFailure(AuthFailure.Reason.PROTOCOL)
         json
-    }
+    } ?: throw IOException("signaling_timeout")
     override fun close() { socket.cancel(); incoming.cancel() }
 }

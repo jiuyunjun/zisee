@@ -5,6 +5,7 @@ import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
+import android.os.PowerManager
 import com.zisee.app.call.IceServerConfig
 import com.zisee.app.core.logging.AppEvent
 import com.zisee.app.core.logging.AppLogger
@@ -14,12 +15,17 @@ import java.util.concurrent.Executors
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -27,15 +33,6 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import org.webrtc.*
 import org.webrtc.audio.JavaAudioDeviceModule
-
-data class MediaStats(
-    val videoFrames: Long = 0, val audioReceived: Long = 0, val audioSent: Long = 0,
-    val candidateType: String = "—", val rttMs: Long = 0,
-    val remoteCandidateType: String = "—",
-    val videoWidth: Int = 0, val videoHeight: Int = 0, val videoFps: Int = 0,
-    val jitterMs: Long = 0, val packetsLost: Long = 0,
-    val receiveKbps: Long = 0, val sendKbps: Long = 0,
-)
 
 /** One foreground call owns every native resource. All native operations use the RTC executor. */
 class NativeRtcSession(private val context: Context, private val logger: AppLogger) : RtcSession {
@@ -65,9 +62,15 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var released = false
     private var lastCandidate: String? = null
     private var monitoring = false
-    private var lastBytesReceived = 0L
-    private var lastBytesSent = 0L
-    private var lastSampleNanos = 0L
+    private val sampledStats = MutableStateFlow(MediaStats())
+    val mediaStats = sampledStats.asStateFlow()
+    private val sampler = MediaStatsSampler()
+    private var statsJob: Job? = null
+    private var videoSender: RtpSender? = null
+    private var qualityPolicy = VideoQualityPolicy(false)
+    private var appliedQuality: VideoQuality? = null
+    private var adaptationEnabled = true
+    private val powerManager = context.getSystemService(PowerManager::class.java)
     @Volatile private var startedNanos = 0L
     private var setupReported = false
     private val audioManager = context.getSystemService(AudioManager::class.java)
@@ -121,6 +124,15 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         val enumerator: CameraEnumerator = if (Camera2Enumerator.isSupported(context)) Camera2Enumerator(context) else Camera1Enumerator(true)
         val name = enumerator.deviceNames.firstOrNull { enumerator.isFrontFacing(it) }
             ?: enumerator.deviceNames.firstOrNull() ?: throw IOException("camera_unavailable")
+        val supportsFullHd = try {
+            enumerator.getSupportedFormats(name)?.any {
+                it.width == 1920 && it.height == 1080 && it.framerate.max >= 30_000
+            } == true
+        } catch (error: RuntimeException) {
+            logger.error(AppEvent.RTC_CAPABILITY_UNAVAILABLE)
+            false
+        }
+        qualityPolicy = VideoQualityPolicy(supportsFullHd)
         localFeed = VideoFeed(shared, enumerator.isFrontFacing(name))
         remoteFeed = VideoFeed(shared, false) {
             logger.info(AppEvent.RTC_FIRST_FRAME_MS, ((System.nanoTime() - startedNanos) / 1_000_000).toString())
@@ -138,7 +150,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         requireNotNull(camera).initialize(texture, context, requireNotNull(videoSource).capturerObserver)
         val cameraId = if (enumerator.isFrontFacing(name)) MediaTrack.FRONT_CAMERA else MediaTrack.BACK_CAMERA
         videoTrack = requireNotNull(factory).createVideoTrack(cameraId.wireId, videoSource).also {
-            it.addSink(localFeed); requireNotNull(peer).addTrack(it, listOf("zisee"))
+            it.addSink(localFeed); videoSender = requireNotNull(peer).addTrack(it, listOf("zisee"))
         }
         audioSource = requireNotNull(factory).createAudioSource(MediaConstraints())
         audioTrack = requireNotNull(factory).createAudioTrack(MediaTrack.MICROPHONE.wireId, audioSource).also {
@@ -148,6 +160,33 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         // Capturer chooses a supported format closest to 720p/30. No CPU bitmap conversion.
         requireNotNull(camera).startCapture(1280, 720, 30)
         startedNanos = System.nanoTime()
+        applyQuality(qualityPolicy.current, changeCapture = false)
+        statsJob = scope.launch {
+            var missing = false
+            while (isActive && !released) {
+                delay(1_000)
+                try {
+                    val result = stats()
+                    val thermal = if (Build.VERSION.SDK_INT >= 29) powerManager.currentThermalStatus else null
+                    val observed = result.copy(thermalStatus = thermal)
+                    // Never use idle/muted encoder statistics to make quality decisions.
+                    if (iceState.value == IceState.CONNECTED && videoTrack?.enabled() == true && adaptationEnabled) {
+                        applyQuality(qualityPolicy.update(observed, System.nanoTime() / 1_000_000))
+                    }
+                    sampledStats.value = observed.copy(quality = appliedQuality ?: VideoQuality.HD)
+                    missing = false
+                } catch (error: kotlinx.coroutines.TimeoutCancellationException) {
+                    sampledStats.value = sampledStats.value.copy(sampleAvailable = false)
+                    if (!missing) logger.error(AppEvent.RTC_STATS_UNAVAILABLE)
+                    missing = true
+                } catch (error: CancellationException) { throw error }
+                catch (error: Exception) {
+                    sampledStats.value = sampledStats.value.copy(sampleAvailable = false)
+                    if (!missing) logger.error(AppEvent.RTC_STATS_UNAVAILABLE)
+                    missing = true
+                }
+            }
+        }
         Unit
     }
 
@@ -186,56 +225,45 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         }
     }
 
-    suspend fun stats(): MediaStats = withContext(dispatcher) { withTimeout(3_000) {
-        suspendCancellableCoroutine { continuation ->
-            requireNotNull(peer).getStats { report ->
-                val values = report.statsMap.values
-                fun kindOf(entry: RTCStats) = entry.members["kind"] ?: entry.members["mediaType"]
-                fun sum(type: String, kind: String?, field: String) = values.filter {
-                    it.type == type && (kind == null || kindOf(it) == kind)
-                }.sumOf { (it.members[field] as? Number)?.toLong() ?: 0 }
-                fun number(entry: RTCStats?, field: String) = entry?.members?.get(field) as? Number
-                val video = values.firstOrNull { it.type == "inbound-rtp" && kindOf(it) == "video" }
-                val audio = values.firstOrNull { it.type == "inbound-rtp" && kindOf(it) == "audio" }
-                val transport = values.firstOrNull { it.type == "transport" && it.members["selectedCandidatePairId"] != null }
-                val pair = report.statsMap[transport?.members?.get("selectedCandidatePairId")]
-                fun candidateType(id: Any?) = (report.statsMap[id]?.members?.get("candidateType") as? String)
-                    ?.takeIf { it in setOf("host", "srflx", "prflx", "relay") } ?: "—"
-                // Throughput is a delta, so it needs the previous sample. The first poll of a call
-                // has no predecessor and reports zero rather than a meaningless spike.
-                val received = sum("inbound-rtp", null, "bytesReceived")
-                val sent = sum("outbound-rtp", null, "bytesSent")
-                val now = System.nanoTime()
-                val elapsedMs = if (lastSampleNanos == 0L) 0L else (now - lastSampleNanos) / 1_000_000
-                fun kbps(current: Long, previous: Long) =
-                    if (elapsedMs <= 0) 0L else (current - previous) * 8 / elapsedMs
-                val result = MediaStats(
-                    videoFrames = number(video, "framesDecoded")?.toLong() ?: 0,
-                    audioReceived = sum("inbound-rtp", "audio", "bytesReceived"),
-                    audioSent = sum("outbound-rtp", "audio", "bytesSent"),
-                    candidateType = candidateType(pair?.members?.get("localCandidateId")),
-                    rttMs = number(pair, "currentRoundTripTime")?.toDouble()?.times(1000)?.toLong() ?: 0,
-                    remoteCandidateType = candidateType(pair?.members?.get("remoteCandidateId")),
-                    videoWidth = number(video, "frameWidth")?.toInt() ?: 0,
-                    videoHeight = number(video, "frameHeight")?.toInt() ?: 0,
-                    videoFps = number(video, "framesPerSecond")?.toInt() ?: 0,
-                    jitterMs = number(audio ?: video, "jitter")?.toDouble()?.times(1000)?.toLong() ?: 0,
-                    packetsLost = sum("inbound-rtp", null, "packetsLost"),
-                    receiveKbps = kbps(received, lastBytesReceived),
-                    sendKbps = kbps(sent, lastBytesSent),
-                )
-                lastBytesReceived = received; lastBytesSent = sent; lastSampleNanos = now
-                // Stats are polled every second; only a change is worth a line. This is the one
-                // signal that distinguishes a P2P pair from a TURN relay.
-                val route = "${result.candidateType}/${result.remoteCandidateType}"
-                if (route != lastCandidate) {
-                    lastCandidate = route
-                    logger.info(AppEvent.RTC_SELECTED_CANDIDATE, route)
-                }
-                if (continuation.isActive) continuation.resume(result)
-            }
+    private suspend fun stats(): MediaStats = withTimeout(1_500) {
+        val report = suspendCancellableCoroutine<RTCStatsReport> { continuation ->
+            requireNotNull(peer).getStats { value -> if (continuation.isActive) continuation.resume(value) }
         }
-    } }
+        // Native callback only delivers a report. Mutable sampling state stays on the RTC executor.
+        val result = sampler.sample(report.statsMap.values.map { StatsEntry(it.id, it.type, it.members) },
+            System.nanoTime() / 1_000_000)
+        val route = "${result.candidateType}/${result.remoteCandidateType}"
+        if (route != lastCandidate) { lastCandidate = route; logger.info(AppEvent.RTC_SELECTED_CANDIDATE, route) }
+        return@withTimeout result
+    }
+
+    private fun applyQuality(decision: QualityDecision, changeCapture: Boolean = true) {
+        if (appliedQuality == decision.quality || !adaptationEnabled) return
+        val sender = videoSender ?: return
+        try {
+            val parameters = sender.parameters
+            if (parameters.encodings.isEmpty()) return // Retry after negotiation produces encodings.
+            parameters.degradationPreference = RtpParameters.DegradationPreference.BALANCED
+            parameters.encodings.forEach {
+                it.maxBitrateBps = decision.quality.maxBitrateBps
+                it.maxFramerate = decision.quality.fps
+                it.minBitrateBps = null // Do not force a bitrate floor when audio needs the link.
+            }
+            if (!sender.setParameters(parameters)) {
+                adaptationEnabled = false
+                logger.error(AppEvent.RTC_QUALITY_REJECTED)
+                return
+            }
+            if (changeCapture) requireNotNull(camera).changeCaptureFormat(
+                decision.quality.width, decision.quality.height, decision.quality.fps)
+            appliedQuality = decision.quality
+            logger.info(AppEvent.RTC_QUALITY_CHANGED, "${decision.quality.name}/${decision.reason.name}")
+        } catch (error: Exception) {
+            // Native defaults remain usable if an OEM rejects parameter changes.
+            adaptationEnabled = false
+            logger.error(AppEvent.RTC_QUALITY_REJECTED)
+        }
+    }
 
     override suspend fun setTrackEnabled(track: MediaTrack, enabled: Boolean) = withContext(dispatcher) {
         if (!released) when (track) {
@@ -269,6 +297,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         withContext(dispatcher) {
             if (released) return@withContext
             released = true
+            statsJob?.cancel(); statsJob = null
             withContext(Dispatchers.Main.immediate) {
                 localFeed?.close(); remoteFeed?.close()
             }
@@ -280,7 +309,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             cleanup { remoteTrack?.removeSink(remoteFeed) }
             cleanup { videoTrack?.removeSink(localFeed) }
             cleanup { peer?.close() }
-            cleanup { peer?.dispose() }; peer = null
+            cleanup { peer?.dispose() }; peer = null; videoSender = null
             cleanup { camera?.dispose() }; camera = null
             cleanup { videoTrack?.dispose() }; videoTrack = null
             cleanup { audioTrack?.dispose() }; audioTrack = null

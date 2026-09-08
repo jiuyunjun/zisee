@@ -170,9 +170,17 @@ private fun ActiveCall(state: CallUiState, model: CallViewModel) {
             }
             if (diagnostics) {
                 val stats = state.stats
-                Text("${stats.candidateType} → ${stats.remoteCandidateType} · RTT ${stats.rttMs} ms\n" +
+                fun metric(value: Double?) = value?.let { "%.1f".format(java.util.Locale.ROOT, it) } ?: "—"
+                Text((if (stats.sampleAvailable) "" else "统计暂不可用，以下为上次采样\n") +
+                    "${stats.candidateType} → ${stats.remoteCandidateType} · RTT ${stats.measuredRttMs ?: "—"} ms\n" +
                     "收/发 ${stats.receiveKbps}/${stats.sendKbps} kbps · 丢包 ${stats.packetsLost}\n" +
-                    "${stats.videoWidth} × ${stats.videoHeight} · ${stats.videoFps} fps",
+                    "接收 ${stats.videoWidth} × ${stats.videoHeight} · ${stats.videoFps} fps\n" +
+                    "发送 ${stats.sentWidth} × ${stats.sentHeight} · ${stats.sentFps} fps · 上限 ${stats.quality.name}\n" +
+                    "上行估计 ${stats.availableOutgoingKbps ?: "—"} kbps · 上行丢包 ${metric(stats.outboundLoss?.times(100))}%\n" +
+                    "编码 ${metric(stats.encodeMs)} ms/帧 · 发送等待 ${metric(stats.sendDelayMs)} ms/包\n" +
+                    "接收缓冲 ${metric(stats.jitterBufferMs)} ms/帧 · 卡顿 ${stats.freezes ?: "—"} 次\n" +
+                    "${stats.codec} · ${stats.encoder} · 节能编码 ${stats.powerEfficientEncoder ?: "—"}\n" +
+                    "限制 ${stats.qualityLimitation} · 热状态 ${stats.thermalStatus ?: "—"}",
                     Modifier.fillMaxWidth().heightIn(max = 100.dp).verticalScroll(rememberScrollState()).padding(12.dp),
                     style = MaterialTheme.typography.bodySmall)
             }

@@ -5,7 +5,7 @@ import android.util.Log
 /** Allowlisted events only: no free-form payloads, names, credentials, SDP or exceptions. */
 enum class AppEvent { IDENTITY_READ_FAILED, IDENTITY_WRITE_FAILED, SESSION_LOGOUT_FAILED,
     RTC_NATIVE_ERROR, RTC_BIND_FAILED, RTC_SOCKET_FAILED, RTC_CODEC_FAILED,
-    RTC_MEDIA_FAILED, RTC_RELEASE_FAILED, CALL_FAILED, CALL_CLEANUP_FAILED,
+    RTC_CAPABILITY_UNAVAILABLE, RTC_STATS_UNAVAILABLE, RTC_QUALITY_REJECTED, RTC_QUALITY_CHANGED, RTC_MEDIA_FAILED, RTC_RELEASE_FAILED, CALL_FAILED, CALL_CLEANUP_FAILED,
     RTC_ICE_STATE, RTC_SELECTED_CANDIDATE, RTC_SETUP_MS, RTC_FIRST_FRAME_MS, CALL_NOT_STARTED }
 
 interface AppLogger {
@@ -40,7 +40,7 @@ object FailureReason {
         "sdp_create_failed", "sdp_set_failed", "local_description_missing", "no_ice_candidates",
         "screen_not_available", "initial_negotiation_only",
         // MediaSignaling
-        "signaling_closed", "signaling_send",
+        "signaling_closed", "signaling_send", "signaling_timeout",
         // CallViewModel
         "invite_expired", "ice_disconnected", "media_failed", "ice_timeout",
     ) + AuthFailureReasons

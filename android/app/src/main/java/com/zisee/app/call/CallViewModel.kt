@@ -27,6 +27,8 @@ import java.time.Instant
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.Channel
@@ -132,6 +134,7 @@ class CallViewModel(application: Application, private val container: AppContaine
             var remote: RemoteCall? = null
             val calls = CallApi(api)
             var ended = false
+            var mediaObservation: Job? = null
             var machine = CallState()
             fun event(event: CallEvent) {
                 machine.session?.let { machine = CallReducer.reduce(machine, it.callId, event) }
@@ -153,7 +156,7 @@ class CallViewModel(application: Application, private val container: AppContaine
                 var receivedCandidates = 0
                 var negotiationStarted: Instant? = null
                 var disconnectedAt: Instant? = null
-                var failures = 0
+                val signalingRetry = com.zisee.app.signaling.SignalingRetryPolicy()
                 while (isActive) {
                     if (session == null || !Instant.now().isBefore(session.expiresAt.minusSeconds(30))) {
                         socket?.close(); socket = null
@@ -202,6 +205,17 @@ class CallViewModel(application: Application, private val container: AppContaine
                                     val media = NativeRtcSession(getApplication<Application>(), container.logger)
                                     rtc = media // Assign before start so partial initialization is always released.
                                     media.start(ice)
+                                    mediaObservation = launch {
+                                        combine(media.mediaStats, media.iceState) { stats, iceState -> stats to iceState }
+                                            .collect { (stats, iceState) ->
+                                                when (iceState) {
+                                                    IceState.CONNECTED -> event(CallEvent.MEDIA_CONNECTED)
+                                                    IceState.DISCONNECTED -> event(CallEvent.CONNECTION_LOST)
+                                                    else -> Unit
+                                                }
+                                                mutable.update { it.copy(stats = stats) }
+                                            }
+                                    }
                                     mutable.update { it.copy(local = media.localFeed, remote = media.remoteFeed) }
                                     negotiationStarted = Instant.now()
                                     if (current.caller == identity.identityId) {
@@ -265,11 +279,11 @@ class CallViewModel(application: Application, private val container: AppContaine
                                     IceState.FAILED, IceState.CLOSED -> throw IOException("media_failed")
                                     else -> if (negotiationStarted != null && Instant.now().isAfter(negotiationStarted.plusSeconds(60))) throw IOException("ice_timeout")
                                 }
-                                val stats = requireNotNull(rtc).stats()
+                                val stats = requireNotNull(rtc).mediaStats.value
                                 mutable.update { it.copy(stats = stats, status = if (stats.videoFrames > 0 && stats.audioReceived > 0 && machine.phase == CallPhase.CONNECTED) "音视频已连接" else it.status) }
                             }
                         }
-                        failures = 0
+                        signalingRetry.recovered()
                         delay(if (machine.phase == CallPhase.CONNECTING) 100 else 1_000)
                     } catch (error: IOException) {
                         // Retry transport failures using the same SDP message ID and receive cursor.
@@ -277,9 +291,10 @@ class CallViewModel(application: Application, private val container: AppContaine
                         val network = (error is com.zisee.app.auth.remote.AuthFailure && error.reason == com.zisee.app.auth.remote.AuthFailure.Reason.NETWORK) || error.message?.startsWith("signaling_") == true
                         if (!network) throw error
                         socket?.close(); socket = null
-                        if (++failures >= 3) throw error
+                        val retryDelay = signalingRetry.nextDelayMs(System.nanoTime() / 1_000_000,
+                            machine.phase in setOf(CallPhase.CONNECTED, CallPhase.RECONNECTING)) ?: throw error
                         mutable.update { it.copy(status = "信令中断，正在重连…") }
-                        delay(1_000L shl (failures - 1))
+                        delay(retryDelay)
                     }
                 }
                 event(CallEvent.HANG_UP); event(CallEvent.RELEASED)
@@ -296,6 +311,7 @@ class CallViewModel(application: Application, private val container: AppContaine
             } finally {
                 socket?.close()
                 withContext(NonCancellable) {
+                    mediaObservation?.cancelAndJoin()
                     val media = rtc; rtc = null
                     mutable.update { it.copy(local = null, remote = null, invite = "") }
                     try { media?.release() } catch (error: Exception) { container.logger.error(AppEvent.RTC_RELEASE_FAILED) }

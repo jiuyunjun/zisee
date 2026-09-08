@@ -78,7 +78,36 @@ WebRTC 的 NetworkMonitor 从未被启动过：代码只调了 `addNetworkObserv
 
 本次代码验证：Android assembleDebug、testDebugUnitTest、lintDebug 通过；Go 全套测试在本地 PostgreSQL 17 与 Firestore Emulator 下通过（包括真实存储集成测试，非跳过）。尚未部署本次服务端或安装本次客户端复测首帧；不以构建和协议测试替代媒体与 UI 真机验收。
 
-## 真机安装
+## 视频体验专项原生冒烟
+
+专项设计和测量边界见 [VIDEO_EXPERIENCE.md](../architecture/VIDEO_EXPERIENCE.md)。`RtcSmokeInstrumentation` 是仅存在于 androidTest APK 的原生本地回环测试，不访问账户、生产服务器或 TURN。需要显式授予测试目标的相机／麦克风权限，运行时实际使用这些设备。使用以下入口，不把自定义 runner 当成 JUnit 的 connectedAndroidTest 报告：
+
+```powershell
+cd android
+.\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest
+adb -s emulator-5554 install -r app/build/outputs/apk/debug/app-debug.apk
+adb -s emulator-5554 install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+adb -s emulator-5554 shell pm grant com.zisee.app.debug android.permission.CAMERA
+adb -s emulator-5554 shell pm grant com.zisee.app.debug android.permission.RECORD_AUDIO
+adb -s emulator-5554 shell am instrument -w -r com.zisee.app.debug.test/com.zisee.app.rtc.RtcSmokeInstrumentation
+```
+
+成功必须同时包含 `stream=PASS` 和 `INSTRUMENTATION_CODE: -1`；不能以 adb 命令退出码为准。输出包括 SDP、首解码帧、至少 30 帧的耗时和实际发送尺寸；不等于公网通话或真实摄像头的设备验证。测试不清除应用身份数据，但 install 会替换该设备的 Debug APK。
+
+模拟热状态仅在专用模拟器运行，结束必须复原：
+
+```powershell
+try {
+    adb -s emulator-5554 shell cmd thermalservice override-status 3
+    adb -s emulator-5554 shell am instrument -w -r -e expectedQuality ECONOMY com.zisee.app.debug.test/com.zisee.app.rtc.RtcSmokeInstrumentation
+} finally {
+    adb -s emulator-5554 shell cmd thermalservice reset
+}
+```
+
+这验证 Android 热状态到降档执行路径，不能证明真实散热、耗电或长期稳定性。
+
+## 真机签名与安装
 
 统一 debug 签名后，此前用个人 debug 证书装过 `com.zisee.app.debug` 的设备必须先卸载再安装，否则报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`。小米 HyperOS／MIUI 默认拒绝 ADB 安装，报 `INSTALL_FAILED_USER_RESTRICTED`，需在开发者选项中打开「USB 安装」。
 

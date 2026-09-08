@@ -20,6 +20,7 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0-dev"
+        testInstrumentationRunner = "com.zisee.app.rtc.RtcSmokeInstrumentation"
         buildConfigField("String", "BACKEND_URL", "\"$backendUrl\"")
     }
     signingConfigs {
