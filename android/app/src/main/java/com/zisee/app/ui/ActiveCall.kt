@@ -59,6 +59,20 @@ private val CallDanger = Color(0xFFE5484D)
 private val DockInk = Color(0xFF0D1317)
 private val BadgeInk = Color(0xFF090E11)
 
+// The four possible cameras in a call. Which of them exist depends on each end's Show Me mode.
+private const val MeFace = "me.face"
+private const val MeScene = "me.scene"
+private const val PeerFace = "peer.face"
+private const val PeerScene = "peer.scene"
+
+private fun label(tile: String) = when (tile) {
+    MeFace -> "我"
+    MeScene -> "我的现场"
+    // Four characters at most: a three-tile stack leaves the label 88dp to sit in.
+    PeerScene -> "对方现场"
+    else -> "对方"
+}
+
 private val DockShape = RoundedCornerShape(32.dp)
 private val ButtonShape = RoundedCornerShape(28.dp)
 private val PipShape = RoundedCornerShape(20.dp)
@@ -71,7 +85,7 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
     var controls by remember { mutableStateOf(true) }
     var interaction by remember { mutableLongStateOf(0L) }
     var more by remember { mutableStateOf(false) }
-    var swap by remember { mutableStateOf(false) }
+    var chosen by remember { mutableStateOf<String?>(null) }
     var duration by remember { mutableLongStateOf(0L) }
     var tipInset by remember { mutableStateOf(0.dp) }
     val density = LocalDensity.current
@@ -123,52 +137,87 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
     }
     // The hint has taught its gesture once it has been read, whether or not it was used.
     LaunchedEffect(hint) { if (hint) { delay(8_000); onHintSeen() } }
-    LaunchedEffect(remoteDual) { if (!remoteDual) swap = false }
+    // A tile that no longer exists cannot stay selected; the default rule then takes over.
     // Whichever remote camera is in the PiP is a thumbnail here, so tell the sender to stop paying
     // full price for it. Swapping the main view swaps which one that is.
-    LaunchedEffect(remoteDual, swap) {
-        if (remoteDual) onViewLayout(swap, !swap) else onViewLayout(true, true)
+    LaunchedEffect(chosen, state.remotePresentation.mode, state.showMe.mode) {
+        onViewLayout(chosen == PeerFace, chosen == PeerScene)
     }
     LaunchedEffect(tip) { if (tip == null) tipInset = 0.dp }
     Surface(color = CallInk, contentColor = CallText, modifier = Modifier.fillMaxSize()) {
         BoxWithConstraints(Modifier.fillMaxSize().clickable { controls = !controls; interaction++ }) {
-            val pipWidth = minOf(104.dp, maxWidth * 0.28f)
-            val pipHeight = minOf(148.dp, maxHeight * 0.25f)
-            // A visible tip lifts the PiP so both keep the designed 132dp footing above the dock.
-            val pip = Modifier.align(Alignment.BottomEnd).safeDrawingPadding()
-                .padding(end = 16.dp, bottom = 132.dp + tipInset)
-                .size(pipWidth, pipHeight).clip(PipShape)
-                .border(1.dp, CallText.copy(alpha = 0.16f), PipShape)
-            if (state.remotePresentation.enabled) {
-                // Keep both renderer nodes keyed in place when swapping, rather than detaching feeds.
-                state.remoteBack?.let { feed ->
-                    if (remoteDual) VideoRenderer(feed, if (swap) pip else Modifier.fillMaxSize(), overlay = swap)
+            // Every camera in the call is one tile: two of mine when Show Me is on, two of the
+            // peer's when theirs is, one each otherwise. Exactly one is the main view and the rest
+            // are thumbnails, which is what makes "one big, two small" and "one big, three small"
+            // the same rule rather than separate cases.
+            val order = buildList {
+                when (state.showMe.mode) {
+                    CameraMode.DUAL -> { add(MeScene); add(MeFace) }
+                    CameraMode.BACK_ONLY -> add(MeScene)
+                    else -> add(MeFace)
                 }
-                state.remote?.let { feed ->
-                    VideoRenderer(feed, if (remoteDual && !swap) pip else Modifier.fillMaxSize(), overlay = remoteDual && !swap)
+                when (state.remotePresentation.mode) {
+                    CameraMode.DUAL -> { add(PeerScene); add(PeerFace) }
+                    CameraMode.BACK_ONLY -> add(PeerScene)
+                    else -> add(PeerFace)
                 }
-            } else Text("对方已关闭画面", Modifier.align(Alignment.Center), color = CallText.copy(alpha = 0.7f))
-            if (state.stats.videoFrames == 0L && state.remotePresentation.enabled) {
+            }
+            // Opening Show Me makes my own scene the main view: framing it is the task at hand.
+            // Otherwise the peer leads, preferring the scene they chose to show.
+            val fallbackMain = when {
+                localScene -> MeScene
+                PeerScene in order -> PeerScene
+                else -> PeerFace
+            }
+            val main = chosen.takeIf { it in order } ?: fallbackMain
+            val thumbs = order.filter { it != main }
+            val thumbWidth = minOf(when (thumbs.size) { 1 -> 104.dp; 2 -> 96.dp; else -> 88.dp }, maxWidth * 0.28f)
+            val thumbHeight = minOf(when (thumbs.size) { 1 -> 148.dp; 2 -> 136.dp; else -> 124.dp },
+                (maxHeight - 220.dp) / thumbs.size.coerceAtLeast(1))
+            fun slot(tile: String): Modifier {
+                if (tile == main) return Modifier.fillMaxSize()
+                val index = thumbs.indexOf(tile)
+                // Stacked upward from the dock, so the tip and controls keep their designed footing.
+                return Modifier.align(Alignment.BottomEnd).safeDrawingPadding()
+                    .padding(end = 16.dp, bottom = 132.dp + tipInset + (thumbHeight + 8.dp) * index)
+                    .size(thumbWidth, thumbHeight).clip(PipShape)
+                    .border(1.dp, CallText.copy(alpha = 0.16f), PipShape)
+            }
+            // Fixed call sites keep each renderer's node identity across a swap. Moving a renderer
+            // between parents would recreate its surface and flash black.
+            if (MeFace in order) {
+                VideoTile(state.local, state.cameraEnabled, slot(MeFace), MeFace != main)
+            }
+            if (MeScene in order) {
+                VideoTile(if (state.showMe.mode == CameraMode.DUAL) state.localBack else state.local,
+                    state.cameraEnabled, slot(MeScene), MeScene != main)
+            }
+            if (PeerFace in order) {
+                VideoTile(state.remote, state.remotePresentation.enabled, slot(PeerFace), PeerFace != main)
+            }
+            if (PeerScene in order) {
+                VideoTile(if (state.remotePresentation.mode == CameraMode.DUAL) state.remoteBack else state.remote,
+                    state.remotePresentation.enabled, slot(PeerScene), PeerScene != main)
+            }
+            val mainIsPeer = main == PeerFace || main == PeerScene
+            if (mainIsPeer && !state.remotePresentation.enabled) {
+                Text("对方已关闭画面", Modifier.align(Alignment.Center), color = CallText.copy(alpha = 0.7f))
+            } else if (mainIsPeer && state.stats.videoFrames == 0L) {
                 Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator(Modifier.size(26.dp), color = CallAccent, strokeWidth = 2.dp)
                     Text("正在等待对方画面…", Modifier.padding(top = 14.dp), color = CallText.copy(alpha = 0.7f))
                 }
             }
-            if (remoteDual) {
-                Box(pip.clickable { swap = !swap; interaction++; onHintSeen() }
-                    .semantics { contentDescription = if (swap) "切换回现场主画面" else "切换到对方人像主画面" }) {
-                    PipLabel(if (swap) "现场" else "对方")
-                    Box(Modifier.align(Alignment.TopEnd).padding(8.dp).size(26.dp).clip(CircleShape)
+            // Tapping a thumbnail promotes it; the previous main view takes its place.
+            thumbs.forEach { tile ->
+                Box(slot(tile).clickable { chosen = tile; interaction++; onHintSeen() }
+                    .semantics { contentDescription = "将${label(tile)}切换为主画面" }) {
+                    PipLabel(if (tile == MeFace && !state.cameraEnabled) "画面已关闭" else label(tile))
+                    Box(Modifier.align(Alignment.TopEnd).padding(6.dp).size(24.dp).clip(CircleShape)
                         .background(BadgeInk.copy(alpha = 0.66f)), contentAlignment = Alignment.Center) {
-                        Canvas(Modifier.size(14.dp)) { scale(size.width / 24f, size.width / 24f, Offset.Zero) { callIcon("swap", CallText) } }
+                        Canvas(Modifier.size(13.dp)) { scale(size.width / 24f, size.width / 24f, Offset.Zero) { callIcon("swap", CallText) } }
                     }
                 }
-            } else Box(pip.background(CallInk)) {
-                if (state.cameraEnabled) {
-                    val preview = if (state.showMe.mode == CameraMode.DUAL) state.localBack else state.local
-                    preview?.let { VideoRenderer(it, Modifier.fillMaxSize(), overlay = true) }
-                }
-                PipLabel(if (!state.cameraEnabled) "画面已关闭" else if (localScene) "我的现场" else "我")
             }
             if (tip != null) Box(Modifier.align(Alignment.BottomEnd).safeDrawingPadding()
                 .padding(end = 16.dp, bottom = 132.dp).widthIn(max = 208.dp)
@@ -268,6 +317,12 @@ private fun CallOptions(state: CallUiState, onDismiss: () -> Unit, onSwitch: () 
             }
         }
     }
+}
+
+/** A camera's slot in the layout: its picture when it is live, its dark placeholder when not. */
+@Composable
+private fun VideoTile(feed: com.zisee.app.rtc.VideoFeed?, live: Boolean, modifier: Modifier, overlay: Boolean) {
+    if (live && feed != null) VideoRenderer(feed, modifier, overlay) else Box(modifier.background(CallInk))
 }
 
 @Composable

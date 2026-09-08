@@ -19,14 +19,17 @@ class CallPreviewActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // "scene" is both ends showing their scene (four tiles), "mine" only this end (three).
         val scene = intent.getBooleanExtra("scene", false)
-        val mode = if (scene) CameraMode.DUAL else CameraMode.FACE
+        val mine = intent.getBooleanExtra("mine", false)
+        val localMode = if (scene || mine) CameraMode.DUAL else CameraMode.FACE
+        val remoteMode = if (scene) CameraMode.DUAL else CameraMode.FACE
         setContent {
             ZiseeTheme {
                 // A non-IDLE phase requires a session, so the fixture supplies a complete one.
                 ActiveCall(CallUiState(peerName = "林然", status = "通话中", stats = MediaStats(videoFrames = 1),
                     machine = CallState(CallPhase.CONNECTED, CallSession("preview", "peer")),
-                    showMe = ShowMeState(mode), remotePresentation = CameraPresentation(mode, true),
+                    showMe = ShowMeState(localMode), remotePresentation = CameraPresentation(remoteMode, true),
                     showMeHint = scene), {}, {}, {}, {}, {}, { finish() })
             }
         }
