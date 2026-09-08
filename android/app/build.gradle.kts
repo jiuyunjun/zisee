@@ -5,6 +5,7 @@ plugins {
 }
 
 val backendUrl = providers.gradleProperty("zisee.backendUrl").orElse("").get()
+val localBackend = providers.gradleProperty("zisee.localBackend").orElse("false").get().toBooleanStrict()
 require(backendUrl.isEmpty() || backendUrl.matches(Regex("https://[A-Za-z0-9.-]+(:[0-9]+)?/?"))) {
     "zisee.backendUrl must be an HTTPS origin without credentials, path or query"
 }
@@ -22,10 +23,13 @@ android {
         buildConfigField("String", "BACKEND_URL", "\"$backendUrl\"")
     }
     buildTypes {
-        debug { applicationIdSuffix = ".debug" }
+        debug {
+            applicationIdSuffix = ".debug"
+            if (localBackend) buildConfigField("String", "BACKEND_URL", "\"http://127.0.0.1:8080\"")
+        }
         release {
             isMinifyEnabled = true
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
     compileOptions {
@@ -41,6 +45,7 @@ android {
 }
 
 dependencies {
+    implementation(libs.webrtc)
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
     implementation(libs.compose.material3)

@@ -1,7 +1,7 @@
 ---
 title: Zisee 邀请与通话控制协议
 document_id: PROTO-CALL-001
-version: 1.0.0
+version: 1.1.0
 status: Active
 created: 2026-09-08
 updated: 2026-09-08
@@ -13,7 +13,7 @@ owners:
 
 # 邀请与通话控制
 
-本版实现服务端邀请、呼叫、接听、拒绝、挂断和按需状态同步。Android 页面尚未接入，尚无 SDP/ICE 转发、推送或音视频。`accepted` 只表示被叫同意，不表示媒体连接成功。
+本版实现邀请、呼叫、接听、拒绝、挂断、按需状态同步和初次 Offer/Answer 投递。`accepted` 只表示被叫同意，媒体连接由客户端 ICE 和实际收发状态判断。尚无后台推送。
 
 ## HTTP
 
@@ -62,15 +62,41 @@ ringing / accepted → expired（达到期限）
 
 返回 `{v:1,type:"call.snapshot",id,call:Call}`。省略 callId 查询本人当前通话，没有则 call 为 null。指定 callId 可查询挂断或拒绝结果；错误返回 `{v:1,type:"error",id,error:"call_not_found"}` 等固定错误码。每条消息重新验证令牌，并按认证身份验证通话归属。
 
-这是请求/响应快照，不是事件队列：中间状态可能被跳过。页面接入时前台建议每 2 秒查询，后台取消；知道 callId 后持续查询该 ID 获取终态。后续 SDP/ICE 需要独立的可恢复消息投递协议，不能用快照轮询代替。
+这是请求/响应快照，不是事件队列：中间状态可能被跳过。知道 callId 后持续查询该 ID 获取终态。Android 前台约每秒查询，后台取消。
+
+## 初次媒体协商
+
+WebSocket 单条消息上限为 64 KiB，SDP UTF-8 上限为 48 KiB。所有媒体消息重新验证会话及 callId 归属，只允许 accepted 且未过期的通话发送。原有 HTTP 正文上限保持 8 KiB。
+
+发送：
+
+```json
+{"v":1,"type":"media.send","id":"<stable message ID>","callId":"<call ID>","description":{"type":"offer","sdp":"<SDP with gathered ICE candidates>"}}
+```
+
+成功响应 `{v:1,type:"media.ack",id,sequence:1}`。只有 caller 可发送 offer（序号 1），只有 callee 可发送 answer（序号 2），answer 必须在 offer 后发送。每个角色只能提交一份 SDP，重复同一 ID 与同一内容返回原确认，其他重复返回 invalid_call_transition。只支持初次协商，暂不支持 renegotiation/ICE restart/trickle。
+
+接收：
+
+```json
+{"v":1,"type":"media.sync","id":"<request ID>","callId":"<call ID>","after":0}
+```
+
+返回 `{v:1,type:"media.snapshot",id,snapshot:{call:Call,descriptions:[{sequence,type,sdp}]}}`。仅返回对端且 sequence 大于 after 的描述；客户端在成功设置远端描述后推进游标。重连沿用游标和本地 SDP 消息 ID，无需依赖同一实例。终态返回空描述和最新通话状态。
+
+描述保存在 PostgreSQL 版本 3 的 media_descriptions 表，每通话最多两条，只允许接听后两分钟内初次提交。读取仅返回两分钟内描述；分钟清理任务删除过期数据，因此后台物理清理通常不超过三分钟。正常挂断立即删除描述。SDP 包含网络地址等敏感信息，禁止日志输出或提交到仓库；云端数据库上线前应采用既定传输与存储保护。
 
 ## 迁移与验证
 
-迁移器保留兼容旧库的身份基础建表，以 `schema_migrations.version=2` 记录 `002_calls.sql`；在现有迁移事务和互斥锁内一次应用。运行时没有 DDL 权限要求，需授予新表 SELECT/INSERT/UPDATE/DELETE。readyz 要求新表存在，部署新版本前运行迁移。
+迁移器保留兼容旧库的身份基础建表，以 `schema_migrations` 记录 `002_calls.sql` 和 `003_media.sql`；在现有迁移事务和互斥锁内依次应用。运行时没有 DDL 权限要求，需授予新表 SELECT/INSERT/UPDATE/DELETE。readyz 要求新表存在，部署新版本前运行迁移。
 
 真实 PostgreSQL 集成测试覆盖跨连接并发重试、竞争邀请忙线、越权、转换、过期、邀请轮换、清理，以及 HTTP 与认证 WebSocket 快照。没有验证 Android 双机音视频或 Cloud Run 部署。
 
 # Changelog
+
+## 1.1.0 - 2026-09-08
+
+- 增加双方同意后的初次 Offer/Answer 投递、角色限制、幂等确认、游标及 SDP 保留窗口。
 
 ## 1.0.0 - 2026-09-08
 

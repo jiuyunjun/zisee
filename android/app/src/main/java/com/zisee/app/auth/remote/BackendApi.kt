@@ -58,7 +58,7 @@ class BackendApi(val origin: HttpUrl, private val client: OkHttpClient) {
 
     suspend fun logout(session: AccessSession) { request("DELETE", "v1/auth/session", null, session.token) }
 
-    private suspend fun request(method: String, path: String, payload: JSONObject?, token: String? = null): JSONObject =
+    internal suspend fun request(method: String, path: String, payload: JSONObject?, token: String? = null): JSONObject =
         withContext(Dispatchers.IO) {
             val request = Request.Builder().url(origin.resolve(path)!!)
                 .method(method, payload?.toString()?.toRequestBody("application/json; charset=utf-8".toMediaType()))

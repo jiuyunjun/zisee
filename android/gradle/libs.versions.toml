@@ -8,8 +8,10 @@ datastore = "1.0.0"
 coroutines = "1.9.0"
 junit = "4.13.2"
 okhttp = "4.12.0"
+webrtc = "144.7559.15"
 
 [libraries]
+webrtc = { module = "io.github.webrtc-sdk:android", version.ref = "webrtc" }
 compose-bom = { module = "androidx.compose:compose-bom", version.ref = "compose-bom" }
 compose-ui = { module = "androidx.compose.ui:ui" }
 compose-material3 = { module = "androidx.compose.material3:material3" }

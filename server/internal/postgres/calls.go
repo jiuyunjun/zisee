@@ -178,6 +178,11 @@ func (s *Store) ActOnCall(ctx context.Context, actor, id, action string) (call.C
 	if err != nil {
 		return call.Call{}, err
 	}
+	if target == "ended" || target == "rejected" {
+		if _, err = tx.Exec(ctx, `DELETE FROM media_descriptions WHERE call_id=$1`, id); err != nil {
+			return call.Call{}, err
+		}
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return call.Call{}, err
 	}

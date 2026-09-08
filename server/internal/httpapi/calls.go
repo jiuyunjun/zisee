@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"zisee/server/internal/call"
+	"zisee/server/internal/identity"
 )
 
 func (s *Server) callRequest(w http.ResponseWriter, r *http.Request) {
@@ -51,6 +52,8 @@ func (s *Server) callRequest(w http.ResponseWriter, r *http.Request) {
 
 func callError(err error) (int, string) {
 	switch {
+	case errors.Is(err, identity.ErrInvalid):
+		return 400, "invalid_request"
 	case errors.Is(err, call.ErrNotFound):
 		return 404, "call_not_found"
 	case errors.Is(err, call.ErrInvite):

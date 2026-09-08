@@ -53,6 +53,7 @@ fun ZiseeApp(
     connection: ConnectionState = ConnectionState.NOT_CONFIGURED,
     onConnect: () -> Unit = {},
     onDisconnect: () -> Unit = {},
+    onVideoCall: (() -> Unit)? = null,
 ) {
     var page by rememberSaveable { mutableStateOf(Page.HOME) }
     BackHandler(enabled = page != Page.HOME) { page = Page.HOME }
@@ -74,7 +75,9 @@ fun ZiseeApp(
                     }
                     IdentityState.Welcome -> WelcomeScreen(saveState, onSaveName)
                     is IdentityState.Ready -> when (page) {
-                        Page.HOME -> HomeScreen(identityState.identity, onNavigate = { page = it })
+                        Page.HOME -> HomeScreen(identityState.identity, onNavigate = {
+                            if (onVideoCall != null && it in setOf(Page.START_CALL, Page.JOIN_CALL)) onVideoCall() else page = it
+                        })
                         Page.SETTINGS -> {
                             PageTitle(stringResource(R.string.settings)) { page = Page.HOME }
                             SettingsScreen(identityState.identity, saveState, onSaveName)

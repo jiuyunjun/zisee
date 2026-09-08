@@ -19,6 +19,9 @@ var schema string
 //go:embed 002_calls.sql
 var callsSchema string
 
+//go:embed 003_media.sql
+var mediaSchema string
+
 type Store struct{ pool *pgxpool.Pool }
 
 func Open(ctx context.Context, url string) (*Store, error) {
@@ -45,7 +48,7 @@ func (s *Store) Ping(ctx context.Context) error {
 	// Readiness requires the schema, not merely a reachable database server.
 	_, err := s.pool.Exec(ctx, `SELECT i.id,d.id,c.id,s.token_hash FROM identities i
         JOIN devices d ON false JOIN auth_challenges c ON false JOIN sessions s ON false
-        JOIN calls ca ON false JOIN call_invites ci ON false LIMIT 0`)
+        JOIN calls ca ON false JOIN call_invites ci ON false JOIN media_descriptions md ON false LIMIT 0`)
 	return err
 }
 
@@ -74,6 +77,17 @@ func (s *Store) Migrate(ctx context.Context) error {
 			return err
 		}
 		if _, err = tx.Exec(ctx, `INSERT INTO schema_migrations(version) VALUES(2)`); err != nil {
+			return err
+		}
+	}
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=3)`).Scan(&applied); err != nil {
+		return err
+	}
+	if !applied {
+		if _, err = tx.Exec(ctx, mediaSchema); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO schema_migrations(version) VALUES(3)`); err != nil {
 			return err
 		}
 	}
@@ -225,6 +239,9 @@ func (s *Store) DeleteSession(ctx context.Context, hash []byte) error {
 }
 
 func (s *Store) Cleanup(ctx context.Context, now time.Time) error {
+	if _, err := s.pool.Exec(ctx, `DELETE FROM media_descriptions WHERE created_at < $1::timestamptz - interval '2 minutes'`, now); err != nil {
+		return err
+	}
 	if _, err := s.pool.Exec(ctx, `DELETE FROM call_invites WHERE expires_at <= $1`, now); err != nil {
 		return err
 	}

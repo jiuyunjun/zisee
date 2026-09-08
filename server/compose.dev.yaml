@@ -1,0 +1,36 @@
+# Local USB device testing only. The database is ephemeral; no cloud resources are created.
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: zisee_dev
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a local database password}
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d zisee_dev"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+  migrate:
+    build: .
+    image: zisee-server:dev
+    entrypoint: ["/usr/local/bin/migrate"]
+    environment:
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@db:5432/zisee_dev?sslmode=disable
+    depends_on:
+      db:
+        condition: service_healthy
+  api:
+    image: zisee-server:dev
+    environment:
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@db:5432/zisee_dev?sslmode=disable
+      PORT: "8080"
+      # Optional: exported by start-local.ps1 from the ignored .local.env.
+      CLOUDFLARE_TURN_TOKEN_ID: ${CLOUDFLARE_TURN_TOKEN_ID:-}
+      CLOUDFLARE_TURN_API_TOKEN: ${CLOUDFLARE_TURN_API_TOKEN:-}
+    ports:
+      - "127.0.0.1:18080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully

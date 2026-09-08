@@ -23,15 +23,16 @@ class AppContainer(context: Context) {
         DataStoreIdentityRepository(context.applicationContext.identityStore)
     val logger: AppLogger = AndroidAppLogger
     private val signers = mutableMapOf<String, KeystoreDeviceSigner>()
-    val backend: BackendConnection? = BuildConfig.BACKEND_URL.takeIf { it.isNotBlank() }?.let { url ->
-        val client = backendHttpClient()
-        val api = BackendApi(url.toHttpUrl(), client)
-        BackendConnection(api, AuthenticatedSession(api, client), { identityId ->
+    val httpClient = backendHttpClient()
+    val backendApi = BuildConfig.BACKEND_URL.takeIf { it.isNotBlank() }?.let { BackendApi(it.toHttpUrl(), httpClient) }
+    val deviceSigner: (String) -> KeystoreDeviceSigner = { identityId ->
             synchronized(signers) {
                 signers.getOrPut(identityId) {
-                    KeystoreDeviceSigner(identityId, api.origin.toString(), context.applicationContext.deviceStore)
+                    KeystoreDeviceSigner(identityId, requireNotNull(backendApi).origin.toString(), context.applicationContext.deviceStore)
                 }
             }
-        }, logger)
+    }
+    val backend: BackendConnection? = backendApi?.let { api ->
+        BackendConnection(api, AuthenticatedSession(api, httpClient), deviceSigner, logger)
     }
 }

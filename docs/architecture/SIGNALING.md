@@ -1,7 +1,7 @@
 ---
 title: Zisee 信令会话基础
 document_id: ARCH-SIGNALING-001
-version: 1.2.0
+version: 1.3.0
 status: Active
 created: 2026-09-08
 updated: 2026-09-08
@@ -13,14 +13,14 @@ owners:
 
 # 信令会话基础
 
-当前实现认证后的 WebSocket 连接、心跳和按需通话快照。邀请、接听、拒绝和挂断通过 HTTP 完成，见 [通话协议](../protocols/CALL_PROTOCOL.md)。尚未实现 SDP／ICE 转发；不得把当前连接成功或 accepted 状态当作媒体通话成功。
+当前实现认证后的 WebSocket 连接、心跳、按需通话快照和持久化初次 Offer/Answer 投递。邀请、接听、拒绝和挂断通过 HTTP 完成，见 [通话协议](../protocols/CALL_PROTOCOL.md)。ICE 候选先收集进 SDP；尚未实现 Trickle ICE。不得把信令连接成功或 accepted 状态当作媒体通话成功。
 
 ## 建立连接
 
 - 路径：`wss://<service>/v1/signaling`。
 - HTTP 握手带 `Authorization: Bearer <accessToken>`，令牌来自 [身份协议](../protocols/IDENTITY_PROTOCOL.md)。
 - 必须协商子协议 `zisee.v1`，原生客户端不发送 Origin。不得把 token 放在 URL。
-- 服务端最多接收 64 个并发连接/实例，每条文本消息最多 4 KiB，拒绝二进制数据。
+- 服务端最多接收 64 个并发连接/实例，每条文本消息最多 64 KiB（SDP 字段 48 KiB），拒绝二进制数据。
 
 连接成功，服务端首先发送：
 
@@ -44,11 +44,15 @@ owners:
 
 Cloud Run WebSocket 仍受请求超时约束，session affinity 仅尽力而为。未来通话路由必须使用跨实例共享状态／消息投递，不能依赖单进程 `map[peer]connection`，也不能依赖 max-instances=1 来保证正确性。[官方 WebSocket 说明](https://docs.cloud.google.com/run/docs/triggering/websockets)
 
-当前 PostgreSQL 保存身份、挑战、令牌、邀请和通话，多实例可验证同一会话并查询同一通话快照。`call.sync` 仅向请求方返回有权查看的状态，尚无跨实例事件投递或 SDP/ICE 转发。
+当前 PostgreSQL 保存身份、挑战、令牌、邀请、通话和短期 SDP。多实例可查询同一通话和对端描述。`call.sync` 查询状态，`media.send`/`media.sync` 提交及查询初次 SDP；通过稳定消息 ID 和游标支持传输重连，不依赖进程内连接表。
 
-邀请 token 使用次数和到期、callId 归属、重复动作、呼叫超时、忙线与挂断已定义于通话协议。下一步需要双方同意后的 SDP／ICE 交换、单调序号／消息 ID、断线恢复及短期 TURN credential 鉴权。媒体不进入信令服务。
+下一步需要 Trickle ICE、ICE restart、媒体状态恢复和短期 TURN credential 鉴权。媒体不进入信令服务。
 
 # Changelog
+
+## 1.3.0 - 2026-09-08
+
+- 增加初次媒体协商与短期 SDP 投递；消息上限调整为 64 KiB。
 
 ## 1.2.0 - 2026-09-08
 
