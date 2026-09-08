@@ -1,15 +1,16 @@
 package com.zisee.app.rtc
 
 enum class VideoQuality(val width: Int, val height: Int, val fps: Int, val maxBitrateBps: Int) {
-    ECONOMY(640, 360, 15, 450_000), HD(1280, 720, 30, 4_000_000), FULL_HD(1920, 1080, 30, 8_000_000),
+    ECONOMY(640, 360, 15, 450_000), HD(1280, 720, 30, 4_000_000), FULL_HD(1920, 1080, 30, 10_000_000),
 }
 
 enum class QualityReason { STARTUP, THERMAL, ENCODER, BANDWIDTH, RECOVERY, CAPACITY }
 data class QualityDecision(val quality: VideoQuality, val reason: QualityReason)
 
 /** Slow application ceilings. libwebrtc still owns instantaneous congestion control. */
-class VideoQualityPolicy(private val supportsFullHd: Boolean) {
-    var current = QualityDecision(VideoQuality.HD, QualityReason.STARTUP); private set
+class VideoQualityPolicy(private val supportsFullHd: Boolean, preferFullHd: Boolean = false) {
+    var current = QualityDecision(if (supportsFullHd && preferFullHd) VideoQuality.FULL_HD else VideoQuality.HD,
+        QualityReason.STARTUP); private set
     private var pending: QualityDecision? = null
     private var sinceMs = 0L
     private var fastSinceMs: Long? = null

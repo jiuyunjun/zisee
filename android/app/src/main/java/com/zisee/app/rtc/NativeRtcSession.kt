@@ -53,6 +53,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     var localFeed: VideoFeed? = null; private set
     var remoteFeed: VideoFeed? = null; private set
     private val candidates = mutableListOf<IceCandidate>()
+    private var candidateOverflow = false
+    private val cellularStandby = CellularStandby(context, logger)
     private var acceptingCandidates = true
     private var localUfrags = emptySet<String>()
     private var configuration: PeerConnection.RTCConfiguration? = null
@@ -83,6 +85,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
 
     suspend fun start(iceServers: List<IceServerConfig>) = withContext(dispatcher) {
         initialize(context, logger)
+        cellularStandby.start()
         egl = EglBase.create()
         val shared = requireNotNull(egl).eglBaseContext
         audioModule = JavaAudioDeviceModule.builder(context).setEnableVolumeLogger(false)
@@ -121,7 +124,9 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         val config = PeerConnection.RTCConfiguration(servers).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             iceTransportsType = PeerConnection.IceTransportsType.ALL
-            continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_ONCE
+            continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+            candidateNetworkPolicy = PeerConnection.CandidateNetworkPolicy.ALL
+            iceBackupCandidatePairPingInterval = 1_000
         }
         configuration = config
         peer = requireNotNull(factory).createPeerConnection(config, observer) ?: throw IOException("peer_creation_failed")
@@ -136,7 +141,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             logger.error(AppEvent.RTC_CAPABILITY_UNAVAILABLE)
             false
         }
-        qualityPolicy = VideoQualityPolicy(supportsFullHd)
+        qualityPolicy = VideoQualityPolicy(supportsFullHd, preferFullHd = true)
         localFeed = VideoFeed(shared, enumerator.isFrontFacing(name))
         remoteFeed = VideoFeed(shared, false) {
             logger.info(AppEvent.RTC_FIRST_FRAME_MS, ((System.nanoTime() - startedNanos) / 1_000_000).toString())
@@ -161,8 +166,9 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             requireNotNull(peer).addTrack(it, listOf("zisee"))
         }
         withContext(Dispatchers.Main.immediate) { acquireAudio() }
-        // Capturer chooses a supported format closest to 720p/30. No CPU bitmap conversion.
-        requireNotNull(camera).startCapture(1280, 720, 30)
+        // Open the supported quality ceiling immediately; native congestion control adapts output.
+        val initialQuality = qualityPolicy.current.quality
+        requireNotNull(camera).startCapture(initialQuality.width, initialQuality.height, initialQuality.fps)
         startedNanos = System.nanoTime()
         applyQuality(qualityPolicy.current, changeCapture = false)
         statsJob = scope.launch {
@@ -211,6 +217,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     }
 
     suspend fun localCandidates(): List<IceCandidate> = withContext(dispatcher) { candidates.toList() }
+    suspend fun candidateCapacityExceeded(): Boolean = withContext(dispatcher) { candidateOverflow }
 
     suspend fun addRemoteCandidate(candidate: IceCandidate) = withContext(dispatcher) {
         if (!requireNotNull(peer).addIceCandidate(candidate)) throw IOException("ice_candidate_rejected")
@@ -282,6 +289,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     suspend fun prepareIceGeneration(iceServers: List<IceServerConfig>) = withContext(dispatcher) {
         acceptingCandidates = false
         candidates.clear()
+        candidateOverflow = false
         val config = requireNotNull(configuration)
         config.iceServers = iceServers.map { PeerConnection.IceServer.builder(it.urls)
             .setUsername(it.username).setPassword(it.credential).createIceServer() }
@@ -324,6 +332,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             }
             // Attempt every release even if an OEM operation fails; log only an allowlisted event.
             fun cleanup(block: () -> Unit) { try { block() } catch (error: Exception) { logger.error(AppEvent.RTC_RELEASE_FAILED) } }
+            cleanup { cellularStandby.close() }
             cleanup { if (monitoring) { NetworkMonitor.getInstance().stopMonitoring(); monitoring = false } }
             cleanup { NetworkMonitor.removeNetworkObserver(networkObserver) }
             cleanup { camera?.stopCapture() }
@@ -383,7 +392,9 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         override fun onIceCandidate(candidate: IceCandidate) { scope.launch {
             val ufrag = Regex("(?:^| )ufrag ([^ ]+)").find(candidate.sdp)?.groupValues?.get(1)
             if (!released && acceptingCandidates && (ufrag == null || ufrag in localUfrags) && candidates.none { it.sdp == candidate.sdp && it.sdpMid == candidate.sdpMid }) {
-                if (candidates.size >= 32) fail() else candidates.add(candidate)
+                // The current protocol is append-only and bounded. Rotate generation instead of
+                // crashing or rewriting an acknowledged prefix when networks keep appearing.
+                if (candidates.size >= 32) candidateOverflow = true else candidates.add(candidate)
             }
         } }
         override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>) = Unit

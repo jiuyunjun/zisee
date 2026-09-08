@@ -4,6 +4,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class VideoQualityPolicyTest {
+    @Test fun `quality first starts at device capability without an upgrade timer`() {
+        val capable = VideoQualityPolicy(true, preferFullHd = true)
+        assertEquals(VideoQuality.FULL_HD, capable.current.quality)
+        assertEquals(VideoQuality.HD, VideoQualityPolicy(false, preferFullHd = true).current.quality)
+        assertEquals(VideoQuality.ECONOMY, capable.update(MediaStats(thermalStatus = 3), 0).quality)
+    }
+    @Test fun `quality first still yields to persistent low bandwidth`() {
+        val policy = VideoQualityPolicy(true, preferFullHd = true)
+        for (time in 0L..3_000L step 1_000) policy.update(MediaStats(availableOutgoingKbps = 1_000), time)
+        assertEquals(VideoQuality.HD, policy.current.quality)
+    }
     private val good = MediaStats(availableOutgoingKbps = 4_000, outboundLoss = 0.0, measuredRttMs = 30, encodeMs = 10.0)
 
     private val fast = good.copy(sendDelayMs = 10.0, qualityLimitation = "none")
