@@ -306,6 +306,11 @@ func (s *Store) ActOnCall(ctx context.Context, actor, id, action string) (call.C
 		stored.State = target
 		if target == "accepted" {
 			stored.ExpiresAt = now.Add(acceptedTTL)
+			for _, pair := range [][2]string{{stored.CallerID, stored.CalleeID}, {stored.CalleeID, stored.CallerID}} {
+				if err := tx.Set(s.contactRef(pair[0], pair[1]), map[string]any{"createdAt": now}); err != nil {
+					return err
+				}
+			}
 		}
 		if err := tx.Set(ref, stored); err != nil {
 			return err

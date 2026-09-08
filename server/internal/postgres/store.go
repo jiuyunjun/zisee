@@ -28,6 +28,9 @@ var trickleSchema string
 //go:embed 005_ice_restart.sql
 var restartSchema string
 
+//go:embed 006_contacts.sql
+var contactsSchema string
+
 type Store struct{ pool *pgxpool.Pool }
 
 func Open(ctx context.Context, url string) (*Store, error) {
@@ -54,7 +57,7 @@ func (s *Store) Ping(ctx context.Context) error {
 	// Readiness requires the schema, not merely a reachable database server.
 	_, err := s.pool.Exec(ctx, `SELECT i.id,d.id,c.id,s.token_hash,ca.media_generation,md.candidates FROM identities i
         JOIN devices d ON false JOIN auth_challenges c ON false JOIN sessions s ON false
-        JOIN calls ca ON false JOIN call_invites ci ON false JOIN media_descriptions md ON false LIMIT 0`)
+        JOIN contacts co ON false JOIN calls ca ON false JOIN call_invites ci ON false JOIN media_descriptions md ON false LIMIT 0`)
 	return err
 }
 
@@ -116,6 +119,17 @@ func (s *Store) Migrate(ctx context.Context) error {
 			return err
 		}
 		if _, err = tx.Exec(ctx, `INSERT INTO schema_migrations(version) VALUES(5)`); err != nil {
+			return err
+		}
+	}
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=6)`).Scan(&applied); err != nil {
+		return err
+	}
+	if !applied {
+		if _, err = tx.Exec(ctx, contactsSchema); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO schema_migrations(version) VALUES(6)`); err != nil {
 			return err
 		}
 	}

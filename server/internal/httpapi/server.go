@@ -48,6 +48,9 @@ func (s *Server) Handler() http.Handler {
 	liveness := func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	}
+	mux.HandleFunc("GET /v1/contacts", s.contacts)
+	mux.HandleFunc("POST /v1/contacts/{peerId}/calls", s.contacts)
+	mux.HandleFunc("DELETE /v1/contacts/{peerId}", s.contacts)
 	mux.HandleFunc("GET /healthz", liveness)
 	mux.HandleFunc("GET /livez", liveness)
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {

@@ -40,6 +40,9 @@ class MainActivity : ComponentActivity() {
             val connection by viewModel.connection.collectAsStateWithLifecycle()
             val call by callModel.state.collectAsStateWithLifecycle()
             val invite by opened.collectAsStateWithLifecycle()
+            LaunchedEffect(identity) {
+                (identity as? IdentityState.Ready)?.let { callModel.observeIdentity(it.identity) }
+            }
             // The call screen needs a ready identity, so a link that arrives first waits here
             // rather than being dropped.
             LaunchedEffect(invite, identity) {
@@ -57,7 +60,7 @@ class MainActivity : ComponentActivity() {
             ZiseeTheme {
                 if (call.visible) CallScreen(call, callModel) else {
                     ZiseeApp(identity, save, viewModel::saveName, viewModel::load,
-                        connection, viewModel::connectBackend, viewModel::disconnectBackend) {
+                        connection, viewModel::connectBackend, viewModel::disconnectBackend, contacts = call.contacts) {
                         (identity as? IdentityState.Ready)?.let {
                             viewModel.disconnectBackend()
                             callModel.open(it.identity)

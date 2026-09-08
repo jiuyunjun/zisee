@@ -12,10 +12,23 @@ data class RemoteCall(val id: String, val caller: String, val callee: String, va
     }
 }
 
+data class Contact(val identityId: String, val displayName: String)
+
 /** Framework-neutral ICE configuration; the RTC layer maps it to native servers. */
 data class IceServerConfig(val urls: List<String>, val username: String, val credential: String)
 
 class CallApi(private val api: BackendApi) {
+    suspend fun contacts(session: AccessSession): List<Contact> {
+        val rows = api.request("GET", "v1/contacts", null, session.token).getJSONArray("contacts")
+        return (0 until rows.length()).map { rows.getJSONObject(it).let { row ->
+            Contact(row.getString("identityId"), row.getString("displayName")) } }
+    }
+    suspend fun callContact(session: AccessSession, peer: String): RemoteCall = RemoteCall.parse(
+        api.request("POST", "v1/contacts/$peer/calls", JSONObject(), session.token))
+    suspend fun removeContact(session: AccessSession, peer: String) {
+        api.request("DELETE", "v1/contacts/$peer", null, session.token)
+    }
+
     /** Short-lived relay credentials. The Cloudflare API token never reaches the device. */
     suspend fun iceServers(session: AccessSession): List<IceServerConfig> {
         val servers = api.request("GET", "v1/ice", null, session.token).getJSONArray("iceServers")

@@ -65,7 +65,7 @@ fun CallScreen(state: CallUiState, model: CallViewModel) {
     val clipboard = LocalClipboardManager.current
     val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
         if (grants[Manifest.permission.CAMERA] == true && grants[Manifest.permission.RECORD_AUDIO] == true) {
-            when (permissionAction) { "accept" -> model.accept(); "join" -> model.join(invite.trim()) }
+            when (permissionAction) { "accept" -> model.accept(); "join" -> model.join(invite.trim()); else -> permissionAction?.removePrefix("contact:")?.let(model::callContact) }
         } else model.permissionsDenied()
         permissionAction = null
     }
@@ -106,6 +106,16 @@ fun CallScreen(state: CallUiState, model: CallViewModel) {
                 }
             }
             if (!state.busy) {
+                if (state.contacts.isNotEmpty()) Text("最近联系人", style = MaterialTheme.typography.titleMedium)
+                state.contacts.forEach { contact ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(contact.displayName, Modifier.weight(1f))
+                        TextButton(onClick = { request("contact:${contact.identityId}") }, enabled = permissionAction == null) { Text("视频呼叫") }
+                        TextButton(onClick = { model.removeContact(contact.identityId) }) { Text("移除") }
+                    }
+                }
+                if (state.contactsStatus.isNotEmpty()) Text(state.contactsStatus, style = MaterialTheme.typography.bodySmall)
+                Text("接听后会记住对方，下次可以直接呼叫。移除后双方需重新邀请。", style = MaterialTheme.typography.bodySmall)
                 Button(onClick = model::createInvite, enabled = BuildConfig.BACKEND_URL.isNotEmpty(), modifier = Modifier.fillMaxWidth()) { Text("创建邀请") }
                 OutlinedTextField(value = invite, onValueChange = { invite = it.take(80) }, label = { Text("对方的邀请码或链接") },
                     singleLine = true, modifier = Modifier.fillMaxWidth())

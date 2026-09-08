@@ -46,7 +46,8 @@ data class CallUiState(
     val status: String = "邀请朋友开始视频通话，或输入对方的邀请码。",
     val machine: CallState = CallState(), val local: VideoFeed? = null, val remote: VideoFeed? = null,
     val cameraEnabled: Boolean = true, val muted: Boolean = false, val stats: MediaStats = MediaStats(),
-    val pendingInvite: String = "",
+    val pendingInvite: String = "", val contacts: List<Contact> = emptyList(), val contactsStatus: String = "",
+    val peerName: String = "对方",
 )
 
 /** Serial foreground call owner. Backgrounding cancels capture and ends the remote call. */
@@ -58,16 +59,78 @@ class CallViewModel(application: Application, private val container: AppContaine
     private var rtc: NativeRtcSession? = null
     private val commands = Channel<String>(4)
     private var foreground = false
+    private var idleJob: Job? = null
+    private val removals = Channel<String>(4)
+
+    fun observeIdentity(value: LocalIdentity) {
+        if (identity?.identityId != value.identityId) {
+            idleJob?.cancel(); idleJob = null
+            mutable.update { it.copy(contacts = emptyList()) }
+        }
+        identity = value
+        startIdle()
+    }
+    fun callContact(peer: String) = begin(null, contact = peer)
+    fun removeContact(peer: String) { removals.trySend(peer) }
+
+    private fun startIdle() {
+        val api = container.backendApi ?: return
+        val owner = identity ?: return
+        if (!foreground || job != null || idleJob?.isActive == true) return
+        idleJob = viewModelScope.launch {
+            while (isActive && foreground && job == null) {
+                var token: AccessSession? = null
+                var transport: MediaSignaling? = null
+                try {
+                    token = api.login(owner, container.deviceSigner(owner.identityId))
+                    val calls = CallApi(api)
+                    transport = MediaSignaling(api, container.httpClient, token)
+                    transport.ready()
+                    var refreshAt = 0L
+                    while (isActive && foreground && job == null && Instant.now().isBefore(token.expiresAt.minusSeconds(30))) {
+                        removals.tryReceive().getOrNull()?.let { calls.removeContact(token, it); refreshAt = 0 }
+                        if (System.nanoTime() >= refreshAt) {
+                            val contacts = calls.contacts(token)
+                            mutable.update { it.copy(contacts = contacts, contactsStatus = "") }
+                            refreshAt = System.nanoTime() + 15_000_000_000L
+                        }
+                        val snapshot = transport.exchange("call.sync")
+                        if (!snapshot.isNull("call")) {
+                            val incoming = RemoteCall.parse(snapshot.getJSONObject("call"))
+                            if (incoming.state == "ringing" && incoming.callee == owner.identityId) {
+                                begin(null, incoming = incoming)
+                                break
+                            }
+                        }
+                        kotlinx.coroutines.delay(1_500)
+                    }
+                } catch (error: CancellationException) { throw error }
+                catch (error: Exception) {
+                    container.logger.error(AppEvent.CALL_FAILED, FailureReason.of(error))
+                    mutable.update { it.copy(contactsStatus = "联系人连接暂不可用，正在重试…") }
+                } finally {
+                    transport?.close()
+                    withContext(NonCancellable) {
+                        withTimeoutOrNull(1_000) {
+                            try { token?.let { api.logout(it) } }
+                            catch (error: IOException) { container.logger.error(AppEvent.SESSION_LOGOUT_FAILED) }
+                        }
+                    }
+                }
+                kotlinx.coroutines.delay(3_000)
+            }
+        }
+    }
 
     fun open(identity: LocalIdentity) {
         // Returning here leaves this.identity unset, which would later make begin() refuse the
         // call with nothing on screen to explain it.
         if (job != null) return notStarted("open_during_call")
         this.identity = identity
-        mutable.value = CallUiState(visible = true, status = if (container.backendApi == null)
+        mutable.value = CallUiState(visible = true, contacts = mutable.value.contacts, status = if (container.backendApi == null)
             "尚未配置通话服务器。请安装已配置服务器的测试版本。" else "邀请朋友开始视频通话，或输入对方的邀请码。")
     }
-    fun setForeground(value: Boolean) { foreground = value; if (!value) stop() }
+    fun setForeground(value: Boolean) { foreground = value; if (!value) { idleJob?.cancel(); stop() } else startIdle() }
     fun close() { stop(); mutable.update { it.copy(visible = false) } }
     fun stop() { job?.cancel() }
     fun accept() { commands.trySend("accept") }
@@ -120,17 +183,18 @@ class CallViewModel(application: Application, private val container: AppContaine
      */
     private fun notStarted(reason: String) = container.logger.info(AppEvent.CALL_NOT_STARTED, reason)
 
-    private fun begin(invite: String?) {
+    private fun begin(invite: String?, contact: String? = null, incoming: RemoteCall? = null) {
         val api = container.backendApi ?: return notStarted("no_backend")
         val identity = identity ?: return notStarted("no_identity")
         if (!foreground) return notStarted("background")
         if (job != null) return notStarted("call_in_progress")
         while (commands.tryReceive().isSuccess) { /* Clear previous call actions. */ }
-        mutable.value = CallUiState(visible = true, busy = true, status = "正在连接…")
+        mutable.value = CallUiState(visible = true, busy = true, contacts = mutable.value.contacts, status = "正在连接…")
         job = viewModelScope.launch {
+            idleJob?.cancelAndJoin(); idleJob = null
             var session: AccessSession? = null
             var socket: MediaSignaling? = null
-            var remote: RemoteCall? = null
+            var remote: RemoteCall? = incoming
             val calls = CallApi(api)
             var ended = false
             var mediaObservation: Job? = null
@@ -144,11 +208,12 @@ class CallViewModel(application: Application, private val container: AppContaine
             try {
                 session = api.login(identity, container.deviceSigner(identity.identityId))
                 var inviteExpiry: Instant? = null
-                if (invite == null) {
+                if (contact != null) remote = calls.callContact(session, contact)
+                else if (incoming == null && invite == null) {
                     val created = calls.invite(session)
                     inviteExpiry = created.second
                     mutable.update { it.copy(invite = created.first, status = "将邀请码发给对方，等待来电。") }
-                } else remote = calls.redeem(session, invite)
+                } else if (invite != null) remote = calls.redeem(session, invite)
                 var negotiator: com.zisee.app.signaling.MediaNegotiator? = null
                 val recovery = com.zisee.app.rtc.IceRecoveryPolicy(System.nanoTime() / 1_000_000)
                 val network = com.zisee.app.rtc.DefaultNetworkWatcher(getApplication<Application>(), container.logger)
@@ -190,7 +255,7 @@ class CallViewModel(application: Application, private val container: AppContaine
                             if (machine.phase == CallPhase.IDLE) {
                                 val peer = if (current.caller == identity.identityId) current.callee else current.caller
                                 machine = CallReducer.start(machine, CallSession(current.id, peer), current.callee == identity.identityId)
-                                mutable.update { it.copy(machine = machine, invite = "") }
+                                mutable.update { it.copy(machine = machine, invite = "", peerName = it.contacts.firstOrNull { c -> c.identityId == peer }?.displayName ?: "对方") }
                             }
                             if (current.state in setOf("ended", "rejected", "expired")) {
                                 ended = true
@@ -298,6 +363,7 @@ class CallViewModel(application: Application, private val container: AppContaine
                 }
                 mutable.update { it.copy(busy = false) }
                 job = null
+                startIdle()
             }
         }
     }

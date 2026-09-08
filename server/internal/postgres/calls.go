@@ -178,6 +178,11 @@ func (s *Store) ActOnCall(ctx context.Context, actor, id, action string) (call.C
 	if err != nil {
 		return call.Call{}, err
 	}
+	if target == "accepted" {
+		if _, err = tx.Exec(ctx, `INSERT INTO contacts(owner_id,peer_id) VALUES($1,$2),($2,$1) ON CONFLICT DO NOTHING`, c.CallerID, c.CalleeID); err != nil {
+			return call.Call{}, err
+		}
+	}
 	if target == "ended" || target == "rejected" {
 		if _, err = tx.Exec(ctx, `DELETE FROM media_descriptions WHERE call_id=$1`, id); err != nil {
 			return call.Call{}, err

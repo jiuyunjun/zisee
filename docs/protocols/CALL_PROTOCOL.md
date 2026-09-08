@@ -136,3 +136,11 @@ PostgreSQL 迁移 **005_ice_restart.sql** 增加通话代次和代次开始时�
 ## 持续候选的客户端兼容策略（2026-09-09）
 
 客户端可在同一 ICE 代持续追加新网络候选，但服务端每代 32 条上限与 SDP 的 2 min 有效窗口不变。客户端在 SDP 首次发送 90 s 后有新增候选，或本地候选溢出时，先请求 `media.restart` 并同步权威代次，再发送新代 SDP／候选。没有新候选不因时长主动重启。该行为兼容已部署服务端，不需要迁移数据库或新增消息类型。
+
+## 联系人协议（2026-09-09）
+
+- `GET /v1/contacts`：认证后返回 `{contacts:[{identityId,displayName}]}`，当前最多 20 位，姓名来自身份记录。
+- `POST /v1/contacts/{peerId}/calls`：双方关系都存在且无人忙线时创建 ringing 通话；不接受客户端指定 actor，不绕过接听。重复点击不会创建并存通话，忙线返回 409；网络响应丢失后由 call.sync 找回当前通话。
+- `DELETE /v1/contacts/{peerId}`：删除双方关系，后续不能直接呼叫；已接通通话不会被该操作自动挂断。
+- 关系仅在 callee 成功 accept 时建立，与通话状态更新位于同一事务。Firestore 使用 contacts/{owner}/peers/{peer}；PostgreSQL 新增 `006_contacts.sql`，须先迁移后发布。
+- 初次升级的历史 ended 通话无法证明曾被接受，不自动回填关系。前台来电监听不等于后台推送。

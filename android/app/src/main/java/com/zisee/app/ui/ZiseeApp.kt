@@ -53,6 +53,7 @@ fun ZiseeApp(
     connection: ConnectionState = ConnectionState.NOT_CONFIGURED,
     onConnect: () -> Unit = {},
     onDisconnect: () -> Unit = {},
+    contacts: List<com.zisee.app.call.Contact> = emptyList(),
     onVideoCall: (() -> Unit)? = null,
 ) {
     var page by rememberSaveable { mutableStateOf(Page.HOME) }
@@ -75,7 +76,7 @@ fun ZiseeApp(
                     }
                     IdentityState.Welcome -> WelcomeScreen(saveState, onSaveName)
                     is IdentityState.Ready -> when (page) {
-                        Page.HOME -> HomeScreen(identityState.identity, onNavigate = {
+                        Page.HOME -> HomeScreen(identityState.identity, contacts, onNavigate = {
                             if (onVideoCall != null && it in setOf(Page.START_CALL, Page.JOIN_CALL)) onVideoCall() else page = it
                         })
                         Page.SETTINGS -> {
@@ -129,7 +130,7 @@ private fun ColumnScope.WelcomeScreen(save: SaveState, onSaveName: (String) -> U
 }
 
 @Composable
-private fun ColumnScope.HomeScreen(identity: LocalIdentity, onNavigate: (Page) -> Unit) {
+private fun ColumnScope.HomeScreen(identity: LocalIdentity, contacts: List<com.zisee.app.call.Contact>, onNavigate: (Page) -> Unit) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         Brand()
         TextButton(onClick = { onNavigate(Page.SETTINGS) }) { Text(stringResource(R.string.settings)) }
@@ -142,7 +143,15 @@ private fun ColumnScope.HomeScreen(identity: LocalIdentity, onNavigate: (Page) -
     OutlinedButton(onClick = { onNavigate(Page.JOIN_CALL) }, modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 56.dp)) {
         Text(stringResource(R.string.join_call))
     }
-    InfoCard(stringResource(R.string.recent), stringResource(R.string.no_recent_calls))
+    if (contacts.isEmpty()) InfoCard(stringResource(R.string.recent), stringResource(R.string.no_recent_calls))
+    else {
+        Text("最近联系人", style = MaterialTheme.typography.titleMedium)
+        contacts.forEach { contact ->
+            OutlinedButton(onClick = { onNavigate(Page.START_CALL) }, modifier = Modifier.fillMaxWidth()) {
+                Text(contact.displayName, Modifier.weight(1f)); Text("视频联系")
+            }
+        }
+    }
     Text(stringResource(R.string.slogan), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
