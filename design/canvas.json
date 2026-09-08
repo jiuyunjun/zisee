@@ -1,0 +1,95 @@
+{
+  "pages": [
+    { "id": "page-1", "name": "核心流程" },
+    { "id": "page-3", "name": "身份与账户" },
+    { "id": "page-2", "name": "设计系统" }
+  ],
+  "artboards": [
+    { "file": "Main.dc.html", "x": 0, "y": 0, "w": 390, "h": 844, "title": "Home · 发起通话", "page": "page-1" },
+    { "file": "FaceCall.dc.html", "x": 510, "y": 0, "w": 390, "h": 844, "title": "Face Call", "page": "page-1" },
+    { "file": "ShowMe.dc.html", "x": 1020, "y": 0, "w": 390, "h": 844, "title": "Show Me · 主辅画面", "page": "page-1" },
+    { "file": "DualView.dc.html", "x": 1530, "y": 0, "w": 390, "h": 844, "title": "Dual View · 双视角", "page": "page-1" },
+    { "file": "ScreenShare.dc.html", "x": 0, "y": 1000, "w": 390, "h": 844, "title": "Screen Share", "page": "page-1" },
+    { "file": "Annotation.dc.html", "x": 510, "y": 1000, "w": 390, "h": 844, "title": "2D Annotation", "page": "page-1" },
+    { "file": "ARAssist.dc.html", "x": 1020, "y": 1000, "w": 390, "h": 844, "title": "AR Assist · 空间标记", "page": "page-1" },
+    { "file": "Settings.dc.html", "x": 1530, "y": 1000, "w": 390, "h": 990, "title": "设置 · 通话与隐私", "page": "page-1" },
+
+    { "file": "Welcome.dc.html", "x": 0, "y": 0, "w": 390, "h": 844, "title": "首次进入 · 输入姓名", "page": "page-3" },
+    { "file": "Invite.dc.html", "x": 510, "y": 0, "w": 390, "h": 844, "title": "邀请 · 生成", "page": "page-3" },
+    { "file": "InviteOpen.dc.html", "x": 1020, "y": 0, "w": 390, "h": 844, "title": "邀请 · 对方打开", "page": "page-3" },
+    { "file": "Account.dc.html", "x": 1530, "y": 0, "w": 390, "h": 844, "title": "账户 · 仅此设备", "page": "page-3" },
+    { "file": "ResetIdentity.dc.html", "x": 0, "y": 1000, "w": 390, "h": 844, "title": "重置身份 · 警告", "page": "page-3" },
+    { "file": "AccountBound.dc.html", "x": 510, "y": 1000, "w": 390, "h": 844, "title": "账户 · 已绑定与多设备", "page": "page-3" },
+    { "file": "IdentityConflict.dc.html", "x": 1020, "y": 1000, "w": 390, "h": 844, "title": "身份冲突", "page": "page-3" },
+
+    { "file": "Foundations.dc.html", "x": 0, "y": 0, "w": 880, "h": 1240, "title": "设计基础", "page": "page-2" },
+    { "file": "HomeLight.dc.html", "x": 980, "y": 0, "w": 390, "h": 844, "title": "Home · 浅色", "page": "page-2" }
+  ],
+  "annotations": [
+    {
+      "id": "flow-note",
+      "x": 0,
+      "y": -190,
+      "w": 900,
+      "text": "上排是渐进暴露的主线：Home → Face Call → Show Me → Dual View。\n下排是通话中按需展开的协作能力：屏幕共享、2D 标注、AR 空间标记，以及设置。",
+      "page": "page-1"
+    },
+    {
+      "id": "dualview-note",
+      "x": 1530,
+      "y": -190,
+      "w": 390,
+      "text": "Dual View 在竖屏改为上下等分（文档里的示意是左右分屏）。390dp 宽度下左右各 195dp，人脸和现场都太窄。",
+      "page": "page-1"
+    },
+    {
+      "id": "marker-note",
+      "x": 1020,
+      "y": 1900,
+      "w": 390,
+      "text": "标注与 AR 标记统一用暖橙 #FF8A4C，和品牌青色刻意分开，避免用户把「系统状态」和「对方画的东西」混淆。",
+      "page": "page-1"
+    },
+    {
+      "id": "settings-note",
+      "x": 1530,
+      "y": 2046,
+      "w": 390,
+      "text": "设置页顶部新增了账户入口（九云 / 仅此设备），对应 ACCOUNT.md §20。这一屏是可滚动页面，所以画板比其他屏高。",
+      "page": "page-1"
+    },
+    {
+      "id": "identity-note",
+      "x": 0,
+      "y": -190,
+      "w": 900,
+      "text": "Identity First，Account Later：上排是 Phase A/B 就要有的——首次只问一个名字，加人靠邀请而不是搜索用户名。\n身份从第一天起就是 identityId，姓名只是显示名，所以改名不断联系人。",
+      "page": "page-3"
+    },
+    {
+      "id": "later-phase-note",
+      "x": 0,
+      "y": 1900,
+      "w": 900,
+      "text": "下排是 Phase C/D，不阻塞 MVP：绑定账户是「升级现有身份」而不是重新注册，identityId 不变；\n身份冲突第一版不做自动合并，只让用户明确二选一。",
+      "page": "page-3"
+    },
+    {
+      "id": "onlythisdevice-note",
+      "x": 1530,
+      "y": -190,
+      "w": 390,
+      "text": "「仅此设备」代替「匿名账户 / 游客」。卸载可能丢身份这件事如实说，不假装一定能恢复。",
+      "page": "page-3"
+    },
+    {
+      "id": "theme-note",
+      "x": 980,
+      "y": -190,
+      "w": 390,
+      "text": "通话页恒定深色。浅色只作用于 Home / 设置这类非通话页面，品牌青在浅底上压深到 #12898C 以保证对比度。",
+      "page": "page-2"
+    }
+  ],
+  "launch": { "view": "canvas", "page": "page-3" }
+}

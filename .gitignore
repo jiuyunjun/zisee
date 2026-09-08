@@ -12,3 +12,6 @@ local.properties
 .env
 .env.*
 !.env.example
+
+# Claude Design 画布产物，由 design/*.dc.html 重新生成
+design/zisee-mobile-ui.html

@@ -1,0 +1,136 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&amp;family=Roboto:wght@400;500;700&amp;display=swap">
+  <style>
+    body { margin: 0; font-family: 'Roboto','Noto Sans SC',system-ui,-apple-system,'Segoe UI',sans-serif; -webkit-font-smoothing: antialiased; }
+    a { color: #5FD4D6; } a:hover { color: #8AE3E4; }
+  </style>
+</helmet>
+
+<div style="width: 390px; height: 990px; background: #0B0F12; color: #E8EDF0; overflow: hidden; display: flex; flex-direction: column; padding: 56px 20px 34px 20px; box-sizing: border-box;">
+
+  <div style="display: flex; align-items: center; gap: 14px;">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#E8EDF0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"></path></svg>
+    <div style="font-size: 22px; font-weight: 500; letter-spacing: -0.2px;">设置</div>
+  </div>
+
+  <div style="height: 30px;"></div>
+
+  <div style="display: flex; align-items: center; gap: 16px; padding: 18px 20px; background: #12181D; border-radius: 24px;">
+    <div style="width: 52px; height: 52px; border-radius: 26px; background: #1E2A31; color: #C4D0D6; display: flex; align-items: center; justify-content: center; font-size: 19px; font-weight: 500; flex-shrink: 0;">九</div>
+    <div style="display: flex; flex-direction: column; gap: 6px; flex-grow: 1; min-width: 0;">
+      <div style="font-size: 17px; font-weight: 500;">九云</div>
+      <div style="font-size: 12.5px; color: #67757E;">仅此设备</div>
+    </div>
+    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#4E5C65" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0;"><path d="M9 5l7 7-7 7"></path></svg>
+  </div>
+
+  <div style="height: 26px;"></div>
+
+  <div style="font-size: 12px; font-weight: 500; color: #67757E; letter-spacing: 1.6px; padding-left: 4px;">通话</div>
+  <div style="height: 10px;"></div>
+
+  <div style="background: #12181D; border-radius: 24px; padding: 4px 16px; display: flex; flex-direction: column;">
+
+    <div style="padding: 16px 0 18px 0; display: flex; flex-direction: column; gap: 12px;">
+      <div style="font-size: 15px; color: #E8EDF0;">默认画质</div>
+      <div style="display: flex; gap: 4px; padding: 4px; background: rgba(232,237,240,0.06); border-radius: 22px;">
+        <div style="flex-grow: 1; height: 38px; border-radius: 19px; background: #5FD4D6; color: #071518; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 500;">自动</div>
+        <div style="flex-grow: 1; height: 38px; border-radius: 19px; color: #98A6AE; display: flex; align-items: center; justify-content: center; font-size: 14px;">省流</div>
+        <div style="flex-grow: 1; height: 38px; border-radius: 19px; color: #98A6AE; display: flex; align-items: center; justify-content: center; font-size: 14px;">高清</div>
+      </div>
+    </div>
+
+    <div style="height: 1px; background: rgba(232,237,240,0.06);"></div>
+
+    <div style="padding: 18px 0; display: flex; align-items: flex-start; gap: 16px;">
+      <div style="display: flex; flex-direction: column; gap: 5px; flex-grow: 1;">
+        <div style="font-size: 15px; color: #E8EDF0;">弱网时自动省流</div>
+        <div style="font-size: 12.5px; line-height: 1.5; color: #67757E;">网络变差时先降画质，优先保证不断线</div>
+      </div>
+      <div style="width: 52px; height: 32px; border-radius: 16px; background: #5FD4D6; display: flex; align-items: center; justify-content: flex-end; padding: 0 3px; box-sizing: border-box; flex-shrink: 0; margin-top: 2px;">
+        <span style="width: 26px; height: 26px; border-radius: 13px; background: #071518; display: block;"></span>
+      </div>
+    </div>
+
+    <div style="height: 1px; background: rgba(232,237,240,0.06);"></div>
+
+    <div style="padding: 18px 0; display: flex; align-items: center; gap: 16px;">
+      <div style="display: flex; flex-direction: column; gap: 5px; flex-grow: 1;">
+        <div style="font-size: 15px; color: #E8EDF0;">双摄默认行为</div>
+        <div style="font-size: 12.5px; color: #67757E;">接通后询问</div>
+      </div>
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#4E5C65" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0;"><path d="M9 5l7 7-7 7"></path></svg>
+    </div>
+
+    <div style="height: 1px; background: rgba(232,237,240,0.06);"></div>
+
+    <div style="padding: 18px 0; display: flex; align-items: center; gap: 16px;">
+      <div style="font-size: 15px; color: #E8EDF0; flex-grow: 1;">默认使用扬声器</div>
+      <div style="width: 52px; height: 32px; border-radius: 16px; background: #5FD4D6; display: flex; align-items: center; justify-content: flex-end; padding: 0 3px; box-sizing: border-box; flex-shrink: 0;">
+        <span style="width: 26px; height: 26px; border-radius: 13px; background: #071518; display: block;"></span>
+      </div>
+    </div>
+
+    <div style="height: 1px; background: rgba(232,237,240,0.06);"></div>
+
+    <div style="padding: 18px 0; display: flex; align-items: center; gap: 16px;">
+      <div style="font-size: 15px; color: #E8EDF0; flex-grow: 1;">镜像本地前摄画面</div>
+      <div style="width: 52px; height: 32px; border-radius: 16px; background: rgba(232,237,240,0.12); display: flex; align-items: center; padding: 0 3px; box-sizing: border-box; flex-shrink: 0;">
+        <span style="width: 26px; height: 26px; border-radius: 13px; background: #7C8B94; display: block;"></span>
+      </div>
+    </div>
+
+  </div>
+
+  <div style="height: 26px;"></div>
+
+  <div style="font-size: 12px; font-weight: 500; color: #67757E; letter-spacing: 1.6px; padding-left: 4px;">隐私</div>
+  <div style="height: 10px;"></div>
+
+  <div style="background: #12181D; border-radius: 24px; padding: 4px 16px; display: flex; flex-direction: column;">
+
+    <div style="padding: 18px 0; display: flex; align-items: flex-start; gap: 16px;">
+      <div style="display: flex; flex-direction: column; gap: 5px; flex-grow: 1;">
+        <div style="font-size: 15px; color: #E8EDF0;">优先直连</div>
+        <div style="font-size: 12.5px; line-height: 1.5; color: #67757E;">画面尽量不经过服务器中转。无法直连时会自动改用中转，你不需要做任何事。</div>
+      </div>
+      <div style="width: 52px; height: 32px; border-radius: 16px; background: #5FD4D6; display: flex; align-items: center; justify-content: flex-end; padding: 0 3px; box-sizing: border-box; flex-shrink: 0; margin-top: 2px;">
+        <span style="width: 26px; height: 26px; border-radius: 13px; background: #071518; display: block;"></span>
+      </div>
+    </div>
+
+    <div style="height: 1px; background: rgba(232,237,240,0.06);"></div>
+
+    <div style="padding: 18px 0; display: flex; align-items: flex-start; gap: 14px;">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#5FD4D6" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0; margin-top: 1px;"><rect x="4" y="10.5" width="16" height="10.5" rx="3"></rect><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"></path></svg>
+      <div style="display: flex; flex-direction: column; gap: 5px; flex-grow: 1;">
+        <div style="font-size: 15px; color: #E8EDF0;">通话内容不被保存</div>
+        <div style="font-size: 12.5px; line-height: 1.5; color: #67757E;">Zisee 不录制、不分析你的画面和声音。</div>
+      </div>
+    </div>
+
+    <div style="height: 1px; background: rgba(232,237,240,0.06);"></div>
+
+    <div style="padding: 18px 0; display: flex; align-items: center; gap: 16px;">
+      <div style="font-size: 15px; color: #E8EDF0; flex-grow: 1;">通话信息</div>
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#4E5C65" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0;"><path d="M9 5l7 7-7 7"></path></svg>
+    </div>
+
+  </div>
+
+  <div style="flex-grow: 1;"></div>
+
+  <div style="text-align: center; font-size: 11.5px; color: #3E4B53;">Zisee 0.1.0</div>
+
+</div>
+</x-dc>
+</body>
+</html>
