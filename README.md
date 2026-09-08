@@ -15,31 +15,50 @@ See closer, even from afar.
 
 通话与邀请码入口目前显示未开放提示，不创建虚假邀请、联系人或通话记录。没有接入 WebRTC、CameraX、ARCore、MediaProjection、Go 后端、网络认证或 TURN；没有申请相机、麦克风及网络权限。
 
+## 仓库结构
+
+单仓库，按技术栈分顶层目录，各自持有自己的构建入口：
+
+```text
+Zisee/
+├── android/          Android 客户端（Gradle 工程根目录）
+│   ├── gradlew  gradle/  settings.gradle.kts
+│   └── app/
+├── server/           Go 后端（当前为占位，见 server/README.md）
+├── design/           Claude Design 画板源文件（*.dc.html）
+├── docs/             产品、架构、ADR、测试文档
+└── AGENTS.md  ARCHITECTURE.md  DOCS.md
+```
+
+Gradle wrapper 在 `android/` 下，因此所有 Gradle 命令都从 `android/` 执行。Android CI 只在 `android/**` 变更时触发。
+
 ## 开发环境与构建
 
 使用 JDK 17（本机 Android Studio 的较新 JBR 也可验证）、Android SDK Platform 35、Build Tools 35.0.0。最低 Android 8.0 / API 26，compileSdk / targetSdk 暂定 35。
 
 工程固定 Gradle 8.11.1、AGP 8.9.1、Kotlin 2.0.21，以复用当前开发机工具链。AGP 8.9 对应 SDK 35 与 Gradle 8.11.1 的兼容范围见 [Android 官方说明](https://developer.android.com/build/releases/agp-8-9-0-release-notes)。这不是商店发布配置；发布前统一评估目标 SDK、依赖与设备兼容性升级。
 
-1. Android Studio 打开仓库根目录并同步 Gradle。
-2. 设置 `JAVA_HOME` 与 `ANDROID_HOME`；也可让 Android Studio 生成被忽略的 `local.properties`。
-3. 执行：
+1. Android Studio 打开 `android/` 目录（不是仓库根目录）并同步 Gradle。
+2. 设置 `JAVA_HOME` 与 `ANDROID_HOME`；也可让 Android Studio 生成被忽略的 `android/local.properties`。
+3. 在 `android/` 下执行：
 
 ```powershell
+cd android
 .\gradlew.bat :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
 ```
 
 macOS / Linux：
 
 ```sh
+cd android
 ./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
 ```
 
-APK：`app/build/outputs/apk/debug/app-debug.apk`。Debug 包名 `com.zisee.app.debug`；基础包名 `com.zisee.app` 为当前工程默认值，发布前确认。Release 不配置任何签名密钥。
+APK：`android/app/build/outputs/apk/debug/app-debug.apk`。Debug 包名 `com.zisee.app.debug`；基础包名 `com.zisee.app` 为当前工程默认值，发布前确认。Release 不配置任何签名密钥。
 
 ## 代码入口
 
-| 路径（`app/src/main/java/com/zisee/app/` 下） | 职责 |
+| 路径（`android/app/src/main/java/com/zisee/app/` 下） | 职责 |
 |---|---|
 | `MainActivity.kt`、`ui/` | 生命周期感知状态订阅、Compose 页面与主题 |
 | `core/AppContainer.kt` | 手动依赖注入的唯一组装入口，Application 持有 |
