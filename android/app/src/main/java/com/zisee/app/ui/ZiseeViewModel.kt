@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import com.zisee.app.auth.DisplayName
 import com.zisee.app.auth.IdentityRepository
 import com.zisee.app.auth.LocalIdentity
+import com.zisee.app.auth.remote.BackendRunner
+import com.zisee.app.auth.remote.ConnectionState
 import com.zisee.app.core.AppContainer
 import com.zisee.app.core.logging.AppEvent
 import com.zisee.app.core.logging.AppLogger
@@ -29,12 +31,50 @@ data class SaveState(val busy: Boolean = false, val error: SaveError? = null)
 class ZiseeViewModel(
     private val repository: IdentityRepository,
     private val logger: AppLogger,
+    private val backend: BackendRunner? = null,
 ) : ViewModel() {
     private val mutableIdentity = MutableStateFlow<IdentityState>(IdentityState.Loading)
     val identity = mutableIdentity.asStateFlow()
     private val mutableSave = MutableStateFlow(SaveState())
     val save = mutableSave.asStateFlow()
     private var loadJob: Job? = null
+    private val mutableConnection = MutableStateFlow(
+        if (backend == null) ConnectionState.NOT_CONFIGURED else ConnectionState.DISCONNECTED,
+    )
+    val connection = mutableConnection.asStateFlow()
+    private var connectionJob: Job? = null
+    private var connectionRequested = false
+    private var foreground = false
+    private var generation = 0
+
+    fun setForeground(value: Boolean) {
+        foreground = value
+        if (value && connectionRequested) connectBackend() else if (!value) stopConnection()
+    }
+
+    fun connectBackend() {
+        if (backend == null || !foreground || connectionJob?.isActive == true) return
+        val identity = (mutableIdentity.value as? IdentityState.Ready)?.identity ?: return
+        connectionRequested = true
+        val current = ++generation
+        connectionJob = viewModelScope.launch {
+            backend.run(identity) { if (current == generation) mutableConnection.value = it }
+            // Terminal errors require an explicit user retry, even after a foreground transition.
+            if (current == generation) connectionRequested = false
+        }
+    }
+
+    fun disconnectBackend() {
+        connectionRequested = false
+        stopConnection()
+    }
+
+    private fun stopConnection() {
+        generation++
+        connectionJob?.cancel()
+        connectionJob = null
+        mutableConnection.value = if (backend == null) ConnectionState.NOT_CONFIGURED else ConnectionState.DISCONNECTED
+    }
 
     init { load() }
 
@@ -81,7 +121,7 @@ class ZiseeViewModel(
                 override fun <T : ViewModel> create(modelClass: Class<T>): T {
                     require(modelClass.isAssignableFrom(ZiseeViewModel::class.java))
                     @Suppress("UNCHECKED_CAST")
-                    return ZiseeViewModel(container.identityRepository, container.logger) as T
+                    return ZiseeViewModel(container.identityRepository, container.logger, container.backend) as T
                 }
             }
     }

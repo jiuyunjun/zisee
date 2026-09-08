@@ -1575,3 +1575,7 @@ Zisee 的文档遵循：
 
 - [身份协议](docs/protocols/IDENTITY_PROTOCOL.md)：PROTO-IDENTITY-001，Active。
 - [信令会话](docs/architecture/SIGNALING.md)：ARCH-SIGNALING-001，Active。
+
+## Android 后端接入（1.5.0 - 2026-09-08）
+
+[ANDROID_BACKEND.md](docs/development/ANDROID_BACKEND.md)：DEV-ANDROID-BACKEND-001，Active；Keystore、构建配置、前台连接与验证边界。

@@ -1,7 +1,7 @@
 ---
 title: Zisee 身份认证协议 v1
 document_id: PROTO-IDENTITY-001
-version: 1.0.0
+version: 1.1.0
 status: Active
 created: 2026-09-08
 updated: 2026-09-08
@@ -13,7 +13,7 @@ owners:
 
 # 身份认证协议 v1
 
-本协议实现 [ACCOUNT.md](../product/ACCOUNT.md) Phase B 的服务端边界。Android 当前仍是 Phase A，尚未生成 Keystore 设备密钥或调用这些接口。MVP 一个身份对应一个设备；绑定账户、多设备、密钥轮换与恢复后续另行设计。
+本协议实现 [ACCOUNT.md](../product/ACCOUNT.md) Phase B 的服务端边界。Android 已实现 Keystore 认证和开发连接入口，尚未真机联调，见 [接入说明](../development/ANDROID_BACKEND.md)。MVP 一个身份对应一个设备；绑定账户、多设备、密钥轮换与恢复后续另行设计。
 
 传输使用 HTTPS，UTF-8 JSON；HTTP 路径统一带 `/v1`。请求体上限 8 KiB，不接受未知 JSON 字段或多个 JSON 值。认证只接受 `Authorization: Bearer <accessToken>`，不使用 cookie，不接受 URL 查询参数。当前原生客户端专用，带 Origin 的请求被拒绝。
 
@@ -115,3 +115,7 @@ zisee.auth.v1
 ## 1.0.0 - 2026-09-08
 
 - 定义并实现设备公钥认证、幂等 bootstrap、短期会话及本人资料接口。
+
+## 1.1.0 - 2026-09-08
+
+Android 客户端 deviceId 从安装时随机 EC 公钥 DER 的 SHA-256 派生，使用 zdev_ 前缀与 base64url；保留协议格式和稳定性，不使用硬件标识。已实现协议客户端，真机联调待完成。

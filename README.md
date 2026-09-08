@@ -13,7 +13,7 @@ See closer, even from afar.
 - 分离 2D 标注与空间标记请求，保留源视频帧时间戳。
 - 单元测试、Android lint、GitHub Actions 构建配置。
 
-通话与邀请码入口目前显示未开放提示，不创建虚假邀请、联系人或通话记录。没有接入 WebRTC、CameraX、ARCore、MediaProjection、Go 后端、网络认证或 TURN；没有申请相机、麦克风及网络权限。
+通话与邀请码入口目前显示未开放提示，不创建虚假邀请、联系人或通话记录。没有接入 WebRTC、CameraX、ARCore、MediaProjection、Go 后端、网络认证或 TURN；仅声明网络权限，尚未申请相机和麦克风权限。
 
 ## 仓库结构
 
@@ -85,3 +85,5 @@ M0 的完整退出还需要真机安装验证与远端 CI 实际运行。项目�
 下一步是 M1：先落实身份 bootstrap／设备认证及信令协议，再接入单摄 WebRTC 和短期 TURN credential，通过两台真机验证后推进 Show Me。
 
 服务端已实现 Phase B 认证基础，尚未与 Android 联调，参见 [服务端说明](server/README.md)。
+
+Android 设备认证与开发连接入口已实现，尚未真机联调。配置见 [Android 后端接入](docs/development/ANDROID_BACKEND.md)。

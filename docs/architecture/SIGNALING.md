@@ -1,7 +1,7 @@
 ---
 title: Zisee 信令会话基础
 document_id: ARCH-SIGNALING-001
-version: 1.0.0
+version: 1.1.0
 status: Active
 created: 2026-09-08
 updated: 2026-09-08
@@ -53,3 +53,7 @@ Cloud Run WebSocket 仍受请求超时约束，session affinity 仅尽力而为�
 ## 1.0.0 - 2026-09-08
 
 - 定义已实现的认证连接、心跳、连接界限和 Cloud Run 路由约束。
+
+## 1.1.0 - 2026-09-08
+
+Android 已实现认证握手、心跳、令牌更新、有界退避及前后台取消，尚未与 Go 完整联调，见 [接入说明](../development/ANDROID_BACKEND.md)。

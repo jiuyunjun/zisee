@@ -1,5 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="backend_title">开发连接</string>
+    <string name="backend_not_configured">此构建尚未配置服务地址。</string>
+    <string name="backend_disconnected">未连接。可验证当前身份的服务端认证。</string>
+    <string name="backend_authenticating">正在验证设备身份…</string>
+    <string name="backend_connected">认证连接已建立，通话功能尚未开放。</string>
+    <string name="backend_reconnecting">连接中断，稍后自动重试…</string>
+    <string name="backend_conflict">身份已被其他设备密钥登记。现有本地身份已保留。</string>
+    <string name="backend_key_unavailable">设备密钥不可用。为保护现有身份，不会自动替换密钥。</string>
+    <string name="backend_failed">暂时无法完成连接，请检查服务后重试。</string>
+    <string name="backend_connect">验证连接</string>
+    <string name="backend_disconnect">断开连接</string>
     <string name="app_name">咫尺</string>
     <string name="slogan">See closer, even from afar.</string>
     <string name="welcome">欢迎来到 Zisee</string>

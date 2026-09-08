@@ -4,6 +4,11 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+val backendUrl = providers.gradleProperty("zisee.backendUrl").orElse("").get()
+require(backendUrl.isEmpty() || backendUrl.matches(Regex("https://[A-Za-z0-9.-]+(:[0-9]+)?/?"))) {
+    "zisee.backendUrl must be an HTTPS origin without credentials, path or query"
+}
+
 android {
     namespace = "com.zisee.app"
     compileSdk = 35
@@ -14,6 +19,7 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0-dev"
+        buildConfigField("String", "BACKEND_URL", "\"$backendUrl\"")
     }
     buildTypes {
         debug { applicationIdSuffix = ".debug" }
@@ -46,4 +52,8 @@ dependencies {
     implementation(libs.datastore.preferences)
     implementation(libs.coroutines.android)
     testImplementation(libs.junit)
+    implementation(libs.okhttp)
+    testImplementation(libs.mockwebserver)
+    testImplementation(libs.json.test)
+    testImplementation(libs.coroutines.test)
 }

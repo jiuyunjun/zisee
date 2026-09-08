@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import com.zisee.app.BuildConfig
 import com.zisee.app.R
 import com.zisee.app.auth.LocalIdentity
+import com.zisee.app.auth.remote.ConnectionState
 import com.zisee.app.ui.theme.ZiseeTheme
 
 private enum class Page { HOME, SETTINGS, START_CALL, JOIN_CALL }
@@ -49,6 +50,9 @@ fun ZiseeApp(
     saveState: SaveState,
     onSaveName: (String) -> Unit,
     onRetry: () -> Unit,
+    connection: ConnectionState = ConnectionState.NOT_CONFIGURED,
+    onConnect: () -> Unit = {},
+    onDisconnect: () -> Unit = {},
 ) {
     var page by rememberSaveable { mutableStateOf(Page.HOME) }
     BackHandler(enabled = page != Page.HOME) { page = Page.HOME }
@@ -74,6 +78,7 @@ fun ZiseeApp(
                         Page.SETTINGS -> {
                             PageTitle(stringResource(R.string.settings)) { page = Page.HOME }
                             SettingsScreen(identityState.identity, saveState, onSaveName)
+                            if (BuildConfig.DEBUG) BackendPanel(connection, onConnect, onDisconnect)
                         }
                         Page.START_CALL, Page.JOIN_CALL -> {
                             PageTitle(stringResource(if (page == Page.START_CALL) R.string.start_call else R.string.join_call)) {
@@ -84,6 +89,27 @@ fun ZiseeApp(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun BackendPanel(state: ConnectionState, onConnect: () -> Unit, onDisconnect: () -> Unit) {
+    val message = when (state) {
+        ConnectionState.NOT_CONFIGURED -> R.string.backend_not_configured
+        ConnectionState.DISCONNECTED -> R.string.backend_disconnected
+        ConnectionState.AUTHENTICATING -> R.string.backend_authenticating
+        ConnectionState.CONNECTED -> R.string.backend_connected
+        ConnectionState.RECONNECTING -> R.string.backend_reconnecting
+        ConnectionState.CONFLICT -> R.string.backend_conflict
+        ConnectionState.KEY_UNAVAILABLE -> R.string.backend_key_unavailable
+        ConnectionState.FAILED -> R.string.backend_failed
+    }
+    InfoCard(stringResource(R.string.backend_title), stringResource(message))
+    val active = state in setOf(ConnectionState.AUTHENTICATING, ConnectionState.CONNECTED, ConnectionState.RECONNECTING)
+    if (state != ConnectionState.NOT_CONFIGURED) {
+        OutlinedButton(onClick = if (active) onDisconnect else onConnect, modifier = Modifier.fillMaxWidth()) {
+            Text(stringResource(if (active) R.string.backend_disconnect else R.string.backend_connect))
         }
     }
 }

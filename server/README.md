@@ -1,6 +1,6 @@
 # Zisee server
 
-Go 控制面：已实现 Phase B 服务端认证、PostgreSQL 持久化与认证 WebSocket 心跳。Android、邀请、SDP/ICE、TURN 尚未接入，尚未部署 Cloud Run。
+Go 控制面：已实现 Phase B 服务端认证、PostgreSQL 持久化与认证 WebSocket 心跳。Android 已实现开发认证客户端，尚未完整联调；邀请、SDP/ICE、TURN 尚未接入，尚未部署 Cloud Run。
 
 ## 运行
 

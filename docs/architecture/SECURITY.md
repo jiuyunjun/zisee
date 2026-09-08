@@ -1,7 +1,7 @@
 ---
 title: Zisee M0 安全基线
 document_id: ARCH-SECURITY-001
-version: 1.1.0
+version: 1.2.0
 status: Active
 created: 2026-09-08
 updated: 2026-09-08
@@ -17,7 +17,7 @@ Android 当前仅实现 [账户设计](../product/ACCOUNT.md) Phase A。本地 `
 
 身份创建与改名通过 DataStore 串行事务完成；重复创建不会覆盖原身份。读写失败通过 UI 明示，损坏或缺少字段的已有记录不会自动重置。卸载／清除数据会失去未绑定身份。
 
-Manifest 禁用明文流量、云备份及设备迁移数据，当前不声明摄像头、录音、网络等权限。媒体尚未接入，不应声称已经实现加密通话或设备能力检测。后续权限必须由用户触发具体功能后申请。
+Manifest 禁用明文流量、云备份及设备迁移数据，当前声明 INTERNET 用于开发认证连接，不声明摄像头或录音权限。媒体尚未接入，不应声称已经实现加密通话或设备能力检测。后续权限必须由用户触发具体功能后申请。
 
 日志使用固定事件枚举，不输出姓名、身份字段、异常消息、SDP、ICE candidate、凭据或媒体。未来遥测也必须先定义允许记录的字段。
 
@@ -38,3 +38,7 @@ Manifest 禁用明文流量、云备份及设备迁移数据，当前不声明�
 ## 1.1.0 - 2026-09-08
 
 服务端已实现公钥认证、原子 bootstrap、一次性挑战和仅存哈希的短期 token，见 [身份协议](../protocols/IDENTITY_PROTOCOL.md)。尚未公网部署或 Android Keystore 联调。
+
+## 1.2.0 - 2026-09-08
+
+Android 新增 INTERNET、Keystore 签名与内存短期 token。只允许构建时 HTTPS origin、禁止重定向；密钥丢失不自动替换，后台取消连接。详见 [接入说明](../development/ANDROID_BACKEND.md)。

@@ -22,9 +22,21 @@ class MainActivity : ComponentActivity() {
         setContent {
             val identity by viewModel.identity.collectAsStateWithLifecycle()
             val save by viewModel.save.collectAsStateWithLifecycle()
+            val connection by viewModel.connection.collectAsStateWithLifecycle()
             ZiseeTheme {
-                ZiseeApp(identity, save, viewModel::saveName, viewModel::load)
+                ZiseeApp(identity, save, viewModel::saveName, viewModel::load,
+                    connection, viewModel::connectBackend, viewModel::disconnectBackend)
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        viewModel.setForeground(true)
+    }
+
+    override fun onStop() {
+        viewModel.setForeground(false)
+        super.onStop()
     }
 }
