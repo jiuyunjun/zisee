@@ -16,6 +16,7 @@ import com.zisee.app.call.state.CallState
 import com.zisee.app.core.AppContainer
 import com.zisee.app.core.logging.AppEvent
 import com.zisee.app.core.logging.FailureReason
+import com.zisee.app.invite.InviteLink
 import com.zisee.app.rtc.IceState
 import com.zisee.app.rtc.MediaStats
 import com.zisee.app.rtc.NativeRtcSession
@@ -44,6 +45,7 @@ data class CallUiState(
     val status: String = "邀请朋友开始视频通话，或输入对方的邀请码。",
     val machine: CallState = CallState(), val local: VideoFeed? = null, val remote: VideoFeed? = null,
     val muted: Boolean = false, val stats: MediaStats = MediaStats(),
+    val pendingInvite: String = "",
 )
 
 /** Serial foreground call owner. Backgrounding cancels capture and ends the remote call. */
@@ -57,7 +59,9 @@ class CallViewModel(application: Application, private val container: AppContaine
     private var foreground = false
 
     fun open(identity: LocalIdentity) {
-        if (job != null) return
+        // Returning here leaves this.identity unset, which would later make begin() refuse the
+        // call with nothing on screen to explain it.
+        if (job != null) return notStarted("open_during_call")
         this.identity = identity
         mutable.value = CallUiState(visible = true, status = if (container.backendApi == null)
             "尚未配置通话服务器。请安装已配置服务器的测试版本。" else "邀请朋友开始视频通话，或输入对方的邀请码。")
@@ -70,10 +74,20 @@ class CallViewModel(application: Application, private val container: AppContaine
     fun permissionsDenied() { mutable.update { it.copy(status = "视频通话需要摄像头和麦克风权限，请允许后重试。") } }
     fun createInvite() = begin(null)
     fun join(invite: String) {
-        if (!invite.matches(Regex("[A-Za-z0-9_-]{43}"))) {
-            mutable.update { it.copy(status = "请输入完整的邀请码。") }; return
+        val token = InviteLink.token(invite)
+        if (token == null) {
+            mutable.update { it.copy(status = "请输入完整的邀请码或邀请链接。") }; return
         }
-        begin(invite)
+        begin(token)
+    }
+
+    /**
+     * Fills in a code that arrived from a scanned or opened link. Placing the call stays an
+     * explicit tap: a link must never be able to switch on the camera by itself.
+     */
+    fun prefill(invite: String) {
+        val token = InviteLink.token(invite) ?: return
+        mutable.update { it.copy(pendingInvite = token, status = "已填入邀请码，点\u201C呼叫对方\u201D开始通话。") }
     }
     fun toggleMute() {
         val current = rtc ?: return
@@ -87,10 +101,17 @@ class CallViewModel(application: Application, private val container: AppContaine
         }
     }
 
+    /**
+     * Every refusal below used to be a bare return, so a tap that started nothing looked identical
+     * to a tap that was never delivered. Naming them costs one line and one log each.
+     */
+    private fun notStarted(reason: String) = container.logger.info(AppEvent.CALL_NOT_STARTED, reason)
+
     private fun begin(invite: String?) {
-        val api = container.backendApi ?: return
-        val identity = identity ?: return
-        if (!foreground || job != null) return
+        val api = container.backendApi ?: return notStarted("no_backend")
+        val identity = identity ?: return notStarted("no_identity")
+        if (!foreground) return notStarted("background")
+        if (job != null) return notStarted("call_in_progress")
         while (commands.tryReceive().isSuccess) { /* Clear previous call actions. */ }
         mutable.value = CallUiState(visible = true, busy = true, status = "正在连接…")
         job = viewModelScope.launch {
