@@ -62,9 +62,12 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     val remotePresentation = MutableStateFlow(CameraPresentation(CameraMode.FACE, true))
     private var presentationMode = CameraMode.FACE
     private var cameraEnabled = true
-    private var frontName: String? = null
+    @Volatile private var frontName: String? = null
+    /** A device with no front camera can never leave the rear-only presentation. */
+    val hasFrontCamera: Boolean get() = frontName != null
     private var backName: String? = null
     private var frontSupportsFullHd = false
+    private var frontSupports60 = false
     private var dualCapture: DualCameraCapture? = null
     @Volatile private var cameraClosed: CompletableDeferred<Unit>? = null
     private val deviceOrientation = DeviceOrientation(context) { rotation ->
@@ -176,22 +179,25 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         val enumerator: CameraEnumerator = if (Camera2Enumerator.isSupported(context)) Camera2Enumerator(context) else Camera1Enumerator(true)
         val name = enumerator.deviceNames.firstOrNull { enumerator.isFrontFacing(it) }
             ?: enumerator.deviceNames.firstOrNull() ?: throw IOException("camera_unavailable")
-        val supportsFullHd = try {
+        fun capturesFullHdAt(fps: Int) = try {
             enumerator.getSupportedFormats(name)?.any {
-                it.width == 1920 && it.height == 1080 && it.framerate.max >= 30_000
+                it.width == 1920 && it.height == 1080 && it.framerate.max >= fps * 1_000
             } == true
         } catch (error: RuntimeException) {
             logger.error(AppEvent.RTC_CAPABILITY_UNAVAILABLE)
             false
         }
+        val supportsFullHd = capturesFullHdAt(30)
+        val supports60 = supportsFullHd && capturesFullHdAt(60)
         frontSupportsFullHd = supportsFullHd
+        frontSupports60 = supports60
         frontName = name.takeIf { enumerator.isFrontFacing(it) }
         backName = enumerator.deviceNames.firstOrNull { enumerator.isBackFacing(it) }
         if (frontName == null) {
             presentationMode = CameraMode.BACK_ONLY
             showMe.value = ShowMeState(CameraMode.BACK_ONLY, "此设备仅有后摄")
         }
-        qualityPolicy = VideoQualityPolicy(supportsFullHd, preferFullHd = true)
+        qualityPolicy = VideoQualityPolicy(supportsFullHd, preferFullHd = true, supports60 = supports60)
         localFeed = VideoFeed(shared, enumerator.isFrontFacing(name))
         remoteFeed = VideoFeed(shared, false) {
             logger.info(AppEvent.RTC_FIRST_FRAME_MS, ((System.nanoTime() - startedNanos) / 1_000_000).toString())
@@ -475,7 +481,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 if (presentationMode == CameraMode.BACK_ONLY) switchSingle(requireNotNull(frontName))
                 else requireNotNull(camera).startCapture(1280, 720, 30)
                 localFeed?.setMirrored(true)
-                qualityPolicy = VideoQualityPolicy(frontSupportsFullHd, preferFullHd = true)
+                qualityPolicy = VideoQualityPolicy(frontSupportsFullHd, preferFullHd = true, supports60 = frontSupports60)
                 presentationMode = CameraMode.FACE
                 showMe.value = ShowMeState(CameraMode.FACE)
             } else {

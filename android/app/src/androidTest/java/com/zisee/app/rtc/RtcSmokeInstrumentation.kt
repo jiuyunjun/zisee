@@ -174,17 +174,26 @@ class RtcSmokeInstrumentation : Instrumentation() {
                 delay(100)
             }
             output.putString("iceRestart", "PASS: new credentials and continued decoded frames")
-            val beforeSwitch = receivedFrames.get()
-            session.toggleShowMe(preferDual = false)
-            output.putString("rearMode", session.showMe.value.mode.name)
             output.putString("cameraEvents", events.joinToString { it.name })
-            check(session.showMe.value.mode == CameraMode.BACK_ONLY)
-            withTimeout(5_000) { while (receivedFrames.get() < beforeSwitch + 10) delay(100) }
-            session.toggleShowMe(preferDual = false)
-            check(session.showMe.value.mode == CameraMode.FACE)
-            val afterSwitch = receivedFrames.get()
-            withTimeout(5_000) { while (receivedFrames.get() < afterSwitch + 10) delay(100) }
-            output.putString("cameraSwitch", "PASS: rear and front decoded without renegotiation")
+            // An emulator image without a front camera starts rear-only and can never leave it, so
+            // there is no switch to exercise. Asserting one turned a device limit into a failure.
+            if (!session.hasFrontCamera) {
+                output.putString("cameraSwitch", "SKIP: device has no front camera")
+            } else {
+                val beforeSwitch = receivedFrames.get()
+                session.toggleShowMe(preferDual = false)
+                output.putString("rearMode", session.showMe.value.mode.name)
+                check(session.showMe.value.mode == CameraMode.BACK_ONLY)
+                withTimeout(5_000) { while (receivedFrames.get() < beforeSwitch + 10) delay(100) }
+                session.toggleShowMe(preferDual = false)
+                // A refusal carries its reason in the state; report it rather than only that it failed.
+                output.putString("frontMode", session.showMe.value.mode.name)
+                output.putString("frontMessage", session.showMe.value.message)
+                check(session.showMe.value.mode == CameraMode.FACE)
+                val afterSwitch = receivedFrames.get()
+                withTimeout(5_000) { while (receivedFrames.get() < afterSwitch + 10) delay(100) }
+                output.putString("cameraSwitch", "PASS: rear and front decoded without renegotiation")
+            }
 
         } finally {
             withContext(NonCancellable) {
