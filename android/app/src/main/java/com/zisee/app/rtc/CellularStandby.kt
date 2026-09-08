@@ -27,7 +27,13 @@ class CellularStandby(context: Context, private val logger: AppLogger) {
                 .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
                 .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(), callback)
             registered = true
-            logger.info(AppEvent.RTC_CELLULAR_STANDBY, "requested")
+            // "requested" only says the request was filed. A request that is never satisfied leaves
+            // no warm cellular path to hand over to, and looked identical in logs to a warm one.
+            val cellular = manager.allNetworks.any { network ->
+                manager.getNetworkCapabilities(network)
+                    ?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true
+            }
+            logger.info(AppEvent.RTC_CELLULAR_STANDBY, if (cellular) "requested" else "requested_no_cellular")
         } catch (error: RuntimeException) {
             logger.error(AppEvent.RTC_CELLULAR_STANDBY_FAILED)
         }

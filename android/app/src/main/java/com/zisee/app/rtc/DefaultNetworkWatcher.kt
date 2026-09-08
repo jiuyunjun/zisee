@@ -3,6 +3,7 @@ package com.zisee.app.rtc
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.NetworkCapabilities
 import com.zisee.app.core.logging.AppEvent
 import com.zisee.app.core.logging.AppLogger
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,19 +18,37 @@ class DefaultNetworkWatcher(context: Context, private val logger: AppLogger) {
     private var initialized = false
     private var registered = false
     private var closed = false
+    private var validated = true
     private val callback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) = changed(network)
         override fun onLost(network: Network) {
             synchronized(this@DefaultNetworkWatcher) { if (active == network) changed(null) }
+        }
+        /**
+         * Walking out of Wi-Fi range rarely changes the default route straight away: the network
+         * stays connected and simply stops working, and the system takes its time before handing
+         * over to cellular. Waiting for that handover leaves media on a path that no longer
+         * carries it. Losing validation is the earliest reliable signal that this route is done.
+         */
+        override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+            synchronized(this@DefaultNetworkWatcher) {
+                if (closed || !initialized || network != active) return
+                val usable = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                if (validated && !usable) {
+                    validated = false
+                    changes.value++
+                    logger.info(AppEvent.RTC_NETWORK_CHANGED, "unvalidated")
+                } else if (usable) validated = true
+            }
         }
     }
     @Synchronized private fun changed(network: Network?) {
         if (closed) return
         if (initialized && active != network) {
             changes.value++
-            logger.info(AppEvent.RTC_NETWORK_CHANGED)
+            logger.info(AppEvent.RTC_NETWORK_CHANGED, "route")
         }
-        active = network; initialized = true
+        active = network; initialized = true; validated = true
     }
     fun start() {
         try { manager.registerDefaultNetworkCallback(callback); registered = true }
