@@ -7,7 +7,7 @@ enum class AppEvent { RTC_NETWORK_CHANGED, RTC_NETWORK_MONITOR_FAILED, RTC_ICE_R
     RTC_CELLULAR_STANDBY, RTC_CELLULAR_STANDBY_FAILED,
     RTC_NATIVE_ERROR, RTC_BIND_FAILED, RTC_SOCKET_FAILED, RTC_CODEC_FAILED,
     RTC_CAPABILITY_UNAVAILABLE, RTC_STATS_UNAVAILABLE, RTC_QUALITY_REJECTED, RTC_QUALITY_CHANGED, RTC_MEDIA_FAILED, RTC_RELEASE_FAILED, CALL_FAILED, CALL_CLEANUP_FAILED,
-    RTC_ICE_STATE, RTC_SELECTED_CANDIDATE, RTC_SETUP_MS, RTC_FIRST_FRAME_MS, CALL_NOT_STARTED }
+    RTC_ICE_STATE, RTC_SDP_FAILED, RTC_SELECTED_CANDIDATE, RTC_SETUP_MS, RTC_FIRST_FRAME_MS, CALL_NOT_STARTED }
 
 interface AppLogger {
     /** [reason] must come from [FailureReason.of] so only code-authored identifiers are recorded. */
@@ -38,7 +38,9 @@ object FailureReason {
     private val codes = setOf(
         // NativeRtcSession
         "peer_creation_failed", "camera_unavailable", "audio_focus_denied", "audio_route_failed",
-        "sdp_create_failed", "sdp_set_failed", "local_description_missing", "no_ice_candidates",
+        "sdp_create_failed", "local_description_missing", "no_ice_candidates",
+        "sdp_set_local_offer_failed", "sdp_set_local_answer_failed", "sdp_rollback_failed",
+        "sdp_set_remote_offer_failed", "sdp_set_remote_answer_failed",
         "screen_not_available", "initial_negotiation_only",
         // MediaSignaling
         "signaling_closed", "signaling_send", "signaling_timeout",

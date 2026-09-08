@@ -6,6 +6,8 @@ import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
 import android.os.PowerManager
+import android.util.Log
+import com.zisee.app.BuildConfig
 import com.zisee.app.call.IceServerConfig
 import com.zisee.app.core.logging.AppEvent
 import com.zisee.app.core.logging.AppLogger
@@ -140,6 +142,13 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         }
         val config = PeerConnection.RTCConfiguration(servers).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
+            // One transport for every m-section. The default balanced policy gathers per transport
+            // until the answer confirms bundling, so each network candidate is reported once per
+            // m-section. Show Me took the call from two m-sections to four (front video, rear
+            // video, control channel, audio), which doubled that fan-out into the bounded candidate
+            // list and could exhaust it on a phone with several interfaces and a relay.
+            bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
+            rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
             iceTransportsType = PeerConnection.IceTransportsType.ALL
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
             candidateNetworkPolicy = PeerConnection.CandidateNetworkPolicy.ALL
@@ -270,11 +279,28 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         setDescription(SessionDescription(SessionDescription.Type.fromCanonicalForm(type), sdp), local = false)
     }
 
+    /**
+     * "sdp_set_failed" alone cannot say which of the five set sites failed, which left a real
+     * device failure undiagnosable. The call site and the signaling state going in are both
+     * bounded identifiers, so they can be recorded without admitting SDP into the log.
+     */
     private suspend fun setDescription(sdp: SessionDescription, local: Boolean) = withTimeout(10_000) {
+        val code = when {
+            sdp.type == SessionDescription.Type.ROLLBACK -> "sdp_rollback_failed"
+            local && sdp.type == SessionDescription.Type.OFFER -> "sdp_set_local_offer_failed"
+            local -> "sdp_set_local_answer_failed"
+            sdp.type == SessionDescription.Type.OFFER -> "sdp_set_remote_offer_failed"
+            else -> "sdp_set_remote_answer_failed"
+        }
+        // Read the state here, on the RTC executor, rather than from the native callback thread.
+        val before = requireNotNull(peer).signalingState().name
         suspendCancellableCoroutine<Unit> { continuation ->
             val observer = object : DescriptionObserver() {
                 override fun onSetSuccess() { if (continuation.isActive) continuation.resume(Unit) }
-                override fun onSetFailure(error: String) { if (continuation.isActive) continuation.resumeWithException(IOException("sdp_set_failed")) }
+                override fun onSetFailure(error: String) {
+                    logger.info(AppEvent.RTC_SDP_FAILED, "$code from=$before")
+                    if (continuation.isActive) continuation.resumeWithException(IOException(code))
+                }
             }
             if (local) requireNotNull(peer).setLocalDescription(observer, sdp) else requireNotNull(peer).setRemoteDescription(observer, sdp)
         }
@@ -589,12 +615,17 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(context)
                 .setEnableInternalTracer(false)
                 .setInjectableLogger({ message, severity, _ ->
-                    if (severity == Logging.Severity.LS_ERROR) logger.error(when {
-                        message.contains("bind", ignoreCase = true) -> AppEvent.RTC_BIND_FAILED
-                        message.contains("socket", ignoreCase = true) -> AppEvent.RTC_SOCKET_FAILED
-                        message.contains("codec", ignoreCase = true) -> AppEvent.RTC_CODEC_FAILED
-                        else -> AppEvent.RTC_NATIVE_ERROR
-                    })
+                    if (severity == Logging.Severity.LS_ERROR) {
+                        logger.error(when {
+                            message.contains("bind", ignoreCase = true) -> AppEvent.RTC_BIND_FAILED
+                            message.contains("socket", ignoreCase = true) -> AppEvent.RTC_SOCKET_FAILED
+                            message.contains("codec", ignoreCase = true) -> AppEvent.RTC_CODEC_FAILED
+                            else -> AppEvent.RTC_NATIVE_ERROR
+                        })
+                        // The event name alone cannot explain a negotiation failure. The text is
+                        // free-form and may quote SDP, so it stays out of release builds.
+                        if (BuildConfig.DEBUG) Log.e("ZiseeNative", message.take(400))
+                    }
                 }, Logging.Severity.LS_ERROR)
                 .createInitializationOptions())
             initialized = true
