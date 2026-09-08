@@ -2,7 +2,7 @@
 
 Zisee 后端服务。**当前为空目录占位，没有任何实现。**
 
-部署平台已确定为 **GCP Cloud Run**，已创建项目 `zisee-app`（显示名称 Zisee）。当前账单关联因配额限制失败，尚未部署服务。状态与恢复步骤见 [部署准备](../docs/operations/DEPLOYMENT.md)。
+部署平台已确定为 **GCP Cloud Run**，已创建项目 `zisee-app`（显示名称 Zisee）。账单已关联，Cloud Run、Cloud Build 和 Artifact Registry API 已启用，尚未部署服务。状态与后续步骤见 [部署准备](../docs/operations/DEPLOYMENT.md)。
 
 ## 定位
 

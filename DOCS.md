@@ -861,7 +861,7 @@ Active
 
 `document_id`：`OPS-DEPLOYMENT-001`
 
-用途：Cloud Run 部署目标、项目准备状态、账单配额阻塞与恢复步骤。
+用途：Cloud Run 部署目标、项目准备状态与后续部署步骤。
 
 状态：Active
 
@@ -1535,6 +1535,10 @@ Zisee 的文档遵循：
 ---
 
 # Changelog
+
+## 1.3.1 - 2026-09-08
+
+- 同步部署文档索引：账单阻塞已解除，Cloud Run 构建部署 API 已启用。
 
 ## 1.3.0 - 2026-09-08
 
