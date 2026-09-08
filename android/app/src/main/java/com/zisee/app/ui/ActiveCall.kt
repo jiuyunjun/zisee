@@ -7,6 +7,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -28,6 +29,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.vector.PathParser
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
@@ -37,6 +39,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowInsetsControllerCompat
@@ -45,6 +48,7 @@ import com.zisee.app.call.CallUiState
 import com.zisee.app.call.state.CallPhase
 import com.zisee.app.rtc.CameraMode
 import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 
 // Foundations.dc.html tokens. Every call surface draws from this palette only.
 private val CallInk = Color(0xFF0B0F12)
@@ -76,6 +80,9 @@ private fun label(tile: String) = when (tile) {
 private val DockShape = RoundedCornerShape(32.dp)
 private val ButtonShape = RoundedCornerShape(28.dp)
 private val PipShape = RoundedCornerShape(20.dp)
+// A parked thumbnail keeps only the rounded edge that faces the picture.
+private val HandleLeftShape = RoundedCornerShape(topEnd = 7.dp, bottomEnd = 7.dp)
+private val HandleRightShape = RoundedCornerShape(topStart = 7.dp, bottomStart = 7.dp)
 
 /** FaceCall.dc.html / ShowMe.dc.html: content first, translucent controls, lower-right PiP. */
 @Composable
@@ -86,6 +93,10 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
     var interaction by remember { mutableLongStateOf(0L) }
     var more by remember { mutableStateOf(false) }
     var chosen by remember { mutableStateOf<String?>(null) }
+    // Where the viewer has dragged each thumbnail, as an offset from its stacked position.
+    var moved by remember { mutableStateOf(mapOf<String, Offset>()) }
+    // Thumbnails parked off an edge, and which edge each went to.
+    var parked by remember { mutableStateOf(mapOf<String, Boolean>()) }
     var duration by remember { mutableLongStateOf(0L) }
     var tipInset by remember { mutableStateOf(0.dp) }
     val density = LocalDensity.current
@@ -174,30 +185,68 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
             val thumbWidth = minOf(when (thumbs.size) { 1 -> 104.dp; 2 -> 96.dp; else -> 88.dp }, maxWidth * 0.28f)
             val thumbHeight = minOf(when (thumbs.size) { 1 -> 148.dp; 2 -> 136.dp; else -> 124.dp },
                 (maxHeight - 220.dp) / thumbs.size.coerceAtLeast(1))
+            val edge = with(density) { 16.dp.toPx() }
+            val travel = with(density) { (maxWidth - thumbWidth - 32.dp).toPx() }
+            fun footing(tile: String) = 132.dp + tipInset + (thumbHeight + 8.dp) * thumbs.indexOf(tile)
+            // A thumbnail may be dragged anywhere on screen, so it is held inside the edges rather
+            // than allowed off them.
+            // Dragging past an edge is allowed, by half a thumbnail, so that pushing one off the
+            // side is a way to park it rather than something the clamp refuses.
+            val overshoot = with(density) { thumbWidth.toPx() } / 2
+            fun inside(tile: String, raw: Offset): Offset {
+                val base = with(density) { footing(tile).toPx() }
+                val above = with(density) { (maxHeight - thumbHeight).toPx() } - base - edge * 3
+                return Offset(raw.x.coerceIn(-travel - overshoot, overshoot), raw.y.coerceIn(-above, base - edge))
+            }
+            // Released near an edge it settles against it, so thumbnails stay off the middle of the
+            // picture without the viewer having to place them precisely. Released past one it parks
+            // there instead, leaving only a handle.
+            fun settled(tile: String, raw: Offset): Offset {
+                val held = inside(tile, raw)
+                val park = overshoot / 2
+                parked = when {
+                    held.x > park -> parked + (tile to false)
+                    held.x < -travel - park -> parked + (tile to true)
+                    else -> parked - tile
+                }
+                return Offset(if (held.x < -travel / 2) -travel else 0f, held.y)
+            }
             fun slot(tile: String): Modifier {
                 if (tile == main) return Modifier.fillMaxSize()
-                val index = thumbs.indexOf(tile)
+                parked[tile]?.let { left ->
+                    val drag = moved[tile] ?: Offset.Zero
+                    return Modifier.align(if (left) Alignment.BottomStart else Alignment.BottomEnd)
+                        .safeDrawingPadding().padding(bottom = footing(tile))
+                        .offset { IntOffset(0, drag.y.roundToInt()) }
+                        .size(14.dp, 56.dp)
+                        .clip(if (left) HandleLeftShape else HandleRightShape)
+                        .background(DockInk.copy(alpha = 0.82f))
+                        .border(1.dp, CallText.copy(alpha = 0.16f),
+                            if (left) HandleLeftShape else HandleRightShape)
+                }
+                val drag = moved[tile] ?: Offset.Zero
                 // Stacked upward from the dock, so the tip and controls keep their designed footing.
                 return Modifier.align(Alignment.BottomEnd).safeDrawingPadding()
-                    .padding(end = 16.dp, bottom = 132.dp + tipInset + (thumbHeight + 8.dp) * index)
+                    .padding(end = 16.dp, bottom = footing(tile))
+                    .offset { IntOffset(drag.x.roundToInt(), drag.y.roundToInt()) }
                     .size(thumbWidth, thumbHeight).clip(PipShape)
                     .border(1.dp, CallText.copy(alpha = 0.16f), PipShape)
             }
             // Fixed call sites keep each renderer's node identity across a swap. Moving a renderer
             // between parents would recreate its surface and flash black.
             if (MeFace in order) {
-                VideoTile(state.local, state.cameraEnabled, slot(MeFace), MeFace != main)
+                VideoTile(state.local, state.cameraEnabled && MeFace !in parked, slot(MeFace), MeFace != main)
             }
             if (MeScene in order) {
                 VideoTile(if (state.showMe.mode == CameraMode.DUAL) state.localBack else state.local,
-                    state.cameraEnabled, slot(MeScene), MeScene != main)
+                    state.cameraEnabled && MeScene !in parked, slot(MeScene), MeScene != main)
             }
             if (PeerFace in order) {
-                VideoTile(state.remote, state.remotePresentation.enabled, slot(PeerFace), PeerFace != main)
+                VideoTile(state.remote, state.remotePresentation.enabled && PeerFace !in parked, slot(PeerFace), PeerFace != main)
             }
             if (PeerScene in order) {
                 VideoTile(if (state.remotePresentation.mode == CameraMode.DUAL) state.remoteBack else state.remote,
-                    state.remotePresentation.enabled, slot(PeerScene), PeerScene != main)
+                    state.remotePresentation.enabled && PeerScene !in parked, slot(PeerScene), PeerScene != main)
             }
             val mainIsPeer = main == PeerFace || main == PeerScene
             if (mainIsPeer && !state.remotePresentation.enabled) {
@@ -210,12 +259,33 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
             }
             // Tapping a thumbnail promotes it; the previous main view takes its place.
             thumbs.forEach { tile ->
-                Box(slot(tile).clickable { chosen = tile; interaction++; onHintSeen() }
-                    .semantics { contentDescription = "将${label(tile)}切换为主画面" }) {
-                    PipLabel(if (tile == MeFace && !state.cameraEnabled) "画面已关闭" else label(tile))
-                    Box(Modifier.align(Alignment.TopEnd).padding(6.dp).size(24.dp).clip(CircleShape)
-                        .background(BadgeInk.copy(alpha = 0.66f)), contentAlignment = Alignment.Center) {
-                        Canvas(Modifier.size(13.dp)) { scale(size.width / 24f, size.width / 24f, Offset.Zero) { callIcon("swap", CallText) } }
+                Box(slot(tile)
+                    .pointerInput(tile, main, thumbs.size, tipInset) {
+                        detectDragGestures(
+                            onDrag = { change, delta ->
+                                change.consume()
+                                moved = moved + (tile to inside(tile, (moved[tile] ?: Offset.Zero) + delta))
+                            },
+                            onDragEnd = { moved = moved + (tile to settled(tile, moved[tile] ?: Offset.Zero)) },
+                        )
+                    }
+                    .clickable {
+                        interaction++; onHintSeen()
+                        // A handle restores the thumbnail; a thumbnail becomes the main view.
+                        if (tile in parked) { parked = parked - tile; moved = moved - tile }
+                        else chosen = tile
+                    }
+                    .semantics {
+                        contentDescription = if (tile in parked) "展开${label(tile)}"
+                            else "将${label(tile)}切换为主画面"
+                    }) {
+                    // A parked handle is too narrow for a label or a badge; it is just the edge.
+                    if (tile !in parked) {
+                        PipLabel(if (tile == MeFace && !state.cameraEnabled) "画面已关闭" else label(tile))
+                        Box(Modifier.align(Alignment.TopEnd).padding(6.dp).size(24.dp).clip(CircleShape)
+                            .background(BadgeInk.copy(alpha = 0.66f)), contentAlignment = Alignment.Center) {
+                            Canvas(Modifier.size(13.dp)) { scale(size.width / 24f, size.width / 24f, Offset.Zero) { callIcon("swap", CallText) } }
+                        }
                     }
                 }
             }
