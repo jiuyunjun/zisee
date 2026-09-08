@@ -12,8 +12,11 @@ import (
 	"time"
 
 	"zisee/server/internal/config"
+	"zisee/server/internal/firestore"
 	"zisee/server/internal/httpapi"
+	"zisee/server/internal/identity"
 	"zisee/server/internal/postgres"
+	"zisee/server/internal/turn"
 )
 
 func main() {
@@ -25,6 +28,23 @@ func main() {
 	}
 }
 
+// openStore selects the backing store. Firestore wins when a project is set so
+// a Cloud Run deployment needs no database URL at all.
+func openStore(ctx context.Context, cfg config.Config) (identity.Store, func(), error) {
+	if cfg.UsesFirestore() {
+		store, err := firestore.Open(ctx, cfg.FirestoreProject, cfg.FirestoreDatabase)
+		if err != nil {
+			return nil, nil, err
+		}
+		return store, store.Close, nil
+	}
+	store, err := postgres.Open(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	return store, store.Close, nil
+}
+
 func run(logger *slog.Logger) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -34,15 +54,22 @@ func run(logger *slog.Logger) error {
 	root, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	connectCtx, cancel := context.WithTimeout(root, 10*time.Second)
-	store, err := postgres.Open(connectCtx, cfg.DatabaseURL)
+	store, closeStore, err := openStore(connectCtx, cfg)
 	cancel()
 	if err != nil {
 		logger.Error("database_unavailable")
 		return err
 	}
-	defer store.Close()
+	defer closeStore()
+	api := httpapi.New(store, logger)
+	if cfg.TurnConfigured() {
+		api = api.WithTurn(turn.New(cfg.TurnKeyID, cfg.TurnAPIToken))
+		logger.Info("turn_enabled")
+	} else {
+		logger.Info("turn_not_configured")
+	}
 	server := &http.Server{
-		Addr: cfg.Address, Handler: httpapi.New(store, logger).Handler(),
+		Addr: cfg.Address, Handler: api.Handler(),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second,
 		WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 * 1024,
 		BaseContext: func(net.Listener) context.Context { return root },

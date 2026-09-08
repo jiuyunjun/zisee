@@ -15,12 +15,17 @@ import (
 	"github.com/coder/websocket"
 	"zisee/server/internal/call"
 	"zisee/server/internal/identity"
+	"zisee/server/internal/turn"
 )
+
+// One hour covers a long call plus an ICE restart without re-issuing.
+const iceTTL = time.Hour
 
 type Server struct {
 	auth     *identity.Service
 	store    identity.Store
 	log      *slog.Logger
+	turn     *turn.Client
 	sockets  chan struct{}
 	mu       sync.Mutex
 	window   time.Time
@@ -31,11 +36,20 @@ func New(store identity.Store, log *slog.Logger) *Server {
 	return &Server{auth: identity.New(store), store: store, log: log, sockets: make(chan struct{}, 64)}
 }
 
+// WithTurn enables issuing Cloudflare TURN credentials. Without it the ICE
+// endpoint serves STUN only and calls still connect directly.
+func (s *Server) WithTurn(client *turn.Client) *Server { s.turn = client; return s }
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+	// Google's frontend answers /healthz itself on Cloud Run, so the container
+	// never sees it. /livez is the liveness path that actually reaches us;
+	// /healthz stays for local runs and the container smoke test.
+	liveness := func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-	})
+	}
+	mux.HandleFunc("GET /healthz", liveness)
+	mux.HandleFunc("GET /livez", liveness)
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
@@ -52,6 +66,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /v1/identity", s.rename)
 	mux.HandleFunc("DELETE /v1/auth/session", s.logout)
 	mux.HandleFunc("GET /v1/signaling", s.signaling)
+	mux.HandleFunc("GET /v1/ice", s.ice)
 	for _, pattern := range []string{"POST /v1/invites", "POST /v1/invites/redeem", "GET /v1/calls/current", "GET /v1/calls/{callId}", "POST /v1/calls/{callId}/actions"} {
 		mux.HandleFunc(pattern, s.callRequest)
 	}
@@ -204,6 +219,28 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) (identity.Ses
 	return session, fields[1], true
 }
 
+// ice hands the caller short-lived ICE servers. The Cloudflare API token stays
+// on the server; the client only ever sees a credential that expires by itself.
+func (s *Server) ice(w http.ResponseWriter, r *http.Request) {
+	if _, _, ok := s.authorize(w, r); !ok {
+		return
+	}
+	servers := []turn.IceServer{turn.Fallback()}
+	expires := time.Now().UTC().Add(iceTTL)
+	if s.turn != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
+		issued, err := s.turn.Credentials(ctx, iceTTL)
+		cancel()
+		if err != nil {
+			// Relay is a fallback path; losing it must not fail call setup.
+			s.log.Error("turn_credentials_unavailable")
+		} else {
+			servers = []turn.IceServer{issued}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"iceServers": servers, "expiresAt": expires})
+}
+
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	session, _, ok := s.authorize(w, r)
 	if !ok {
@@ -273,7 +310,7 @@ func (s *Server) signaling(w http.ResponseWriter, r *http.Request) {
 		conn.Close(websocket.StatusPolicyViolation, "subprotocol_required")
 		return
 	}
-	conn.SetReadLimit(4096)
+	conn.SetReadLimit(65536)
 	ctx, cancel := context.WithDeadline(r.Context(), session.ExpiresAt)
 	defer cancel()
 	if err := wsWrite(ctx, conn, map[string]any{"v": 1, "type": "session.ready", "expiresAt": session.ExpiresAt}); err != nil {
@@ -298,10 +335,15 @@ func (s *Server) signaling(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var message struct {
-			Version int    `json:"v"`
-			Type    string `json:"type"`
-			ID      string `json:"id"`
-			CallID  string `json:"callId"`
+			Version     int    `json:"v"`
+			Type        string `json:"type"`
+			ID          string `json:"id"`
+			CallID      string `json:"callId"`
+			After       int    `json:"after"`
+			Description struct {
+				Type string `json:"type"`
+				SDP  string `json:"sdp"`
+			} `json:"description"`
 		}
 		if json.Unmarshal(data, &message) != nil || message.Version != 1 || len(message.ID) > 64 {
 			conn.Close(websocket.StatusPolicyViolation, "invalid_message")
@@ -328,6 +370,30 @@ func (s *Server) signaling(w http.ResponseWriter, r *http.Request) {
 			response = map[string]any{"v": 1, "type": "call.snapshot", "id": message.ID, "call": value}
 			if queryErr != nil {
 				_, code := callError(queryErr)
+				response = map[string]any{"v": 1, "type": "error", "id": message.ID, "error": code}
+			}
+		case "media.send", "media.sync":
+			store, available := s.store.(call.MediaStore)
+			if !available {
+				return
+			}
+			queryCtx, queryCancel := context.WithTimeout(ctx, 5*time.Second)
+			var queryErr error
+			if message.Type == "media.send" {
+				var seq int
+				seq, queryErr = store.SendDescription(queryCtx, session.IdentityID, message.CallID, message.ID, message.Description.Type, message.Description.SDP)
+				response = map[string]any{"v": 1, "type": "media.ack", "id": message.ID, "sequence": seq}
+			} else {
+				var snapshot call.MediaSnapshot
+				snapshot, queryErr = store.SyncDescriptions(queryCtx, session.IdentityID, message.CallID, message.After)
+				response = map[string]any{"v": 1, "type": "media.snapshot", "id": message.ID, "snapshot": snapshot}
+			}
+			queryCancel()
+			if queryErr != nil {
+				status, code := callError(queryErr)
+				if status == 503 {
+					s.log.Error("media_request_failed")
+				}
 				response = map[string]any{"v": 1, "type": "error", "id": message.ID, "error": code}
 			}
 		default:

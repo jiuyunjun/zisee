@@ -15,3 +15,10 @@ local.properties
 
 # Claude Design 画布产物，由 design/*.dc.html 重新生成
 design/zisee-mobile-ui.html
+
+# 本地密钥，禁止提交
+.local.env
+*.local.env
+
+# 编辑器本地历史
+.history/
