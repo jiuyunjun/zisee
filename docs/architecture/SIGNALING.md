@@ -1,7 +1,7 @@
 ---
 title: Zisee 信令会话基础
 document_id: ARCH-SIGNALING-001
-version: 1.1.0
+version: 1.2.0
 status: Active
 created: 2026-09-08
 updated: 2026-09-08
@@ -13,7 +13,7 @@ owners:
 
 # 信令会话基础
 
-当前实现的是认证后的 WebSocket 连接与心跳。邀请、CALL_INVITE／ACCEPT／REJECT／END、SDP／ICE 转发尚未实现；不得把当前连接成功当作通话成功。下一步在此基础上实现邀请授权、通话状态和跨实例消息路由。
+当前实现认证后的 WebSocket 连接、心跳和按需通话快照。邀请、接听、拒绝和挂断通过 HTTP 完成，见 [通话协议](../protocols/CALL_PROTOCOL.md)。尚未实现 SDP／ICE 转发；不得把当前连接成功或 accepted 状态当作媒体通话成功。
 
 ## 建立连接
 
@@ -44,11 +44,15 @@ owners:
 
 Cloud Run WebSocket 仍受请求超时约束，session affinity 仅尽力而为。未来通话路由必须使用跨实例共享状态／消息投递，不能依赖单进程 `map[peer]connection`，也不能依赖 max-instances=1 来保证正确性。[官方 WebSocket 说明](https://docs.cloud.google.com/run/docs/triggering/websockets)
 
-当前 PostgreSQL 保存身份、挑战和令牌，多实例可验证同一会话。当前 WebSocket 仅有本连接心跳，不存在尚未实现却宣称可用的跨实例通话转发。
+当前 PostgreSQL 保存身份、挑战、令牌、邀请和通话，多实例可验证同一会话并查询同一通话快照。`call.sync` 仅向请求方返回有权查看的状态，尚无跨实例事件投递或 SDP/ICE 转发。
 
-通话协议接入前需要定义：邀请 token 的使用次数和到期、callId 归属、双方同意后的 SDP／ICE 交换、单调序号／消息 ID、重复消息、断线恢复、呼叫超时、忙线、挂断及短期 TURN credential 鉴权。媒体不进入信令服务。
+邀请 token 使用次数和到期、callId 归属、重复动作、呼叫超时、忙线与挂断已定义于通话协议。下一步需要双方同意后的 SDP／ICE 交换、单调序号／消息 ID、断线恢复及短期 TURN credential 鉴权。媒体不进入信令服务。
 
 # Changelog
+
+## 1.2.0 - 2026-09-08
+
+- 接入参与者授权的 call.sync 快照，保留心跳客户端兼容性；新增通话协议链接。
 
 ## 1.0.0 - 2026-09-08
 

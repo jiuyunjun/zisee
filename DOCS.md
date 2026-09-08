@@ -1579,3 +1579,7 @@ Zisee 的文档遵循：
 ## Android 后端接入（1.5.0 - 2026-09-08）
 
 [ANDROID_BACKEND.md](docs/development/ANDROID_BACKEND.md)：DEV-ANDROID-BACKEND-001，Active；Keystore、构建配置、前台连接与验证边界。
+
+## 通话控制协议（2026-09-08）
+
+[CALL_PROTOCOL.md](docs/protocols/CALL_PROTOCOL.md)：PROTO-CALL-001，Active；邀请兑换、接听／拒绝／挂断、通话归属、事务并发和快照同步。

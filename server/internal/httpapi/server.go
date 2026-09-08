@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"zisee/server/internal/call"
 	"zisee/server/internal/identity"
 )
 
@@ -51,6 +52,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /v1/identity", s.rename)
 	mux.HandleFunc("DELETE /v1/auth/session", s.logout)
 	mux.HandleFunc("GET /v1/signaling", s.signaling)
+	for _, pattern := range []string{"POST /v1/invites", "POST /v1/invites/redeem", "GET /v1/calls/current", "GET /v1/calls/{callId}", "POST /v1/calls/{callId}/actions"} {
+		mux.HandleFunc(pattern, s.callRequest)
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -297,17 +301,40 @@ func (s *Server) signaling(w http.ResponseWriter, r *http.Request) {
 			Version int    `json:"v"`
 			Type    string `json:"type"`
 			ID      string `json:"id"`
+			CallID  string `json:"callId"`
 		}
 		if json.Unmarshal(data, &message) != nil || message.Version != 1 || len(message.ID) > 64 {
 			conn.Close(websocket.StatusPolicyViolation, "invalid_message")
 			return
 		}
-		// Authenticated transport foundation only. No unvalidated arbitrary peer relay.
-		if message.Type != "ping" {
+		var response any
+		switch message.Type {
+		case "ping":
+			response = map[string]any{"v": 1, "type": "pong", "id": message.ID}
+		case "call.sync":
+			store, available := s.store.(call.Store)
+			if !available {
+				return
+			}
+			queryCtx, queryCancel := context.WithTimeout(ctx, 5*time.Second)
+			var value any
+			var queryErr error
+			if message.CallID == "" {
+				value, queryErr = store.CurrentCall(queryCtx, session.IdentityID)
+			} else {
+				value, queryErr = store.GetCall(queryCtx, session.IdentityID, message.CallID)
+			}
+			queryCancel()
+			response = map[string]any{"v": 1, "type": "call.snapshot", "id": message.ID, "call": value}
+			if queryErr != nil {
+				_, code := callError(queryErr)
+				response = map[string]any{"v": 1, "type": "error", "id": message.ID, "error": code}
+			}
+		default:
 			conn.Close(websocket.StatusPolicyViolation, "unsupported_message")
 			return
 		}
-		if err := wsWrite(ctx, conn, map[string]any{"v": 1, "type": "pong", "id": message.ID}); err != nil {
+		if err := wsWrite(ctx, conn, response); err != nil {
 			return
 		}
 		// Prevent an authenticated client from flooding database checks and responses.
