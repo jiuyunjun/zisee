@@ -136,7 +136,14 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         val monitored = networksSeen || NetworkMonitor.isOnline() ||
             withTimeoutOrNull(NETWORK_WAIT_MS) { networksReady.await() } != null
         if (!monitored) logger.info(AppEvent.RTC_ICE_STATE, "network_monitor_unavailable")
-        val options = PeerConnectionFactory.Options().apply { disableNetworkMonitor = !monitored }
+        val options = PeerConnectionFactory.Options().apply {
+            disableNetworkMonitor = !monitored
+            // A loopback candidate can never reach the peer, but gathering one still creates ports
+            // that send STUN and TURN to public addresses and time out, and it consumes slots in
+            // the bounded candidate list. Left in, it delayed the first frame by twenty seconds.
+            // ADAPTER_TYPE_LOOPBACK is package private in the SDK; the value tracks the native one.
+            networkIgnoreMask = LOOPBACK_ADAPTER
+        }
         factory = PeerConnectionFactory.builder().setAudioDeviceModule(audioModule)
             .setOptions(options)
             .setVideoEncoderFactory(DefaultVideoEncoderFactory(shared, true, true))
@@ -654,8 +661,18 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         override fun onIceGatheringChange(state: PeerConnection.IceGatheringState) = Unit
         override fun onTrack(transceiver: RtpTransceiver) {
             val track = transceiver.receiver.track()
-            if (track is VideoTrack) scope.launch { if (!released) {
-                if (track.id() == MediaTrack.BACK_CAMERA.wireId) {
+            if (track !is VideoTrack) return
+            // Routing by the remote track id trusts the peer's msid to survive the round trip. When
+            // it does not, both cameras land on the same feed: the other feed keeps no sink and
+            // renders black, while the surviving one shows whichever camera arrived last. The
+            // transceiver is bidirectional, so the local track sharing its m-section identifies it
+            // without parsing anything the peer wrote.
+            val local = transceiver.sender.track()?.id()
+            val back = if (local != null) local == MediaTrack.BACK_CAMERA.wireId
+                else track.id() == MediaTrack.BACK_CAMERA.wireId
+            logger.info(AppEvent.RTC_TRACK_ROUTED, "${if (back) "back" else "front"} msid_matched=${local == track.id()}")
+            scope.launch { if (!released) {
+                if (back) {
                     remoteBackTrack?.removeSink(remoteBackFeed); remoteBackTrack = track; track.addSink(remoteBackFeed)
                 } else { remoteTrack?.removeSink(remoteFeed); remoteTrack = track; track.addSink(remoteFeed) }
             } }
@@ -686,6 +703,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     companion object {
         private const val MONITOR_TAG = "Zisee"
         private const val NETWORK_WAIT_MS = 2_000L
+        private const val LOOPBACK_ADAPTER = 1 shl 4
         @Volatile private var networksSeen = false
         private var initialized = false
         @Synchronized private fun initialize(context: Context, logger: AppLogger) {
