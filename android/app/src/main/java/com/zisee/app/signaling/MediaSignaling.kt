@@ -64,5 +64,10 @@ class MediaSignaling(api: BackendApi, client: OkHttpClient, session: AccessSessi
         if (json.optInt("v") != 1) throw AuthFailure(AuthFailure.Reason.PROTOCOL)
         json
     } ?: throw IOException("signaling_timeout")
+    fun networkChanged() {
+        // Wake receive immediately; cancel() alone depends on an asynchronous OkHttp callback.
+        incoming.close(IOException("signaling_network_changed"))
+        socket.cancel()
+    }
     override fun close() { socket.cancel(); incoming.cancel() }
 }

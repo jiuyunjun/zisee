@@ -1,7 +1,7 @@
 package com.zisee.app.rtc
 
 enum class VideoQuality(val width: Int, val height: Int, val fps: Int, val maxBitrateBps: Int) {
-    ECONOMY(640, 360, 15, 450_000), HD(1280, 720, 30, 2_500_000), FULL_HD(1920, 1080, 30, 4_000_000),
+    ECONOMY(640, 360, 15, 450_000), HD(1280, 720, 30, 4_000_000), FULL_HD(1920, 1080, 30, 8_000_000),
 }
 
 enum class QualityReason { STARTUP, THERMAL, ENCODER, BANDWIDTH, RECOVERY, CAPACITY }

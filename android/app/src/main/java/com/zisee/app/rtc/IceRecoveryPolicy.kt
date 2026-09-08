@@ -40,10 +40,12 @@ class IceRecoveryPolicy(startedMs: Long) {
         if (disconnectedMs == null) disconnectedMs = nowMs
         if (outageMs == null && (state == IceState.DISCONNECTED || state == IceState.FAILED)) outageMs = nowMs
         if (outageMs?.let { nowMs - it >= 45_000 } == true) return Action.FAIL
-        val requested = networkChangedMs?.let { nowMs - it >= 500 } == true ||
+        val routeReady = networkChangedMs?.let { nowMs - it >= 250 } == true
+        val requested = routeReady ||
             (state == IceState.DISCONNECTED && nowMs - requireNotNull(disconnectedMs) >= 1_500) ||
             state == IceState.FAILED || nowMs - generationMs >= 12_000
-        if (!requested || nowMs - generationMs < 5_000) return Action.WAIT
+        // A new route invalidates the previous attempt's cooldown, but not the outage budget.
+        if (!requested || (!routeReady && nowMs - generationMs < 5_000)) return Action.WAIT
         // Give the final attempt its full negotiation window.
         if (attempts >= 3) return if (nowMs - generationMs >= 12_000) Action.FAIL else Action.WAIT
         return Action.RESTART

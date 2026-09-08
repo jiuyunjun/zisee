@@ -4,6 +4,28 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class IceRecoveryPolicyTest {
+    @Test fun `new route bypasses cooldown after debounce`() {
+        val policy = IceRecoveryPolicy(0)
+        policy.generationStarted(1_000, 0)
+        assertEquals(IceRecoveryPolicy.Action.WAIT, policy.evaluate(IceState.CHECKING, 1, false, 1_100))
+        assertEquals(IceRecoveryPolicy.Action.WAIT, policy.evaluate(IceState.CHECKING, 1, false, 1_349))
+        assertEquals(IceRecoveryPolicy.Action.RESTART, policy.evaluate(IceState.CHECKING, 1, false, 1_350))
+        policy.generationStarted(1_350, 1)
+        assertEquals(IceRecoveryPolicy.Action.WAIT, policy.evaluate(IceState.FAILED, 1, false, 1_600))
+    }
+    @Test fun `route flapping cannot exceed restart budget`() {
+        val policy = IceRecoveryPolicy(0)
+        for (version in 1L..3L) {
+            val now = version * 1_000
+            policy.evaluate(IceState.CHECKING, version, false, now)
+            assertEquals(IceRecoveryPolicy.Action.RESTART, policy.evaluate(IceState.CHECKING, version, false, now + 250))
+            policy.generationStarted(now + 250, version)
+        }
+        policy.evaluate(IceState.CHECKING, 4, false, 4_000)
+        assertEquals(IceRecoveryPolicy.Action.WAIT, policy.evaluate(IceState.CHECKING, 4, false, 4_250))
+        assertEquals(IceRecoveryPolicy.Action.FAIL, policy.evaluate(IceState.CHECKING, 4, false, 15_250))
+    }
+
     @Test fun `ringing time does not consume initial negotiation budget`() {
         val policy = IceRecoveryPolicy(0)
         policy.initialNegotiationStarted(60_000, 4)

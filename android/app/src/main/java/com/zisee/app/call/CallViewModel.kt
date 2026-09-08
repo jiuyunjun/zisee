@@ -28,10 +28,10 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -135,6 +135,7 @@ class CallViewModel(application: Application, private val container: AppContaine
             var ended = false
             var mediaObservation: Job? = null
             var networkWatcher: com.zisee.app.rtc.DefaultNetworkWatcher? = null
+            var networkObservation: Job? = null
             var machine = CallState()
             fun event(event: CallEvent) {
                 machine.session?.let { machine = CallReducer.reduce(machine, it.callId, event) }
@@ -154,6 +155,15 @@ class CallViewModel(application: Application, private val container: AppContaine
                 network.start()
                 networkWatcher = network
                 val signalingRetry = com.zisee.app.signaling.SignalingRetryPolicy()
+                val routeWake = Channel<Unit>(Channel.CONFLATED)
+                var socketNetworkVersion = network.version.value
+                networkObservation = launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+                    network.version.drop(1).collect {
+                        socket?.networkChanged()
+                        routeWake.trySend(Unit)
+                        event(CallEvent.CONNECTION_LOST)
+                    }
+                }
                 while (isActive) {
                     if (session == null || !Instant.now().isBefore(session.expiresAt.minusSeconds(30))) {
                         socket?.close(); socket = null
@@ -161,6 +171,7 @@ class CallViewModel(application: Application, private val container: AppContaine
                     }
                     try {
                         if (socket == null) {
+                            socketNetworkVersion = network.version.value
                             socket = MediaSignaling(api, container.httpClient, session)
                             socket.ready()
                         }
@@ -237,17 +248,21 @@ class CallViewModel(application: Application, private val container: AppContaine
                             }
                         }
                         signalingRetry.recovered()
-                        delay(if (machine.phase in setOf(CallPhase.CONNECTING, CallPhase.RECONNECTING)) 100 else 1_000)
+                        withTimeoutOrNull(if (machine.phase in setOf(CallPhase.CONNECTING, CallPhase.RECONNECTING)) 100L else 1_000L) {
+                            routeWake.receive()
+                        }
                     } catch (error: IOException) {
                         // Retry transport failures using the same SDP message ID and receive cursor.
                         // Protocol, media and authorization failures are terminal in this first version.
-                        val network = (error is com.zisee.app.auth.remote.AuthFailure && error.reason == com.zisee.app.auth.remote.AuthFailure.Reason.NETWORK) || error.message?.startsWith("signaling_") == true
-                        if (!network) throw error
+                        val transportFailure = (error is com.zisee.app.auth.remote.AuthFailure && error.reason == com.zisee.app.auth.remote.AuthFailure.Reason.NETWORK) || error.message?.startsWith("signaling_") == true
+                        if (!transportFailure) throw error
                         socket?.close(); socket = null
                         val retryDelay = signalingRetry.nextDelayMs(System.nanoTime() / 1_000_000,
                             machine.phase in setOf(CallPhase.CONNECTED, CallPhase.RECONNECTING)) ?: throw error
                         mutable.update { it.copy(status = "信令中断，正在重连…") }
-                        delay(retryDelay)
+                        if (socketNetworkVersion == network.version.value) {
+                            withTimeoutOrNull(retryDelay) { routeWake.receive() }
+                        }
                     }
                 }
                 event(CallEvent.HANG_UP); event(CallEvent.RELEASED)
@@ -264,6 +279,7 @@ class CallViewModel(application: Application, private val container: AppContaine
             } finally {
                 socket?.close()
                 withContext(NonCancellable) {
+                    networkObservation?.cancelAndJoin()
                     networkWatcher?.close()
                     mediaObservation?.cancelAndJoin()
                     val media = rtc; rtc = null

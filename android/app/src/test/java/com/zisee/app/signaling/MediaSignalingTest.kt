@@ -6,6 +6,7 @@ import com.zisee.app.auth.remote.BackendApi
 import com.zisee.app.auth.remote.backendHttpClient
 import java.net.InetAddress
 import java.time.Instant
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import okhttp3.Response
@@ -18,6 +19,35 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class MediaSignalingTest {
+    @Test fun `network change interrupts stalled response without waiting for timeout`() = runBlocking {
+        val server = MockWebServer()
+        server.start(InetAddress.getByName("127.0.0.1"), 0)
+        val client = backendHttpClient()
+        val requestSeen = kotlinx.coroutines.CompletableDeferred<Unit>()
+        server.enqueue(MockResponse().setHeader("Sec-WebSocket-Protocol", "zisee.v1").withWebSocketUpgrade(object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                webSocket.send("""{"v":1,"type":"session.ready"}""")
+            }
+            override fun onMessage(webSocket: WebSocket, text: String) { requestSeen.complete(Unit) }
+        }))
+        val transport = MediaSignaling(BackendApi(server.url("/"), client), client,
+            AccessSession("t".repeat(43), Instant.now().plusSeconds(900)))
+        try {
+            withTimeout(5_000) {
+                transport.ready()
+                val pending = async {
+                    try { transport.exchange("media.sync"); null }
+                    catch (error: java.io.IOException) { error.message }
+                }
+                requestSeen.await()
+                transport.networkChanged()
+                withTimeout(1_000) { assertEquals("signaling_network_changed", pending.await()) }
+            }
+        } finally {
+            transport.close(); server.close(); client.dispatcher.executorService.shutdown(); client.connectionPool.evictAll()
+        }
+    }
+
     @Test fun `SDP larger than heartbeat limit is sent with stable id and authorization`() = runBlocking {
         val server = MockWebServer()
         server.start(InetAddress.getByName("127.0.0.1"), 0)
