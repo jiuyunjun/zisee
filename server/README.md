@@ -2,6 +2,8 @@
 
 Zisee 后端服务。**当前为空目录占位，没有任何实现。**
 
+部署平台已确定为 **GCP Cloud Run**，已创建项目 `zisee-app`（显示名称 Zisee）。当前账单关联因配额限制失败，尚未部署服务。状态与恢复步骤见 [部署准备](../docs/operations/DEPLOYMENT.md)。
+
 ## 定位
 
 按 `ARCHITECTURE.md` §30，第一版是**单个 Go 服务**，不拆微服务。职责：

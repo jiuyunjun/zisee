@@ -853,6 +853,20 @@ Active
 
 ---
 
+## docs/operations
+
+### DEPLOYMENT.md
+
+路径：`/docs/operations/DEPLOYMENT.md`
+
+`document_id`：`OPS-DEPLOYMENT-001`
+
+用途：Cloud Run 部署目标、项目准备状态、账单配额阻塞与恢复步骤。
+
+状态：Active
+
+---
+
 ## docs/adr
 
 ADR 使用独立状态词（`Proposed` / `Accepted` / `Superseded` / `Rejected`），不使用文档状态词。
@@ -1521,6 +1535,10 @@ Zisee 的文档遵循：
 ---
 
 # Changelog
+
+## 1.3.0 - 2026-09-08
+
+- 增加 Cloud Run 部署准备文档，记录 Zisee GCP 项目及账单阻塞状态。
 
 ## 1.2.0 - 2026-09-08
 
