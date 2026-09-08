@@ -137,6 +137,8 @@ class CallViewModel(application: Application, private val container: AppContaine
                 val descriptionId = UUID.randomUUID().toString()
                 var sent = false
                 var cursor = 0
+                var sentCandidates = 0
+                var receivedCandidates = 0
                 var negotiationStarted: Instant? = null
                 var disconnectedAt: Instant? = null
                 var failures = 0
@@ -199,6 +201,14 @@ class CallViewModel(application: Application, private val container: AppContaine
                                     socket.exchange("media.send", JSONObject().put("callId", current.id).put("description", localDescription), descriptionId)
                                     sent = true
                                 }
+                                val candidates = requireNotNull(rtc).localCandidates()
+                                if (sent && candidates.size > sentCandidates) {
+                                    val batch = org.json.JSONArray()
+                                    candidates.forEach { batch.put(JSONObject().put("candidate", it.sdp)
+                                        .put("sdpMid", it.sdpMid).put("sdpMLineIndex", it.sdpMLineIndex)) }
+                                    socket.exchange("media.ice", JSONObject().put("callId", current.id).put("candidates", batch))
+                                    sentCandidates = candidates.size
+                                }
                                 val snapshot = socket.exchange("media.sync", JSONObject().put("callId", current.id).put("after", cursor)).getJSONObject("snapshot")
                                 val descriptions = snapshot.getJSONArray("descriptions")
                                 for (index in 0 until descriptions.length()) {
@@ -213,6 +223,21 @@ class CallViewModel(application: Application, private val container: AppContaine
                                         val answer = requireNotNull(rtc).localDescription(offer = false)
                                         localDescription = JSONObject().put("type", "answer").put("sdp", answer.description)
                                     }
+                                }
+                                // SDP must be applied before its candidates. Cursor advances only after success.
+                                val remoteCandidates = snapshot.optJSONArray("candidates")
+                                if (cursor > 0 && remoteCandidates != null) {
+                                    while (receivedCandidates < remoteCandidates.length()) {
+                                        val candidate = remoteCandidates.getJSONObject(receivedCandidates)
+                                        requireNotNull(rtc).addRemoteCandidate(org.webrtc.IceCandidate(
+                                            candidate.getString("sdpMid"), candidate.getInt("sdpMLineIndex"), candidate.getString("candidate")))
+                                        receivedCandidates++
+                                    }
+                                }
+                                // The answer is ready now; do not wait for the next polling interval.
+                                if (localDescription != null && !sent) {
+                                    socket.exchange("media.send", JSONObject().put("callId", current.id).put("description", localDescription), descriptionId)
+                                    sent = true
                                 }
                                 when (requireNotNull(rtc).iceState.value) {
                                     IceState.CONNECTED -> {
@@ -233,7 +258,7 @@ class CallViewModel(application: Application, private val container: AppContaine
                             }
                         }
                         failures = 0
-                        delay(1_000)
+                        delay(if (machine.phase == CallPhase.CONNECTING) 100 else 1_000)
                     } catch (error: IOException) {
                         // Retry transport failures using the same SDP message ID and receive cursor.
                         // Protocol, media and authorization failures are terminal in this first version.

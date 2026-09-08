@@ -6,9 +6,10 @@ import org.webrtc.VideoFrame
 import org.webrtc.VideoSink
 
 /** Serializes frame delivery with detach; renderers are explicitly released before parent EGL. */
-class VideoFeed(val eglContext: EglBase.Context, val mirrored: Boolean) : VideoSink {
+class VideoFeed(val eglContext: EglBase.Context, val mirrored: Boolean, private val onFirstFrame: () -> Unit = {}) : VideoSink {
     private val renderers = mutableSetOf<SurfaceViewRenderer>()
     private var closed = false
+    private var receivedFrame = false
     @Synchronized fun attach(renderer: SurfaceViewRenderer) {
         if (closed) return
         renderer.init(eglContext, null)
@@ -19,7 +20,11 @@ class VideoFeed(val eglContext: EglBase.Context, val mirrored: Boolean) : VideoS
     @Synchronized fun detach(renderer: SurfaceViewRenderer) {
         if (renderers.remove(renderer)) renderer.release()
     }
-    @Synchronized override fun onFrame(frame: VideoFrame) { renderers.forEach { it.onFrame(frame) } }
+    @Synchronized override fun onFrame(frame: VideoFrame) {
+        if (closed) return
+        if (!receivedFrame) { receivedFrame = true; onFirstFrame() }
+        renderers.forEach { it.onFrame(frame) }
+    }
     @Synchronized fun close() {
         closed = true
         renderers.forEach { it.release() }

@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 
@@ -95,21 +96,76 @@ func (s *Store) SyncDescriptions(ctx context.Context, actor, id string, after in
 	if actor == c.CallerID {
 		peerSeq = 2
 	}
-	rows, err := tx.Query(ctx, `SELECT sequence,sdp FROM media_descriptions WHERE call_id=$1 AND sequence=$2 AND sequence>$3 AND created_at>clock_timestamp()-interval '2 minutes'`, id, peerSeq, after)
+	rows, err := tx.Query(ctx, `SELECT sequence,sdp,candidates FROM media_descriptions WHERE call_id=$1 AND sequence=$2 AND created_at>clock_timestamp()-interval '2 minutes'`, id, peerSeq)
 	if err != nil {
 		return result, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var d call.Description
-		if err = rows.Scan(&d.Sequence, &d.SDP); err != nil {
+		var candidates []byte
+		if err = rows.Scan(&d.Sequence, &d.SDP, &candidates); err != nil {
 			return result, err
 		}
 		d.Type = "offer"
 		if d.Sequence == 2 {
 			d.Type = "answer"
 		}
-		result.Descriptions = append(result.Descriptions, d)
+		if err = json.Unmarshal(candidates, &result.Candidates); err != nil {
+			return result, err
+		}
+		if d.Sequence > after {
+			result.Descriptions = append(result.Descriptions, d)
+			result.Candidates = nil // Keep SDP and candidate batches within the WebSocket message limit.
+		}
 	}
 	return result, rows.Err()
+}
+
+func (s *Store) SendCandidates(ctx context.Context, actor, id string, next []call.Candidate) error {
+	if err := call.ValidateCandidates(next, nil); err != nil {
+		return err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	c, err := scanCall(tx.QueryRow(ctx, `SELECT `+callColumns+` FROM calls WHERE id=$1 AND (caller_id=$2 OR callee_id=$2) FOR UPDATE`, id, actor))
+	if err != nil {
+		return err
+	}
+	if c.State != "accepted" {
+		return call.ErrTransition
+	}
+	seq := 1
+	if actor == c.CalleeID {
+		seq = 2
+	}
+	var raw []byte
+	err = tx.QueryRow(ctx, `SELECT candidates FROM media_descriptions WHERE call_id=$1 AND sequence=$2 AND created_at>clock_timestamp()-interval '2 minutes'`, id, seq).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return call.ErrTransition
+	}
+	if err != nil {
+		return err
+	}
+	var previous []call.Candidate
+	if err = json.Unmarshal(raw, &previous); err != nil {
+		return err
+	}
+	if err = call.ValidateCandidates(next, previous); err != nil {
+		return err
+	}
+	if len(next) <= len(previous) {
+		return nil
+	}
+	raw, err = json.Marshal(next)
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE media_descriptions SET candidates=$3 WHERE call_id=$1 AND sequence=$2`, id, seq, raw); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

@@ -51,7 +51,7 @@ class MediaSignaling(api: BackendApi, client: OkHttpClient, session: AccessSessi
         if (!socket.send(payload.put("v", 1).put("type", type).put("id", id).toString())) throw IOException("signaling_send")
         val result = receive()
         if (result.optString("id") != id || result.optString("type") == "error") throw AuthFailure(AuthFailure.Reason.PROTOCOL)
-        val expected = when (type) { "call.sync" -> "call.snapshot"; "media.send" -> "media.ack"; "media.sync" -> "media.snapshot"; else -> "pong" }
+        val expected = when (type) { "call.sync" -> "call.snapshot"; "media.send", "media.ice" -> "media.ack"; "media.sync" -> "media.snapshot"; else -> "pong" }
         if (result.optString("type") != expected) throw AuthFailure(AuthFailure.Reason.PROTOCOL)
         return result
     }

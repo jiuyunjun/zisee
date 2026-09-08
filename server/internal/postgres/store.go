@@ -22,6 +22,9 @@ var callsSchema string
 //go:embed 003_media.sql
 var mediaSchema string
 
+//go:embed 004_trickle.sql
+var trickleSchema string
+
 type Store struct{ pool *pgxpool.Pool }
 
 func Open(ctx context.Context, url string) (*Store, error) {
@@ -88,6 +91,17 @@ func (s *Store) Migrate(ctx context.Context) error {
 			return err
 		}
 		if _, err = tx.Exec(ctx, `INSERT INTO schema_migrations(version) VALUES(3)`); err != nil {
+			return err
+		}
+	}
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=4)`).Scan(&applied); err != nil {
+		return err
+	}
+	if !applied {
+		if _, err = tx.Exec(ctx, trickleSchema); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO schema_migrations(version) VALUES(4)`); err != nil {
 			return err
 		}
 	}

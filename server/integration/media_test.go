@@ -87,6 +87,31 @@ func TestMediaConsentRolesReplayAndCleanup(t *testing.T) {
 	if snapshot, err = store.SyncDescriptions(ctx, b, c.ID, 0); err != nil || len(snapshot.Descriptions) != 1 || snapshot.Descriptions[0].Type != "answer" {
 		t.Fatal("answer delivery", err)
 	}
+
+	candidates := []call.Candidate{{SDP: "candidate:1 1 udp 1 192.0.2.1 1234 typ host", Mid: "0", Index: 0}}
+	if err := store.SendCandidates(ctx, b, c.ID, candidates); err != nil {
+		t.Fatal(err)
+	}
+	candidates = append(candidates, call.Candidate{SDP: "candidate:2 1 udp 1 192.0.2.2 1234 typ relay", Mid: "0", Index: 0})
+	if err := store.SendCandidates(ctx, b, c.ID, candidates); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SendCandidates(ctx, b, c.ID, candidates[:1]); err != nil {
+		t.Fatal("old retry", err)
+	}
+	trickled, err := store.SyncDescriptions(ctx, a, c.ID, 1)
+	if err != nil || len(trickled.Descriptions) != 0 || len(trickled.Candidates) != 2 {
+		t.Fatal("late candidates after SDP cursor", err, trickled)
+	}
+	ownIce, err := store.SyncDescriptions(ctx, b, c.ID, 2)
+	if err != nil || len(ownIce.Candidates) != 0 {
+		t.Fatal("echoed candidates", err)
+	}
+	changed := append([]call.Candidate(nil), candidates...)
+	changed[0].SDP = "candidate:changed"
+	if err := store.SendCandidates(ctx, b, c.ID, changed); !errors.Is(err, call.ErrTransition) {
+		t.Fatal("rewrote candidates", err)
+	}
 	if err = store.Cleanup(ctx, time.Now().Add(3*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
@@ -95,6 +120,9 @@ func TestMediaConsentRolesReplayAndCleanup(t *testing.T) {
 	}
 	if _, err = store.ActOnCall(ctx, a, c.ID, "end"); err != nil {
 		t.Fatal(err)
+	}
+	if err := store.SendCandidates(ctx, b, c.ID, candidates); !errors.Is(err, call.ErrTransition) {
+		t.Fatal("candidates after end", err)
 	}
 	if _, err = store.SendDescription(ctx, b, c.ID, "after-end", "offer", sdp); !errors.Is(err, call.ErrTransition) {
 		t.Fatal("send after end", err)
@@ -145,6 +173,22 @@ func TestMediaWebSocketLargeSDPAndTerminalSnapshot(t *testing.T) {
 	}
 	if err = json.Unmarshal(data, &reply); err != nil || reply.Type != "media.ack" || reply.Sequence != 1 {
 		t.Fatal("missing ack", err)
+	}
+
+	data, _ = json.Marshal(map[string]any{"v": 1, "type": "media.ice", "id": "ice-batch", "callId": c.ID, "candidates": []call.Candidate{{SDP: "candidate:1 1 udp 1 192.0.2.1 1234 typ host", Mid: "0", Index: 0}}})
+	if err = ws.Write(ctx, websocket.MessageText, data); err != nil {
+		t.Fatal(err)
+	}
+	_, data, err = ws.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(data, &reply); err != nil || reply.Type != "media.ack" {
+		t.Fatal("ICE ack", err, string(data))
+	}
+	trickled, err := store.SyncDescriptions(ctx, a, c.ID, 1)
+	if err != nil || len(trickled.Candidates) != 1 {
+		t.Fatal("websocket ICE delivery", err)
 	}
 	if _, err = store.ActOnCall(ctx, a, c.ID, "end"); err != nil {
 		t.Fatal(err)

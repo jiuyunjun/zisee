@@ -16,11 +16,12 @@ import (
 const descriptionWindow = 2 * time.Minute
 
 type descriptionDoc struct {
-	CallID    string    `firestore:"callId"`
-	Sequence  int       `firestore:"sequence"`
-	MessageID string    `firestore:"messageId"`
-	SDP       string    `firestore:"sdp"`
-	CreatedAt time.Time `firestore:"createdAt"`
+	Candidates []call.Candidate `firestore:"candidates"`
+	CallID     string           `firestore:"callId"`
+	Sequence   int              `firestore:"sequence"`
+	MessageID  string           `firestore:"messageId"`
+	SDP        string           `firestore:"sdp"`
+	CreatedAt  time.Time        `firestore:"createdAt"`
 }
 
 // descriptionID encodes the former PRIMARY KEY (call_id, sequence), which is
@@ -135,9 +136,7 @@ func (s *Store) SyncDescriptions(ctx context.Context, actor, id string, after in
 	if actor == current.CallerID {
 		peerSequence = 2
 	}
-	if peerSequence <= after {
-		return result, nil
-	}
+
 	document, err := s.client.Collection(media).Doc(descriptionID(id, peerSequence)).Get(ctx)
 	if notFound(err) {
 		return result, nil
@@ -156,7 +155,62 @@ func (s *Store) SyncDescriptions(ctx context.Context, actor, id string, after in
 	if description.Sequence == 2 {
 		kind = "answer"
 	}
-	result.Descriptions = append(result.Descriptions, call.Description{
-		Sequence: description.Sequence, Type: kind, SDP: description.SDP})
+	result.Candidates = description.Candidates
+	if peerSequence > after {
+		result.Descriptions = append(result.Descriptions, call.Description{
+			Sequence: description.Sequence, Type: kind, SDP: description.SDP})
+		result.Candidates = nil // Deliver candidates after the SDP cursor acknowledges this description.
+	}
 	return result, nil
+}
+
+func (s *Store) SendCandidates(ctx context.Context, actor, id string, next []call.Candidate) error {
+	if err := call.ValidateCandidates(next, nil); err != nil {
+		return err
+	}
+	return s.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		snapshot, err := tx.Get(s.client.Collection(calls).Doc(id))
+		if notFound(err) {
+			return call.ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		var stored callDoc
+		if err = stored.decode(snapshot); err != nil {
+			return err
+		}
+		if stored.CallerID != actor && stored.CalleeID != actor {
+			return call.ErrNotFound
+		}
+		if stored.toCall(id, time.Now().UTC()).State != "accepted" {
+			return call.ErrTransition
+		}
+		seq := 1
+		if actor == stored.CalleeID {
+			seq = 2
+		}
+		ref := s.client.Collection(media).Doc(descriptionID(id, seq))
+		snapshot, err = tx.Get(ref)
+		if notFound(err) {
+			return call.ErrTransition
+		}
+		if err != nil {
+			return err
+		}
+		var d descriptionDoc
+		if err = d.decode(snapshot); err != nil {
+			return err
+		}
+		if !d.CreatedAt.After(time.Now().Add(-descriptionWindow)) {
+			return call.ErrTransition
+		}
+		if err = call.ValidateCandidates(next, d.Candidates); err != nil {
+			return err
+		}
+		if len(next) <= len(d.Candidates) {
+			return nil
+		}
+		return tx.Update(ref, []firestore.Update{{Path: "candidates", Value: next}})
+	})
 }

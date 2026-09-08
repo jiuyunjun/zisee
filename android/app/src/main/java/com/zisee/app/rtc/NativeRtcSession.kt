@@ -19,7 +19,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -56,7 +55,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var remoteTrack: VideoTrack? = null
     var localFeed: VideoFeed? = null; private set
     var remoteFeed: VideoFeed? = null; private set
-    private var gathered = CompletableDeferred<Unit>()
+    private val candidates = mutableListOf<IceCandidate>()
     private val networksReady = CompletableDeferred<Unit>()
     private val networkObserver = NetworkMonitor.NetworkObserver { type ->
         if (type != NetworkChangeDetector.ConnectionType.CONNECTION_NONE) {
@@ -69,7 +68,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var lastBytesReceived = 0L
     private var lastBytesSent = 0L
     private var lastSampleNanos = 0L
-    private var startedNanos = 0L
+    @Volatile private var startedNanos = 0L
     private var setupReported = false
     private val audioManager = context.getSystemService(AudioManager::class.java)
     private var previousMode = AudioManager.MODE_NORMAL
@@ -123,7 +122,9 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         val name = enumerator.deviceNames.firstOrNull { enumerator.isFrontFacing(it) }
             ?: enumerator.deviceNames.firstOrNull() ?: throw IOException("camera_unavailable")
         localFeed = VideoFeed(shared, enumerator.isFrontFacing(name))
-        remoteFeed = VideoFeed(shared, false)
+        remoteFeed = VideoFeed(shared, false) {
+            logger.info(AppEvent.RTC_FIRST_FRAME_MS, ((System.nanoTime() - startedNanos) / 1_000_000).toString())
+        }
         camera = enumerator.createCapturer(name, object : CameraVideoCapturer.CameraEventsHandler {
             override fun onCameraError(error: String) = fail()
             override fun onCameraDisconnected() = fail()
@@ -152,37 +153,22 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
 
     suspend fun localDescription(offer: Boolean): SessionDescription = withContext(dispatcher) {
         val pc = requireNotNull(peer)
-        val attempts = if (offer) GATHER_ATTEMPTS else 1
-        // One budget covers every attempt, so retrying cannot multiply the time a caller waits
-        // before a broken network is reported.
-        val deadline = System.nanoTime() + GATHER_BUDGET_MS * 1_000_000
-        repeat(attempts) { attempt ->
-            if (attempt > 0) {
-                // The Android network monitor is populated asynchronously after the first peer
-                // connection starts it, so the first generation can finish gathering before any
-                // interface is known and yield zero candidates. Gathering only re-runs for a new
-                // ICE generation, so restart ICE and describe again once interfaces have arrived.
-                delay(GATHER_RETRY_MS)
-                gathered = CompletableDeferred()
-                pc.restartIce()
+        val description = withTimeout(10_000) { suspendCancellableCoroutine { continuation ->
+            val observer = object : DescriptionObserver() {
+                override fun onCreateSuccess(sdp: SessionDescription) { if (continuation.isActive) continuation.resume(sdp) }
+                override fun onCreateFailure(error: String) { if (continuation.isActive) continuation.resumeWithException(IOException("sdp_create_failed")) }
             }
-            val description = withTimeout(10_000) { suspendCancellableCoroutine { continuation ->
-                val observer = object : DescriptionObserver() {
-                    override fun onCreateSuccess(sdp: SessionDescription) { if (continuation.isActive) continuation.resume(sdp) }
-                    override fun onCreateFailure(error: String) { if (continuation.isActive) continuation.resumeWithException(IOException("sdp_create_failed")) }
-                }
-                if (offer) pc.createOffer(observer, MediaConstraints()) else pc.createAnswer(observer, MediaConstraints())
-            } }
-            setDescription(description, local = true)
-            // Send the final local SDP including candidates. Completion is the normal signal, but
-            // a stack that never reports it must not abort the call: time out into the candidate
-            // check below so the remaining attempts still run and the failure names itself.
-            val remaining = (deadline - System.nanoTime()) / 1_000_000
-            if (remaining > 0) withTimeoutOrNull(remaining) { gathered.await() }
-            val final = pc.localDescription ?: throw IOException("local_description_missing")
-            if (final.description.contains("\r\na=candidate:")) return@withContext final
-        }
-        throw IOException("no_ice_candidates")
+            if (offer) pc.createOffer(observer, MediaConstraints()) else pc.createAnswer(observer, MediaConstraints())
+        } }
+        setDescription(description, local = true)
+        // Send immediately. Candidates are delivered independently, including slow TURN results.
+        description
+    }
+
+    suspend fun localCandidates(): List<IceCandidate> = withContext(dispatcher) { candidates.toList() }
+
+    suspend fun addRemoteCandidate(candidate: IceCandidate) = withContext(dispatcher) {
+        if (!requireNotNull(peer).addIceCandidate(candidate)) throw IOException("ice_candidate_rejected")
     }
 
     suspend fun remoteDescription(type: String, sdp: String) = withContext(dispatcher) {
@@ -337,14 +323,18 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 PeerConnection.IceConnectionState.CLOSED -> IceState.CLOSED
             } }
         }
-        override fun onIceGatheringChange(state: PeerConnection.IceGatheringState) { if (state == PeerConnection.IceGatheringState.COMPLETE) gathered.complete(Unit) }
+        override fun onIceGatheringChange(state: PeerConnection.IceGatheringState) = Unit
         override fun onTrack(transceiver: RtpTransceiver) {
             val track = transceiver.receiver.track()
             if (track is VideoTrack) scope.launch { if (!released) { remoteTrack?.removeSink(remoteFeed); remoteTrack = track; track.addSink(remoteFeed) } }
         }
         override fun onSignalingChange(state: PeerConnection.SignalingState) = Unit
         override fun onIceConnectionReceivingChange(receiving: Boolean) = Unit
-        override fun onIceCandidate(candidate: IceCandidate) = Unit // Included in gathered local SDP.
+        override fun onIceCandidate(candidate: IceCandidate) { scope.launch {
+            if (!released && candidates.none { it.sdp == candidate.sdp && it.sdpMid == candidate.sdpMid }) {
+                if (candidates.size >= 32) fail() else candidates.add(candidate)
+            }
+        } }
         override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>) = Unit
         override fun onAddStream(stream: MediaStream) = Unit
         override fun onRemoveStream(stream: MediaStream) = Unit
@@ -360,11 +350,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     }
     companion object {
         private const val MONITOR_TAG = "Zisee"
-        private const val GATHER_ATTEMPTS = 3
-        private const val GATHER_BUDGET_MS = 20_000L
         private const val NETWORK_WAIT_MS = 2_000L
         @Volatile private var networksSeen = false
-        private const val GATHER_RETRY_MS = 250L
         private var initialized = false
         @Synchronized private fun initialize(context: Context, logger: AppLogger) {
             if (initialized) return

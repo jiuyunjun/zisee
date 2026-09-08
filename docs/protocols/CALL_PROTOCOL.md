@@ -71,10 +71,10 @@ WebSocket 单条消息上限为 64 KiB，SDP UTF-8 上限为 48 KiB。所有媒�
 发送：
 
 ```json
-{"v":1,"type":"media.send","id":"<stable message ID>","callId":"<call ID>","description":{"type":"offer","sdp":"<SDP with gathered ICE candidates>"}}
+{"v":1,"type":"media.send","id":"<stable message ID>","callId":"<call ID>","description":{"type":"offer","sdp":"<SDP; candidates sent separately>"}}
 ```
 
-成功响应 `{v:1,type:"media.ack",id,sequence:1}`。只有 caller 可发送 offer（序号 1），只有 callee 可发送 answer（序号 2），answer 必须在 offer 后发送。每个角色只能提交一份 SDP，重复同一 ID 与同一内容返回原确认，其他重复返回 invalid_call_transition。只支持初次协商，暂不支持 renegotiation/ICE restart/trickle。
+成功响应 `{v:1,type:"media.ack",id,sequence:1}`。只有 caller 可发送 offer（序号 1），只有 callee 可发送 answer（序号 2），answer 必须在 offer 后发送。每个角色只能提交一份 SDP，重复同一 ID 与同一内容返回原确认，其他重复返回 invalid_call_transition。只支持初次协商，暂不支持 renegotiation/ICE restart。
 
 接收：
 
@@ -82,13 +82,29 @@ WebSocket 单条消息上限为 64 KiB，SDP UTF-8 上限为 48 KiB。所有媒�
 {"v":1,"type":"media.sync","id":"<request ID>","callId":"<call ID>","after":0}
 ```
 
-返回 `{v:1,type:"media.snapshot",id,snapshot:{call:Call,descriptions:[{sequence,type,sdp}]}}`。仅返回对端且 sequence 大于 after 的描述；客户端在成功设置远端描述后推进游标。重连沿用游标和本地 SDP 消息 ID，无需依赖同一实例。终态返回空描述和最新通话状态。
+返回 `{v:1,type:"media.snapshot",id,snapshot:{call:Call,descriptions:[{sequence,type,sdp}],candidates:[{candidate,sdpMid,sdpMLineIndex}]}}`。仅返回对端且 sequence 大于 after 的描述；客户端在成功设置远端描述后推进游标。重连沿用游标和本地 SDP 消息 ID，无需依赖同一实例。终态返回空描述和最新通话状态。
 
 描述保存在 PostgreSQL 版本 3 的 media_descriptions 表，每通话最多两条，只允许接听后两分钟内初次提交。读取仅返回两分钟内描述；分钟清理任务删除过期数据，因此后台物理清理通常不超过三分钟。正常挂断立即删除描述。SDP 包含网络地址等敏感信息，禁止日志输出或提交到仓库；云端数据库上线前应采用既定传输与存储保护。
 
+## Trickle ICE
+
+SDP 创建并设置后立即发送，不等待 gathering COMPLETE。后续候选通过 `media.ice` 发送，响应 `media.ack`：
+
+```json
+{"v":1,"type":"media.ice","id":"q3","callId":"<call ID>","candidates":[{"candidate":"candidate:...","sdpMid":"0","sdpMLineIndex":0}]}
+```
+
+每端发送累计、只追加的候选列表（最多 32 条，每条 candidate 最多 1024 UTF-8 字节，mid 最多 32 字节，m-line index 为 0–8）。服务器验证通话成员、accepted 状态及该端 SDP 已存在；前缀相同的重复或较旧批次为幂等成功，修改既有候选被拒绝。客户端仅在 ack 后记录发送数量，网络失败会重发。
+
+`media.sync` 先投递 SDP，客户端用 after 确认该描述后，后续快照的 candidates 返回对端累计列表（没有候选时可为 null），候选数量与 SDP 游标独立。分开投递避免 SDP 加候选超过单条消息上限；客户端先设置远端 SDP，再依次 addIceCandidate，成功后推进本地候选数量。连接阶段以 100 ms 基础间隔轮询（另有请求往返和服务端节流），连接后恢复 1 秒。后到的 TURN 候选仍可加入，不强制 relay。
+
+候选与 SDP 存在同一行／Firestore 文档，沿用两分钟读取窗口和挂断／过期清理。PostgreSQL 需先运行版本 4 迁移；Firestore 字段自动兼容旧文档。**先升级服务器，再安装新客户端；新客户端依赖 media.ice，不能与旧服务端配套使用。** 旧客户端仍可与新服务器配套，混合客户端通话不承诺消除旧端 gathering 等待。
+
+参考：[WebRTC Trickle ICE](https://webrtc.org/getting-started/peer-connections)。
+
 ## 迁移与验证
 
-迁移器保留兼容旧库的身份基础建表，以 `schema_migrations` 记录 `002_calls.sql` 和 `003_media.sql`；在现有迁移事务和互斥锁内依次应用。运行时没有 DDL 权限要求，需授予新表 SELECT/INSERT/UPDATE/DELETE。readyz 要求新表存在，部署新版本前运行迁移。
+迁移器保留兼容旧库的身份基础建表，以 `schema_migrations` 记录 `002_calls.sql` 和 `003_media.sql`、`004_trickle.sql`；在现有迁移事务和互斥锁内依次应用。运行时没有 DDL 权限要求，需授予新表 SELECT/INSERT/UPDATE/DELETE。readyz 要求新表存在，部署新版本前运行迁移。
 
 真实 PostgreSQL 集成测试覆盖跨连接并发重试、竞争邀请忙线、越权、转换、过期、邀请轮换、清理，以及 HTTP 与认证 WebSocket 快照。没有验证 Android 双机音视频或 Cloud Run 部署。
 

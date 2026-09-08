@@ -301,9 +301,37 @@ func TestCallTransitionsAndDescriptionExchange(t *testing.T) {
 	if _, err := store.SendDescription(ctx, "zid_callee", created.ID, "m2", "answer", sdp); err != nil {
 		t.Fatalf("answer: %v", err)
 	}
+
+	candidates := []call.Candidate{{SDP: "candidate:1 1 udp 1 192.0.2.1 1234 typ host", Mid: "0", Index: 0}}
+	if err := store.SendCandidates(ctx, "zid_caller", created.ID, candidates); err != nil {
+		t.Fatal(err)
+	}
+	candidates = append(candidates, call.Candidate{SDP: "candidate:2 1 udp 1 192.0.2.2 1234 typ relay", Mid: "0", Index: 0})
+	if err := store.SendCandidates(ctx, "zid_caller", created.ID, candidates); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SendCandidates(ctx, "zid_caller", created.ID, candidates[:1]); err != nil {
+		t.Fatal("old retry", err)
+	}
+	trickled, err := store.SyncDescriptions(ctx, "zid_callee", created.ID, 1)
+	if err != nil || len(trickled.Descriptions) != 0 || len(trickled.Candidates) != 2 {
+		t.Fatal("late candidates after SDP cursor", err, trickled)
+	}
+	ownIce, err := store.SyncDescriptions(ctx, "zid_caller", created.ID, 2)
+	if err != nil || len(ownIce.Candidates) != 0 {
+		t.Fatal("echoed candidates", err)
+	}
+	changed := append([]call.Candidate(nil), candidates...)
+	changed[0].SDP = "candidate:changed"
+	if err := store.SendCandidates(ctx, "zid_caller", created.ID, changed); !errors.Is(err, call.ErrTransition) {
+		t.Fatal("rewrote candidates", err)
+	}
 	// Ending the call drops the descriptions: there is no cascade in Firestore.
 	if _, err := store.ActOnCall(ctx, "zid_caller", created.ID, "end"); err != nil {
 		t.Fatal(err)
+	}
+	if err := store.SendCandidates(ctx, "zid_caller", created.ID, candidates); !errors.Is(err, call.ErrTransition) {
+		t.Fatal("candidates after end", err)
 	}
 	after, err := store.SyncDescriptions(ctx, "zid_callee", created.ID, 0)
 	if err != nil {

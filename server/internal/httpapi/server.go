@@ -335,11 +335,12 @@ func (s *Server) signaling(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var message struct {
-			Version     int    `json:"v"`
-			Type        string `json:"type"`
-			ID          string `json:"id"`
-			CallID      string `json:"callId"`
-			After       int    `json:"after"`
+			Version     int              `json:"v"`
+			Type        string           `json:"type"`
+			ID          string           `json:"id"`
+			CallID      string           `json:"callId"`
+			After       int              `json:"after"`
+			Candidates  []call.Candidate `json:"candidates"`
 			Description struct {
 				Type string `json:"type"`
 				SDP  string `json:"sdp"`
@@ -372,14 +373,17 @@ func (s *Server) signaling(w http.ResponseWriter, r *http.Request) {
 				_, code := callError(queryErr)
 				response = map[string]any{"v": 1, "type": "error", "id": message.ID, "error": code}
 			}
-		case "media.send", "media.sync":
+		case "media.send", "media.sync", "media.ice":
 			store, available := s.store.(call.MediaStore)
 			if !available {
 				return
 			}
 			queryCtx, queryCancel := context.WithTimeout(ctx, 5*time.Second)
 			var queryErr error
-			if message.Type == "media.send" {
+			if message.Type == "media.ice" {
+				queryErr = store.SendCandidates(queryCtx, session.IdentityID, message.CallID, message.Candidates)
+				response = map[string]any{"v": 1, "type": "media.ack", "id": message.ID}
+			} else if message.Type == "media.send" {
 				var seq int
 				seq, queryErr = store.SendDescription(queryCtx, session.IdentityID, message.CallID, message.ID, message.Description.Type, message.Description.SDP)
 				response = map[string]any{"v": 1, "type": "media.ack", "id": message.ID, "sequence": seq}

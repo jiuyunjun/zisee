@@ -50,7 +50,7 @@ GitHub Actions 使用相同任务；上传报告，不上传用户数据或签�
 
 仍未证明：TURN fallback（本次直连成功，未构造 P2P 失败场景）、Wi-Fi↔蜂窝切换、双机真实广域网组合、长时通话稳定性。这些仍需两台真实设备按路线图验证。
 
-已知问题：setup time 约 23 秒，见下节。
+历史版本问题：setup time 约 23 秒，修复与复测方法见下节。
 
 本地 JVM 测试不等于真机媒体测试。M0 不证明 P2P、TURN、相机、编码器、ARCore、Depth、屏幕共享、前后台通话或弱网切换可用。
 
@@ -64,11 +64,18 @@ WebRTC 的 NetworkMonitor 从未被启动过：代码只调了 `addNetworkObserv
 
 模拟器现在可用于呼叫、接听、SDP 协商、ICE 直连与媒体流的冒烟验证。但按 AGENTS.md §27，它仍不能替代真机：模拟器处于 QEMU 用户态 NAT（10.0.2.x）之后，其打洞行为不代表真实网络，也无法切换 Wi-Fi 与蜂窝。**TURN fallback、网络切换和弱网表现必须用两台真实设备验证。**
 
-## 已知问题：setup time 约 23 秒
+## 首次连接等待 20 秒：根因与修复
 
 `RTC_SETUP_MS` 稳定在 23000 上下。原因是 gathering 不上报 COMPLETE，`localDescription()` 每次都要空等满 20 秒的 gathering 预算才发出 SDP，应答方尤其明显。
 
-正解是按路线图实现 trickle ICE：candidate 通过信令逐个发送（ROADMAP 的 M1 信令消息里已列 `ICE_CANDIDATE`），而不是等齐后塞进 SDP。尚未实现。
+现已实现 Trickle ICE：SDP 立即发送，候选通过 media.ice 累计增量交换；answer 创建后当轮发送，连接中缩短轮询间隔。保留 NetworkMonitor 启动及 runtime fallback，不通过删掉 TURN 或只发送早到 host 候选缩短等待。
+
+复测需要先更新服务端（PostgreSQL 迁移 4；Firestore 无手动迁移）和两端 APK。分别记录冷启动／连续第二次呼叫的 RTC_SETUP_MS（capture 启动后至 ICE connected）与 RTC_FIRST_FRAME_MS（同一起点至首个远端解码帧），至少各 5 次；另用人工计时记录接听到首帧，覆盖凭据获取和初始化开销。没有新实测数据前不宣称已达到具体秒数。
+
+回归：晚到 relay 候选、SDP 后到候选、信令断开后重复批次、不回传自己的候选、越权和挂断后拒绝写入、过期清理。两台真机继续验证 TURN fallback。
+
+
+本次代码验证：Android assembleDebug、testDebugUnitTest、lintDebug 通过；Go 全套测试在本地 PostgreSQL 17 与 Firestore Emulator 下通过（包括真实存储集成测试，非跳过）。尚未部署本次服务端或安装本次客户端复测首帧；不以构建和协议测试替代媒体与 UI 真机验收。
 
 ## 真机安装
 

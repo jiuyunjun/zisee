@@ -44,7 +44,7 @@ owners:
 
 Cloud Run WebSocket 仍受请求超时约束，session affinity 仅尽力而为。未来通话路由必须使用跨实例共享状态／消息投递，不能依赖单进程 `map[peer]connection`，也不能依赖 max-instances=1 来保证正确性。[官方 WebSocket 说明](https://docs.cloud.google.com/run/docs/triggering/websockets)
 
-当前 PostgreSQL 保存身份、挑战、令牌、邀请、通话和短期 SDP。多实例可查询同一通话和对端描述。`call.sync` 查询状态，`media.send`/`media.sync` 提交及查询初次 SDP；通过稳定消息 ID 和游标支持传输重连，不依赖进程内连接表。
+当前 PostgreSQL 保存身份、挑战、令牌、邀请、通话和短期 SDP。多实例可查询同一通话和对端描述。`call.sync` 查询状态，`media.send`/`media.sync` 提交及查询初次 SDP；`media.ice` 追加累计 ICE 候选，`media.sync` 独立于 SDP 游标返回对端候选；通过稳定消息 ID 和游标支持传输重连，不依赖进程内连接表。
 
 下一步需要 Trickle ICE、ICE restart、媒体状态恢复和短期 TURN credential 鉴权。媒体不进入信令服务。
 

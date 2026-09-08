@@ -45,6 +45,11 @@ class MediaSignalingTest {
                 assertEquals(sdp, received!!.getJSONObject("description").getString("sdp"))
                 assertEquals("retry-stable", received!!.getString("id"))
                 assertFalse(received!!.has("peerId"))
+                val candidates = org.json.JSONArray().put(JSONObject().put("candidate", "candidate:test")
+                    .put("sdpMid", "0").put("sdpMLineIndex", 0))
+                transport.exchange("media.ice", JSONObject().put("callId", "test-call").put("candidates", candidates), "retry-stable")
+                assertEquals("media.ice", received!!.getString("type"))
+                assertEquals(candidates.toString(), received!!.getJSONArray("candidates").toString())
             }
             val request = server.takeRequest()
             assertEquals("Bearer $token", request.getHeader("Authorization"))
