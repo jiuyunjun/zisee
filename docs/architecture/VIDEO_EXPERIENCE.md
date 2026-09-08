@@ -1,7 +1,7 @@
 ---
 title: Zisee 高清、稳定、低延迟视频专项
 document_id: ARCH-VIDEO-EXPERIENCE-001
-version: 1.1.0
+version: 1.2.0
 status: Active
 created: 2026-09-08
 updated: 2026-09-08
@@ -59,11 +59,11 @@ flowchart LR
 | HD | 1280×720、30 fps | 4 Mbps | 默认启动、一般网络 |
 | FULL_HD | 1920×1080、30 fps | 8 Mbps | 能力与持续带宽证据都满足后升档 |
 
-上述值是首版实验参数，不是外部标准。查 CameraEnumerator 格式能力，缺少 1080p30 时不升 FULL_HD。实际格式可由 capturer 选择邻近支持值，诊断显示实际编码尺寸而不是档位冒充实际清晰度。网络降级主要由 native BALANCED 执行；应用只对持续明显不足施加较低上限。严重热状态立即到 ECONOMY，其他恶化要求连续时间窗口，升级要求更长稳定窗口；每次切档后冷却，不能逐帧改采集格式。
+上述值是首版实验参数，不是外部标准。查 CameraEnumerator 格式能力，缺少 1080p30 时不升 FULL_HD。实际格式可由 capturer 选择邻近支持值，诊断显示实际编码尺寸而不是档位冒充实际清晰度。网络降级主要由 native BALANCED 执行；应用只对持续明显不足施加较低上限。严重热状态立即到 ECONOMY，其他恶化要求连续时间窗口，升级要求稳定窗口，强证据允许快速升档；每次切档后冷却，不能逐帧改采集格式。
 
 上行带宽未知时不升 1080p，不把零统计当作弱网。360p 恢复允许稳定低丢包／低 RTT 后试探回 720p，避免应用码率上限反过来限制 BWE 导致永久低清。音频始终保留，不随视频降级关闭麦克风。不根据弱网主动切换 codec，避免重新协商和关键帧突发。
 
-当前具体门限：上行估计 <450 kbps、native CPU limitation 或平均编码 >40 ms/帧持续 3 s，降至 ECONOMY；FULL_HD 在估计 <2.5 Mbps 持续 3 s 后回 HD。升级要求远端上行丢包 <2%、RTT <200 ms、编码 ≤25 ms/帧、热状态低于 moderate，连续 15 s；进入 FULL_HD 另需估计 ≥3.5 Mbps。升档距上次变化至少 10 s，采样间隔 >3 s 打断连续证据。策略暂停期间不会累计静音／断链样本。
+当前具体门限：上行估计 <450 kbps、native CPU limitation 或平均编码 >40 ms/帧持续 3 s，降至 ECONOMY；FULL_HD 在估计 <2.5 Mbps 持续 3 s 后回 HD。升级要求远端上行丢包 <2%、RTT <200 ms、编码 ≤25 ms/帧、热状态低于 moderate，默认连续 15 s；进入 FULL_HD 另需估计 ≥3.5 Mbps。强证据快速路径另要求发送排队 ≤30 ms/包、native quality limitation 为 none、估计上行 ≥3.5 Mbps，连续 5 s 后可升档，冷却缩短为 5 s；当前档位因热或编码压力降级时不使用快速路径。普通升档距上次变化至少 10 s，采样间隔 >3 s 打断连续证据。策略暂停期间不会累计静音／断链样本。
 
 ## 可观测性
 
@@ -107,7 +107,20 @@ flowchart LR
 
 新增回归覆盖卡住的 WebSocket 响应被网络事件打断、新路由绕过冷却，以及频繁换网仍受重启预算限制。Debug 构建、JVM 测试和 lint 通过；完整换网恢复 P50/P95、实际 8 Mbps 发送及双真机发热尚未测量。
 
+## 切档画面衔接与快速升档（2026-09-08）
+
+`VideoFeed` 关闭 SurfaceViewRenderer 的硬件定尺寸缩放，让 Surface 大小由显示布局决定，不再随 360p/720p/1080p 帧尺寸改变。依据 [WebRTC SurfaceViewRenderer 源码](https://webrtc.googlesource.com/src/+/refs/heads/main/sdk/android/api/org/webrtc/SurfaceViewRenderer.java)，启用该选项会在帧尺寸变化时调用 SurfaceHolder.setFixedSize；这是本次定位的闪烁风险路径。采集格式重配间隙保持 EGL 已显示的上一帧，下一帧直接替换；不清屏、不重建 renderer、不缓存摄像头纹理、不人为增加播放延迟。固定显示尺寸可能增加低分辨率视频在大屏上的 GPU 填充开销，仍需真机观察。
+
+双方的发送质量独立决策，host/host 只描述候选类型，不能代替各自上行带宽、编码耗时和温度证据。强证据升档窗口从 15 s 缩短至 5 s，要求连续成立；证据中断或统计采样间隙会重置快速窗口。缺少发送队列统计时保留原来的 15 s 路径。实际发送分辨率仍由 native BALANCED 控制，应用允许 FULL_HD 不保证立刻输出 1920。
+
+验证：53 项 JVM 测试、Debug 构建与 lint 通过，新增快速窗口连续性、能力不足和热恢复保护回归。尚未完成手机／平板的闪烁录屏对比和换网后双向实际升档耗时测量。本次只需更新双方 APK，服务器协议不变。
+
 # Changelog
+
+## 1.2.0 - 2026-09-08
+
+- 固定显示 Surface，保留切档间隙的上一帧；强证据下采用 5 s 快速升档窗口。
+
 
 ## 1.1.0 - 2026-09-08
 

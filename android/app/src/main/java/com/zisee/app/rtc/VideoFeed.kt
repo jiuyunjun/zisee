@@ -14,7 +14,11 @@ class VideoFeed(val eglContext: EglBase.Context, val mirrored: Boolean, private 
         if (closed) return
         renderer.init(eglContext, null)
         renderer.setMirror(mirrored)
-        renderer.setEnableHardwareScaler(true)
+        // Keep the display surface stable across capture/decoder size changes. Resizing the
+        // SurfaceHolder can discard its displayed buffer and briefly flash on some devices.
+        // The existing EGL buffer holds the last image during capture reconfiguration;
+        // the next frame replaces it without retaining a camera texture or adding latency.
+        renderer.setEnableHardwareScaler(false)
         renderers.add(renderer)
     }
     @Synchronized fun detach(renderer: SurfaceViewRenderer) {

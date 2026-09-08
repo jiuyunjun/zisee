@@ -6,6 +6,31 @@ import org.junit.Test
 class VideoQualityPolicyTest {
     private val good = MediaStats(availableOutgoingKbps = 4_000, outboundLoss = 0.0, measuredRttMs = 30, encodeMs = 10.0)
 
+    private val fast = good.copy(sendDelayMs = 10.0, qualityLimitation = "none")
+
+    @Test fun `strong sender evidence upgrades in five seconds`() {
+        val policy = VideoQualityPolicy(true)
+        for (time in 0L..4_000L step 1_000) assertEquals(VideoQuality.HD, policy.update(fast, time).quality)
+        assertEquals(VideoQuality.FULL_HD, policy.update(fast, 5_000).quality)
+    }
+
+    @Test fun `fast evidence must be consecutive and cannot bypass capability`() {
+        val policy = VideoQualityPolicy(true)
+        val unsupported = VideoQualityPolicy(false)
+        for (time in 0L..4_000L step 1_000) policy.update(fast, time)
+        assertEquals(VideoQuality.HD, policy.update(fast.copy(sendDelayMs = 80.0), 5_000).quality)
+        for (time in 6_000L..10_000L step 1_000) assertEquals(VideoQuality.HD, policy.update(fast, time).quality)
+        assertEquals(VideoQuality.FULL_HD, policy.update(fast, 11_000).quality)
+        for (time in 0L..20_000L step 1_000) assertEquals(VideoQuality.HD, unsupported.update(fast, time).quality)
+    }
+
+    @Test fun `heat recovery cannot use fast upgrade`() {
+        val policy = VideoQualityPolicy(true)
+        policy.update(fast.copy(thermalStatus = 3), 0)
+        for (time in 1_000L..15_000L step 1_000) assertEquals(VideoQuality.ECONOMY, policy.update(fast, time).quality)
+        assertEquals(VideoQuality.HD, policy.update(fast, 16_000).quality)
+    }
+
     @Test fun `full HD needs capability and sustained evidence`() {
         val supported = VideoQualityPolicy(true)
         val unsupported = VideoQualityPolicy(false)

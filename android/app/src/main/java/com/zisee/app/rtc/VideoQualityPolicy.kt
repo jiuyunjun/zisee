@@ -12,6 +12,7 @@ class VideoQualityPolicy(private val supportsFullHd: Boolean) {
     var current = QualityDecision(VideoQuality.HD, QualityReason.STARTUP); private set
     private var pending: QualityDecision? = null
     private var sinceMs = 0L
+    private var fastSinceMs: Long? = null
     private var changedMs = Long.MIN_VALUE
     private var lastMs: Long? = null
 
@@ -19,7 +20,7 @@ class VideoQualityPolicy(private val supportsFullHd: Boolean) {
         val previousMs = lastMs
         lastMs = nowMs
         // A missing sample or clock reset breaks consecutive evidence.
-        if (previousMs != null && (nowMs <= previousMs || nowMs - previousMs > 3_000)) pending = null
+        if (previousMs != null && (nowMs <= previousMs || nowMs - previousMs > 3_000)) { pending = null; fastSinceMs = null }
         if ((stats.thermalStatus ?: 0) >= 3) return change(VideoQuality.ECONOMY, QualityReason.THERMAL, nowMs)
         val overloaded = stats.qualityLimitation == "cpu" || (stats.encodeMs ?: 0.0) > 40.0
         val constrained = stats.availableOutgoingKbps?.let { it < 450 } == true
@@ -36,20 +37,29 @@ class VideoQualityPolicy(private val supportsFullHd: Boolean) {
                 stats.availableOutgoingKbps?.let { it >= 3_500 } == true -> QualityDecision(VideoQuality.FULL_HD, QualityReason.CAPACITY)
             else -> null
         }
-        if (target == null || target.quality == current.quality) { pending = null; return current }
+        if (target == null || target.quality == current.quality) { pending = null; fastSinceMs = null; return current }
         // Moderate heat must not raise ECONOMY to HD.
-        if (target.reason == QualityReason.THERMAL && target.quality.ordinal > current.quality.ordinal) { pending = null; return current }
-        if (pending != target) { pending = target; sinceMs = nowMs }
+        if (target.reason == QualityReason.THERMAL && target.quality.ordinal > current.quality.ordinal) { pending = null; fastSinceMs = null; return current }
+        if (pending != target) { pending = target; sinceMs = nowMs; fastSinceMs = null }
         val up = target.quality.ordinal > current.quality.ordinal
-        val wait = if (up) 15_000 else 3_000
-        val cooled = changedMs == Long.MIN_VALUE || nowMs - changedMs >= 10_000
+        // Fast recovery needs evidence in this sender's direction, not host/host or peer size.
+        // Keep thermal/encoder recovery conservative even on an otherwise excellent link.
+        val fastUpgrade = up && healthy &&
+            current.reason !in setOf(QualityReason.THERMAL, QualityReason.ENCODER) &&
+            stats.availableOutgoingKbps?.let { it >= 3_500 } == true &&
+            stats.sendDelayMs?.let { it <= 30.0 } == true && stats.qualityLimitation == "none"
+        if (!fastUpgrade) fastSinceMs = null
+        else if (fastSinceMs == null) fastSinceMs = nowMs
+        val fastReady = fastSinceMs?.let { nowMs - it >= 5_000 } == true
+        val wait = if (!up) 3_000 else if (fastReady) 5_000 else 15_000
+        val cooled = changedMs == Long.MIN_VALUE || nowMs - changedMs >= if (fastReady) 5_000 else 10_000
         if (nowMs - sinceMs >= wait && (!up || cooled)) return change(target.quality, target.reason, nowMs)
         return current
     }
 
     private fun change(quality: VideoQuality, reason: QualityReason, nowMs: Long): QualityDecision {
         if (current.quality != quality) { current = QualityDecision(quality, reason); changedMs = nowMs }
-        pending = null
+        pending = null; fastSinceMs = null
         return current
     }
 }
