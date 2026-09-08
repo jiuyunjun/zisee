@@ -22,9 +22,21 @@ android {
         versionName = "0.1.0-dev"
         buildConfigField("String", "BACKEND_URL", "\"$backendUrl\"")
     }
+    signingConfigs {
+        // Checked into the repo on purpose: every developer and every CI run must
+        // produce debug APKs with the same signature, so builds stay upgrade-installable
+        // across machines. Debug only — release signing never uses this key.
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
     buildTypes {
         debug {
             applicationIdSuffix = ".debug"
+            signingConfig = signingConfigs.getByName("debug")
             if (localBackend) buildConfigField("String", "BACKEND_URL", "\"http://127.0.0.1:8080\"")
         }
         release {

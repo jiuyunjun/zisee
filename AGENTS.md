@@ -616,6 +616,13 @@ Camera
 
 必要文件加入 `.gitignore`。
 
+唯一例外是 `android/app/debug.keystore`：
+
+- 它是共享的 **debug** 签名证书，口令与别名使用 Android 固定的 `android` / `androiddebugkey`，本身不是机密。
+- 提交它是为了让所有开发者和 CI 产出相同签名的 Debug APK，从而可以互相覆盖安装。
+- Release 签名绝不使用它，也绝不提交任何 release keystore。
+- 不要“顺手”把它从版本控制里删掉或重新加回 `.gitignore`。
+
 ---
 
 ### 24. 最小权限

@@ -9,6 +9,9 @@ local.properties
 *.jks
 *.keystore
 *.p12
+# 唯一例外：共享的 debug 签名证书。口令是 Android 固定的 "android"，
+# 不是密钥材料，仅用于统一开发签名，发布签名绝不使用它。
+!android/app/debug.keystore
 .env
 .env.*
 !.env.example

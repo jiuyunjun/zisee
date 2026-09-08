@@ -27,7 +27,7 @@ Manifest 禁用明文流量、云备份及设备迁移数据，当前声明 INTE
 - HTTPS / WSS，短期 access token；TURN credential 从已认证后端动态获取，长期 TURN secret 不进入 APK。
 - SDP 与 ICE 消息必须检查 callId、认证会话归属、大小限制、重放和乱序。
 - PeerConnection 默认允许 direct 与 relay candidate，由 ICE 选择；不默认 relay-only。
-- 签名密钥、token、生产环境配置和个人数据不得进入 Git 或 CI artifact。
+- 签名密钥、token、生产环境配置和个人数据不得进入 Git 或 CI artifact。唯一例外是 `android/app/debug.keystore`：debug 证书使用 Android 固定口令 `android`，不是机密，提交它只为统一开发签名；release 签名不使用它。
 
 # Changelog
 
