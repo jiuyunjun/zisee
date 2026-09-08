@@ -1583,3 +1583,7 @@ Zisee 的文档遵循：
 ## 通话控制协议（2026-09-08）
 
 [CALL_PROTOCOL.md](docs/protocols/CALL_PROTOCOL.md)：PROTO-CALL-001，Active；邀请兑换、接听／拒绝／挂断、通话归属、事务并发和快照同步。
+
+## 视频体验专项（2026-09-08）
+
+[VIDEO_EXPERIENCE.md](docs/architecture/VIDEO_EXPERIENCE.md)：ARCH-VIDEO-EXPERIENCE-001，Active；高清上限、拥塞控制分工、过热保护、媒体监测与真机验收目标。
