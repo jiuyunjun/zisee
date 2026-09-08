@@ -76,7 +76,8 @@ fun CallScreen(state: CallUiState, model: CallViewModel) {
     BackHandler { model.close() }
     if (state.local != null && state.busy) {
         ActiveCall(state, model::toggleMute, model::toggleCamera, { model.toggleShowMe() },
-            { model.toggleShowMe(false) }, model::toggleSpeaker, model::stop, model::dismissShowMeHint)
+            { model.toggleShowMe(false) }, model::toggleSpeaker, model::stop, model::dismissShowMeHint,
+            model::reportViewLayout)
         return
     }
     Scaffold { insets ->

@@ -16,3 +16,25 @@ data class CameraPresentation(val mode: CameraMode, val enabled: Boolean) {
         }
     }
 }
+
+enum class ViewSize { LARGE, SMALL }
+
+/**
+ * How large the viewer is actually showing each of the sender's cameras, so a thumbnail is not
+ * encoded at full size. This is a hint about the viewer's own layout, never a command: the sender
+ * decides what to do with it, and a peer that cannot parse it simply keeps sending full size.
+ */
+data class ViewRequest(val front: ViewSize, val back: ViewSize) {
+    fun encode(): String = "V1|${front.name}|${back.name}"
+    companion object {
+        val Default = ViewRequest(ViewSize.LARGE, ViewSize.LARGE)
+        fun decode(text: String): ViewRequest? {
+            if (text.length > 32) return null
+            val fields = text.split('|')
+            if (fields.size != 3 || fields[0] != "V1") return null
+            val front = ViewSize.entries.firstOrNull { it.name == fields[1] } ?: return null
+            val back = ViewSize.entries.firstOrNull { it.name == fields[2] } ?: return null
+            return ViewRequest(front, back)
+        }
+    }
+}

@@ -184,6 +184,16 @@ class CallViewModel(application: Application, private val container: AppContaine
         viewModelScope.launch { container.callPreferences.markShowMeHintSeen() }
     }
 
+    /** Mirrors this screen's layout back to the sender so a thumbnail is not encoded full size. */
+    fun reportViewLayout(frontLarge: Boolean, backLarge: Boolean) {
+        val current = rtc ?: return
+        viewModelScope.launch {
+            current.reportViewLayout(
+                if (frontLarge) com.zisee.app.rtc.ViewSize.LARGE else com.zisee.app.rtc.ViewSize.SMALL,
+                if (backLarge) com.zisee.app.rtc.ViewSize.LARGE else com.zisee.app.rtc.ViewSize.SMALL)
+        }
+    }
+
     fun toggleMute() {
         val current = rtc ?: return
         val enabled = mutable.value.muted

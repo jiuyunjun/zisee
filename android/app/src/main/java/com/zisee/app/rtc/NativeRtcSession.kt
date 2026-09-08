@@ -66,6 +66,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var backName: String? = null
     private var frontSupportsFullHd = false
     private var dualCapture: DualCameraCapture? = null
+    @Volatile private var cameraClosed: CompletableDeferred<Unit>? = null
     private var control: DataChannel? = null
     private var changingCamera = false
     var localFeed: VideoFeed? = null; private set
@@ -92,6 +93,10 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var videoSender: RtpSender? = null
     private var qualityPolicy = VideoQualityPolicy(false)
     private var appliedQuality: VideoQuality? = null
+    /** How the peer says it is showing this device's cameras, and what was last encoded for it. */
+    private var remoteView = ViewRequest.Default
+    private var appliedView: ViewRequest? = null
+    private var sentView: ViewRequest? = null
     private var adaptationEnabled = true
     private val powerManager = context.getSystemService(PowerManager::class.java)
     @Volatile private var startedNanos = 0L
@@ -185,7 +190,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             override fun onCameraFreezed(error: String) = fail()
             override fun onCameraOpening(name: String) = Unit
             override fun onFirstFrameAvailable() = Unit
-            override fun onCameraClosed() = Unit
+            override fun onCameraClosed() { cameraClosed?.complete(Unit) }
         }) ?: throw IOException("camera_unavailable")
         texture = SurfaceTextureHelper.create("ZiseeCapture", shared)
         videoSource = requireNotNull(factory).createVideoSource(false)
@@ -208,8 +213,19 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             override fun onMessage(buffer: DataChannel.Buffer) {
                 if (buffer.binary || buffer.data.remaining() > 32) return
                 val bytes = ByteArray(buffer.data.remaining()); buffer.data.get(bytes)
-                val value = CameraPresentation.decode(bytes.toString(Charsets.UTF_8)) ?: return
-                scope.launch { if (!released) remotePresentation.value = value }
+                val text = bytes.toString(Charsets.UTF_8)
+                CameraPresentation.decode(text)?.let { value ->
+                    scope.launch { if (!released) remotePresentation.value = value }
+                    return
+                }
+                ViewRequest.decode(text)?.let { value ->
+                    scope.launch {
+                        if (!released && remoteView != value) {
+                            remoteView = value
+                            applyQuality(qualityPolicy.current, changeCapture = false)
+                        }
+                    }
+                }
             }
         })
         audioSource = requireNotNull(factory).createAudioSource(MediaConstraints())
@@ -318,16 +334,35 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         return@withTimeout result
     }
 
+    /**
+     * The main view gets the policy ceiling; anything the viewer shows as a thumbnail is encoded at
+     * this size instead. Sending a full-size stream into a 104dp window is wasted uplink.
+     */
+    private fun thumbnail(sender: RtpSender?, source: VideoSource?) {
+        source?.adaptOutputFormat(640, 360, 15)
+        val parameters = sender?.parameters ?: return
+        parameters.encodings.forEach { it.maxBitrateBps = 450_000; it.maxFramerate = 15; it.minBitrateBps = null }
+        if (!sender.setParameters(parameters)) logger.error(AppEvent.RTC_QUALITY_REJECTED)
+    }
+
     private fun applyQuality(decision: QualityDecision, changeCapture: Boolean = true) {
-        if (appliedQuality == decision.quality || !adaptationEnabled) return
-        val sender = (if (dualCapture != null) backSender else videoSender) ?: return
+        if (appliedQuality == decision.quality && appliedView == remoteView) return
+        if (!adaptationEnabled) return
+        // With both cameras live the viewer chooses which one is its main view, and may swap at any
+        // time. Until it says otherwise the rear camera is the scene the mode exists to show.
+        val frontIsMain = dualCapture != null &&
+            remoteView.front == ViewSize.LARGE && remoteView.back == ViewSize.SMALL
+        val sender = (if (dualCapture == null || frontIsMain) videoSender else backSender) ?: return
+        val source = if (dualCapture == null || frontIsMain) videoSource else backSource
         try {
             val parameters = sender.parameters
             if (parameters.encodings.isEmpty()) return // Retry after negotiation produces encodings.
             parameters.degradationPreference = RtpParameters.DegradationPreference.BALANCED
+            // A single camera the viewer keeps in a thumbnail is not worth a full-size encode either.
+            val small = dualCapture == null && remoteView.front == ViewSize.SMALL
             parameters.encodings.forEach {
-                it.maxBitrateBps = decision.quality.maxBitrateBps
-                it.maxFramerate = decision.quality.fps
+                it.maxBitrateBps = if (small) 450_000 else decision.quality.maxBitrateBps
+                it.maxFramerate = if (small) 15 else decision.quality.fps
                 it.minBitrateBps = null // Do not force a bitrate floor when audio needs the link.
             }
             if (!sender.setParameters(parameters)) {
@@ -336,17 +371,19 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 return
             }
             if (dualCapture != null) {
-                backSource?.adaptOutputFormat(decision.quality.width, decision.quality.height, decision.quality.fps)
+                source?.adaptOutputFormat(decision.quality.width, decision.quality.height, decision.quality.fps)
+                thumbnail(if (frontIsMain) backSender else videoSender, if (frontIsMain) backSource else videoSource)
+            } else if (small) {
+                // Keep the capture format so restoring the main view does not restart the camera.
                 videoSource?.adaptOutputFormat(640, 360, 15)
-                videoSender?.let { auxiliary ->
-                    val parameters = auxiliary.parameters
-                    parameters.encodings.forEach { it.maxBitrateBps = 450_000; it.maxFramerate = 15; it.minBitrateBps = null }
-                    if (!auxiliary.setParameters(parameters)) logger.error(AppEvent.RTC_QUALITY_REJECTED)
-                }
-            } else if (changeCapture) requireNotNull(camera).changeCaptureFormat(
-                decision.quality.width, decision.quality.height, decision.quality.fps)
+            } else {
+                videoSource?.adaptOutputFormat(decision.quality.width, decision.quality.height, decision.quality.fps)
+                if (changeCapture) requireNotNull(camera).changeCaptureFormat(
+                    decision.quality.width, decision.quality.height, decision.quality.fps)
+            }
             appliedQuality = decision.quality
-            logger.info(AppEvent.RTC_QUALITY_CHANGED, "${decision.quality.name}/${decision.reason.name}")
+            appliedView = remoteView
+            logger.info(AppEvent.RTC_QUALITY_CHANGED, "${decision.quality.name}/${decision.reason.name}/${remoteView.encode()}")
         } catch (error: Exception) {
             // Native defaults remain usable if an OEM rejects parameter changes.
             adaptationEnabled = false
@@ -374,6 +411,19 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         if (!channel.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(data), false))) logger.error(AppEvent.RTC_MEDIA_FAILED)
     }
 
+    /**
+     * Tells the peer how large its cameras are on screen here, so it can stop paying full price for
+     * a stream this device is showing in a thumbnail. Only changes are sent.
+     */
+    suspend fun reportViewLayout(front: ViewSize, back: ViewSize) = withContext(dispatcher) {
+        val request = ViewRequest(front, back)
+        if (released || sentView == request) return@withContext
+        val channel = control ?: return@withContext
+        if (channel.state() != DataChannel.State.OPEN) return@withContext
+        val data = request.encode().toByteArray(Charsets.UTF_8)
+        if (channel.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(data), false))) sentView = request
+    }
+
     suspend fun toggleShowMe(preferDual: Boolean = true) = withContext(dispatcher) {
         if (released || changingCamera || !cameraEnabled) return@withContext
         changingCamera = true
@@ -395,9 +445,14 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 val dual = DualCameraCapture(context, requireNotNull(egl).eglBaseContext)
                 var stopped = false
                 var started = false
+                // Falling back to one camera used to leave no trace of which of these it was.
+                var fallback = "none"
                 try {
-                    if (preferDual && control?.state() == DataChannel.State.OPEN && withTimeoutOrNull(5_000) { dual.supported() } == true) {
-                        requireNotNull(camera).stopCapture(); stopped = true
+                    if (!preferDual) fallback = "requested"
+                    else if (control?.state() != DataChannel.State.OPEN) fallback = "control_channel_closed"
+                    else if (withTimeoutOrNull(5_000) { dual.supported() } != true) fallback = "concurrent_unsupported"
+                    else {
+                        releaseCamera(); stopped = true
                         videoSource?.adaptOutputFormat(640, 360, 15)
                         dualCapture = dual
                         dual.start(requireNotNull(videoSource), requireNotNull(backSource))
@@ -408,10 +463,15 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                         started = true
                     }
                 } catch (error: kotlinx.coroutines.TimeoutCancellationException) {
+                    fallback = "no_first_frame"
                     logger.error(AppEvent.RTC_CAPABILITY_UNAVAILABLE)
                 } catch (error: CancellationException) { throw error }
-                catch (error: Exception) { logger.error(AppEvent.RTC_CAPABILITY_UNAVAILABLE) }
+                catch (error: Exception) {
+                    fallback = "bind_failed"
+                    logger.error(AppEvent.RTC_CAPABILITY_UNAVAILABLE)
+                }
                 if (!started) {
+                    logger.info(AppEvent.RTC_SHOW_ME_FALLBACK, fallback)
                     dual.close(); dualCapture = null
                     if (stopped) requireNotNull(camera).startCapture(1280, 720, 30)
                     videoSource?.adaptOutputFormat(1920, 1080, 30)
@@ -433,6 +493,24 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             changingCamera = false
             if (showMe.value.mode == CameraMode.STARTING) showMe.value = ShowMeState(presentationMode)
         }
+    }
+
+    /**
+     * stopCapture() only posts the device close to the camera thread, so it can return while the
+     * front camera is still held. CameraX then cannot open the concurrent pair, that camera never
+     * produces a frame, and Show Me falls back to a single rear camera. Wait for the device to
+     * actually close before handing the camera over.
+     */
+    private suspend fun releaseCamera() {
+        val closed = CompletableDeferred<Unit>()
+        cameraClosed = closed
+        try {
+            requireNotNull(camera).stopCapture()
+            // A capturer that was never started reports no close, so this must not be fatal.
+            if (withTimeoutOrNull(3_000) { closed.await() } == null) {
+                logger.info(AppEvent.RTC_SHOW_ME_FALLBACK, "camera_close_timeout")
+            }
+        } finally { cameraClosed = null }
     }
 
     private suspend fun switchSingle(name: String) = withTimeout(5_000) {

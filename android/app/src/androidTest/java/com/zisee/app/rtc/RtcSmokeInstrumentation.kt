@@ -22,10 +22,12 @@ import org.webrtc.*
 class RtcSmokeInstrumentation : Instrumentation() {
     private var expectedQuality: String? = null
     private var preview = false
+    private var capabilities = false
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         expectedQuality = arguments?.getString("expectedQuality")
         preview = arguments?.getString("preview") == "true"
+        capabilities = arguments?.getString("capabilities") == "true"
         start()
     }
 
@@ -46,6 +48,27 @@ class RtcSmokeInstrumentation : Instrumentation() {
                     runOnMainSync { activity.finish() }
                 }
                 output.putString("stream", "PASS: Face Call and Show Me layout captures\n")
+                finish(Activity.RESULT_OK, output)
+                return
+            }
+            if (capabilities) {
+                // Show Me falls back to a single rear camera for three different reasons. This
+                // reports the device half of that decision on its own, without a call.
+                runBlocking {
+                    withTimeout(30_000) {
+                        val egl = EglBase.create()
+                        try {
+                            val capture = DualCameraCapture(targetContext, egl.eglBaseContext)
+                            output.putString("concurrentFrontBack", capture.supported().toString())
+                            capture.close()
+                        } finally { egl.release() }
+                    }
+                }
+                val enumerator: CameraEnumerator = if (Camera2Enumerator.isSupported(targetContext))
+                    Camera2Enumerator(targetContext) else Camera1Enumerator(true)
+                output.putString("frontCamera", enumerator.deviceNames.count { enumerator.isFrontFacing(it) }.toString())
+                output.putString("rearCamera", enumerator.deviceNames.count { enumerator.isBackFacing(it) }.toString())
+                output.putString("stream", "PASS: concurrent camera capability probe\n")
                 finish(Activity.RESULT_OK, output)
                 return
             }

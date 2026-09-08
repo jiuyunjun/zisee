@@ -66,7 +66,7 @@ private val PipShape = RoundedCornerShape(20.dp)
 @Composable
 internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> Unit,
     onShowMe: () -> Unit, onSwitch: () -> Unit, onSpeaker: () -> Unit, onEnd: () -> Unit,
-    onHintSeen: () -> Unit = {}) {
+    onHintSeen: () -> Unit = {}, onViewLayout: (Boolean, Boolean) -> Unit = { _, _ -> }) {
     var controls by remember { mutableStateOf(true) }
     var interaction by remember { mutableLongStateOf(0L) }
     var more by remember { mutableStateOf(false) }
@@ -113,6 +113,11 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
     // The hint has taught its gesture once it has been read, whether or not it was used.
     LaunchedEffect(hint) { if (hint) { delay(8_000); onHintSeen() } }
     LaunchedEffect(remoteDual) { if (!remoteDual) swap = false }
+    // Whichever remote camera is in the PiP is a thumbnail here, so tell the sender to stop paying
+    // full price for it. Swapping the main view swaps which one that is.
+    LaunchedEffect(remoteDual, swap) {
+        if (remoteDual) onViewLayout(swap, !swap) else onViewLayout(true, true)
+    }
     LaunchedEffect(tip) { if (tip == null) tipInset = 0.dp }
     Surface(color = CallInk, contentColor = CallText, modifier = Modifier.fillMaxSize()) {
         BoxWithConstraints(Modifier.fillMaxSize().clickable { controls = !controls; interaction++ }) {
