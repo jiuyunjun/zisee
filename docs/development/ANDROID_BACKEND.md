@@ -58,7 +58,9 @@ JVM 测试覆盖与 Go 相同的签名字节向量、ECDSA 签名、HTTP 消息�
 .\gradlew.bat :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
 ```
 
-尚未完成 Android Keystore 真机验证、Android→Go 完整联调、Cloud Run 部署或远端 CI 验证。不能用 JVM 签名测试替代 Keystore 真机验证。
+2026-09-08 已在真机（小米 25128PNA1C，Android 16）对已部署的 Cloud Run 后端完成 Android Keystore 实机验证与 Android→Go 联调：bootstrap、签名挑战、令牌兑换、认证 WebSocket、邀请与呼叫接听全部成功，TURN credential 正常下发。硬件 Keystore 生成的 EC P-256 签名可被 Go 端验通，不再依赖 JVM 软件密钥测试。
+
+尚未完成远端 CI 验证。媒体链路（SDP 交换、ICE 连通、P2P 与 TURN 判别）仍未打通，见 [验证指南](../testing/TESTING.md)。
 
 # Changelog
 
@@ -66,4 +68,4 @@ JVM 测试覆盖与 Go 相同的签名字节向量、ECDSA 签名、HTTP 消息�
 
 - 建立 Android 设备认证、前台会话和开发连接入口。
 
-验证记录：2026-09-08，默认构建与指定 HTTPS origin 构建成功，20 项 JVM 测试通过，lint 0 错误、19 条版本提示。ADB 未检测到设备。
+验证记录：2026-09-08，默认构建与指定 HTTPS origin 构建成功，20 项 JVM 测试通过，lint 0 错误、19 条版本提示。同日真机安装并完成认证联调。
