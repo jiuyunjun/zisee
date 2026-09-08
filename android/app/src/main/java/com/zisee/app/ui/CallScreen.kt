@@ -90,8 +90,11 @@ fun CallScreen(state: CallUiState, model: CallViewModel) {
                 }
             }
             if (BuildConfig.DEBUG && state.local != null) {
-                Text("ICE ${state.machine.phase} · ${state.stats.candidateType} · RTT ${state.stats.rttMs} ms\n" +
-                    "远端视频 ${state.stats.videoFrames} 帧 · 音频收/发 ${state.stats.audioReceived}/${state.stats.audioSent} B",
+                val stats = state.stats
+                Text("ICE ${state.machine.phase} · ${stats.candidateType}→${stats.remoteCandidateType} · RTT ${stats.rttMs} ms\n" +
+                    "收/发 ${stats.receiveKbps}/${stats.sendKbps} kbps · 抖动 ${stats.jitterMs} ms · 丢包 ${stats.packetsLost}\n" +
+                    "远端视频 ${stats.videoWidth}x${stats.videoHeight}@${stats.videoFps} · ${stats.videoFrames} 帧\n" +
+                    "音频收/发 ${stats.audioReceived}/${stats.audioSent} B",
                     style = MaterialTheme.typography.bodySmall)
             }
         }

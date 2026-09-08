@@ -32,6 +32,10 @@ import org.webrtc.audio.JavaAudioDeviceModule
 data class MediaStats(
     val videoFrames: Long = 0, val audioReceived: Long = 0, val audioSent: Long = 0,
     val candidateType: String = "—", val rttMs: Long = 0,
+    val remoteCandidateType: String = "—",
+    val videoWidth: Int = 0, val videoHeight: Int = 0, val videoFps: Int = 0,
+    val jitterMs: Long = 0, val packetsLost: Long = 0,
+    val receiveKbps: Long = 0, val sendKbps: Long = 0,
 )
 
 /** One foreground call owns every native resource. All native operations use the RTC executor. */
@@ -61,6 +65,11 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     }
     private var released = false
     private var lastCandidate: String? = null
+    private var lastBytesReceived = 0L
+    private var lastBytesSent = 0L
+    private var lastSampleNanos = 0L
+    private var startedNanos = 0L
+    private var setupReported = false
     private val audioManager = context.getSystemService(AudioManager::class.java)
     private var previousMode = AudioManager.MODE_NORMAL
     private var previousSpeaker = false
@@ -128,6 +137,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         withContext(Dispatchers.Main.immediate) { acquireAudio() }
         // Capturer chooses a supported format closest to 720p/30. No CPU bitmap conversion.
         requireNotNull(camera).startCapture(1280, 720, 30)
+        startedNanos = System.nanoTime()
         Unit
     }
 
@@ -185,21 +195,47 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         suspendCancellableCoroutine { continuation ->
             requireNotNull(peer).getStats { report ->
                 val values = report.statsMap.values
-                fun sum(type: String, kind: String, field: String) = values.filter {
-                    it.type == type && (it.members["kind"] ?: it.members["mediaType"]) == kind
+                fun kindOf(entry: RTCStats) = entry.members["kind"] ?: entry.members["mediaType"]
+                fun sum(type: String, kind: String?, field: String) = values.filter {
+                    it.type == type && (kind == null || kindOf(it) == kind)
                 }.sumOf { (it.members[field] as? Number)?.toLong() ?: 0 }
+                fun number(entry: RTCStats?, field: String) = entry?.members?.get(field) as? Number
+                val video = values.firstOrNull { it.type == "inbound-rtp" && kindOf(it) == "video" }
+                val audio = values.firstOrNull { it.type == "inbound-rtp" && kindOf(it) == "audio" }
                 val transport = values.firstOrNull { it.type == "transport" && it.members["selectedCandidatePairId"] != null }
                 val pair = report.statsMap[transport?.members?.get("selectedCandidatePairId")]
-                val candidate = report.statsMap[pair?.members?.get("localCandidateId")]
-                val type = candidate?.members?.get("candidateType") as? String
-                val result = MediaStats(sum("inbound-rtp", "video", "framesDecoded"), sum("inbound-rtp", "audio", "bytesReceived"),
-                    sum("outbound-rtp", "audio", "bytesSent"), type?.takeIf { it in setOf("host", "srflx", "prflx", "relay") } ?: "—",
-                    ((pair?.members?.get("currentRoundTripTime") as? Number)?.toDouble()?.times(1000))?.toLong() ?: 0)
+                fun candidateType(id: Any?) = (report.statsMap[id]?.members?.get("candidateType") as? String)
+                    ?.takeIf { it in setOf("host", "srflx", "prflx", "relay") } ?: "—"
+                // Throughput is a delta, so it needs the previous sample. The first poll of a call
+                // has no predecessor and reports zero rather than a meaningless spike.
+                val received = sum("inbound-rtp", null, "bytesReceived")
+                val sent = sum("outbound-rtp", null, "bytesSent")
+                val now = System.nanoTime()
+                val elapsedMs = if (lastSampleNanos == 0L) 0L else (now - lastSampleNanos) / 1_000_000
+                fun kbps(current: Long, previous: Long) =
+                    if (elapsedMs <= 0) 0L else (current - previous) * 8 / elapsedMs
+                val result = MediaStats(
+                    videoFrames = number(video, "framesDecoded")?.toLong() ?: 0,
+                    audioReceived = sum("inbound-rtp", "audio", "bytesReceived"),
+                    audioSent = sum("outbound-rtp", "audio", "bytesSent"),
+                    candidateType = candidateType(pair?.members?.get("localCandidateId")),
+                    rttMs = number(pair, "currentRoundTripTime")?.toDouble()?.times(1000)?.toLong() ?: 0,
+                    remoteCandidateType = candidateType(pair?.members?.get("remoteCandidateId")),
+                    videoWidth = number(video, "frameWidth")?.toInt() ?: 0,
+                    videoHeight = number(video, "frameHeight")?.toInt() ?: 0,
+                    videoFps = number(video, "framesPerSecond")?.toInt() ?: 0,
+                    jitterMs = number(audio ?: video, "jitter")?.toDouble()?.times(1000)?.toLong() ?: 0,
+                    packetsLost = sum("inbound-rtp", null, "packetsLost"),
+                    receiveKbps = kbps(received, lastBytesReceived),
+                    sendKbps = kbps(sent, lastBytesSent),
+                )
+                lastBytesReceived = received; lastBytesSent = sent; lastSampleNanos = now
                 // Stats are polled every second; only a change is worth a line. This is the one
                 // signal that distinguishes a P2P pair from a TURN relay.
-                if (result.candidateType != lastCandidate) {
-                    lastCandidate = result.candidateType
-                    logger.info(AppEvent.RTC_SELECTED_CANDIDATE, result.candidateType)
+                val route = "${result.candidateType}/${result.remoteCandidateType}"
+                if (route != lastCandidate) {
+                    lastCandidate = route
+                    logger.info(AppEvent.RTC_SELECTED_CANDIDATE, route)
                 }
                 if (continuation.isActive) continuation.resume(result)
             }
@@ -274,6 +310,14 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private val observer = object : PeerConnection.Observer {
         override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
             logger.info(AppEvent.RTC_ICE_STATE, state.name)
+            // Setup time is the headline M1 number, so report the first connect only; later
+            // reconnects are visible as their own state transitions.
+            val connected = state == PeerConnection.IceConnectionState.CONNECTED ||
+                state == PeerConnection.IceConnectionState.COMPLETED
+            if (connected && !setupReported && startedNanos != 0L) {
+                setupReported = true
+                logger.info(AppEvent.RTC_SETUP_MS, ((System.nanoTime() - startedNanos) / 1_000_000).toString())
+            }
             scope.launch { if (!released) iceState.value = when (state) {
                 PeerConnection.IceConnectionState.NEW -> IceState.NEW
                 PeerConnection.IceConnectionState.CHECKING -> IceState.CHECKING
