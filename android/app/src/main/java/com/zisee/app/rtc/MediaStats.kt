@@ -27,7 +27,13 @@ class MediaStatsSampler {
     private var previous = emptyMap<String, StatsEntry>()
     private var previousMs: Long? = null
 
-    fun sample(entries: List<StatsEntry>, nowMs: Long, localBack: Boolean = false, remoteBack: Boolean = false): MediaStats {
+    /**
+     * [remoteTrackId] is the id the peer's track actually arrived with. It cannot be assumed to be
+     * the wire id this app would have chosen: the peer's msid does not survive every stack, and
+     * matching on the expected name instead selected an arbitrary inbound stream. Picking the
+     * peer's idle camera that way left framesDecoded at zero for the whole call.
+     */
+    fun sample(entries: List<StatsEntry>, nowMs: Long, localBack: Boolean = false, remoteTrackId: String? = null): MediaStats {
         val byId = entries.associateBy { it.id }
         val elapsed = previousMs?.let { nowMs - it }?.takeIf { it in 1..5_000 }
         fun delta(entry: StatsEntry?, key: String): Double? {
@@ -47,8 +53,10 @@ class MediaStatsSampler {
             .sumOf { delta(it, if (type == "inbound-rtp") "bytesReceived" else "bytesSent") ?: 0.0 }
             .times(8).div(elapsed).toLong()
         val inboundVideos = entries.filter { it.type == "inbound-rtp" && it.kind == "video" }
-        val inbound = inboundVideos.firstOrNull { it.members["trackIdentifier"] == if (remoteBack) "video_back" else "video_front" }
-            ?: inboundVideos.firstOrNull()
+        val inbound = inboundVideos.firstOrNull { remoteTrackId != null && it.members["trackIdentifier"] == remoteTrackId }
+            // Falling back to whichever stream is actually decoding keeps the call readable even if
+            // the identifier is missing entirely.
+            ?: inboundVideos.maxByOrNull { it.number("framesDecoded")?.toLong() ?: 0L }
         val audio = entries.firstOrNull { it.type == "inbound-rtp" && it.kind == "audio" }
         val outboundVideos = entries.filter { it.type == "outbound-rtp" && it.kind == "video" && it.number("framesEncoded") != null }
         val outbound = outboundVideos.firstOrNull { byId[it.members["mediaSourceId"]]?.members?.get("trackIdentifier") == if (localBack) "video_back" else "video_front" }

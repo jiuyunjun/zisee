@@ -58,3 +58,27 @@ class MediaStatsSamplerTest {
         assertNull(sampler.sample(reports(2), 10_000).encodeMs)
     }
 }
+
+class InboundSelectionTest {
+    /** The peer's idle camera decodes nothing; picking it reports a call that never gets a frame. */
+    private val streams = listOf(
+        StatsEntry("idle", "inbound-rtp", mapOf("kind" to "video",
+            "trackIdentifier" to "d7f1", "framesDecoded" to 0, "frameWidth" to 0)),
+        StatsEntry("live", "inbound-rtp", mapOf("kind" to "video",
+            "trackIdentifier" to "9c2a", "framesDecoded" to 400, "frameWidth" to 1920)),
+    )
+
+    @Test fun `the named remote track is selected whatever the peer called it`() {
+        val stats = MediaStatsSampler().sample(streams, 0, remoteTrackId = "9c2a")
+        assertEquals(400, stats.videoFrames)
+        assertEquals(1920, stats.videoWidth)
+    }
+
+    @Test fun `an unmatched identifier falls back to the stream that is decoding`() {
+        // A peer whose msid did not survive: without the fallback this reported zero frames for
+        // the whole call and the waiting indicator never cleared.
+        for (id in listOf(null, "video_front", "nonsense")) {
+            assertEquals(400, MediaStatsSampler().sample(streams, 0, remoteTrackId = id).videoFrames)
+        }
+    }
+}

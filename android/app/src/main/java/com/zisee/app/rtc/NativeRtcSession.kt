@@ -343,7 +343,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         }
         // Native callback only delivers a report. Mutable sampling state stays on the RTC executor.
         val result = sampler.sample(report.statsMap.values.map { StatsEntry(it.id, it.type, it.members) },
-            System.nanoTime() / 1_000_000, localBack = dualCapture != null, remoteBack = remotePresentation.value.mode == CameraMode.DUAL)
+            System.nanoTime() / 1_000_000, localBack = dualCapture != null,
+            remoteTrackId = (if (remotePresentation.value.mode == CameraMode.DUAL) remoteBackTrack else remoteTrack)?.id())
         val route = "${result.candidateType}/${result.remoteCandidateType}"
         if (route != lastCandidate) { lastCandidate = route; logger.info(AppEvent.RTC_SELECTED_CANDIDATE, route) }
         return@withTimeout result
