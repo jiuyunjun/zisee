@@ -24,7 +24,7 @@ Zisee/
 ├── android/          Android 客户端（Gradle 工程根目录）
 │   ├── gradlew  gradle/  settings.gradle.kts
 │   └── app/
-├── server/           Go 后端（当前为占位，见 server/README.md）
+├── server/           Go 后端（认证、PostgreSQL、WebSocket 会话）
 ├── design/           Claude Design 画板源文件（*.dc.html）
 ├── docs/             产品、架构、ADR、测试文档
 └── AGENTS.md  ARCHITECTURE.md  DOCS.md
@@ -83,3 +83,5 @@ DataStore 是唯一身份数据源。ViewModel 负责加载与保存状态，UI 
 M0 的完整退出还需要真机安装验证与远端 CI 实际运行。项目许可证尚未由维护者确定，本次不自行选择开源授权；暂未创建 `LICENSE`。
 
 下一步是 M1：先落实身份 bootstrap／设备认证及信令协议，再接入单摄 WebRTC 和短期 TURN credential，通过两台真机验证后推进 Show Me。
+
+服务端已实现 Phase B 认证基础，尚未与 Android 联调，参见 [服务端说明](server/README.md)。

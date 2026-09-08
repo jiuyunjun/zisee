@@ -58,7 +58,7 @@ Zisee 是单仓库（mono-repo），按技术栈划分顶层目录，各自持�
 │   ├── gradlew / gradle/
 │   └── app/
 │
-├── server/           Go 后端，单服务；当前为占位
+├── server/           Go 后端，认证与信令会话基础
 │
 ├── design/           设计画板源文件（*.dc.html）
 │
@@ -110,7 +110,7 @@ Zisee 是单仓库（mono-repo），按技术栈划分顶层目录，各自持�
 
 `docs/` 始终位于仓库根目录，不按端拆分：产品、架构、协议、ADR 同时约束客户端与服务端，拆开会立刻产生两份互相漂移的事实来源。
 
-代码目录可以随着项目实际需求逐步创建。当前 `server/` 只有一份 README 占位，M1 开始实现信令时再初始化 Go module。
+代码目录可以随着项目实际需求逐步创建。当前 server 已实现认证、PostgreSQL 和 WebSocket 会话。
 
 禁止为了“看起来完整”一次性创建大量空文档。
 
@@ -1570,3 +1570,8 @@ Zisee 的文档遵循：
 - 定义 ADR 规则。
 - 定义文档废弃和归档机制。
 - 建立当前文档索引。
+
+## 服务端新增文档（1.4.0 - 2026-09-08）
+
+- [身份协议](docs/protocols/IDENTITY_PROTOCOL.md)：PROTO-IDENTITY-001，Active。
+- [信令会话](docs/architecture/SIGNALING.md)：ARCH-SIGNALING-001，Active。

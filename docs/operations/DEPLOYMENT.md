@@ -1,7 +1,7 @@
 ---
 title: Zisee Cloud Run 部署准备
 document_id: OPS-DEPLOYMENT-001
-version: 1.1.0
+version: 1.2.0
 status: Active
 created: 2026-09-08
 updated: 2026-09-08
@@ -54,3 +54,7 @@ API 准备依据：[Cloud Run 源码部署文档](https://docs.cloud.google.com/
 ## 1.0.0 - 2026-09-08
 
 - 确定 Cloud Run 部署目标，创建 `zisee-app` 并记录实际账单阻塞及恢复步骤。
+
+## 1.2.0 - 2026-09-08
+
+服务端认证、PostgreSQL、WebSocket 心跳及容器已实现并本地验证。尚未创建云数据库或部署 Cloud Run；接下来完成 Android 接入、公网反滥用和通话路由，再选择区域及数据库规格部署。

@@ -1,43 +1,42 @@
-# server
+# Zisee server
 
-Zisee 后端服务。**当前为空目录占位，没有任何实现。**
+Go 控制面：已实现 Phase B 服务端认证、PostgreSQL 持久化与认证 WebSocket 心跳。Android、邀请、SDP/ICE、TURN 尚未接入，尚未部署 Cloud Run。
 
-部署平台已确定为 **GCP Cloud Run**，已创建项目 `zisee-app`（显示名称 Zisee）。账单已关联，Cloud Run、Cloud Build 和 Artifact Registry API 已启用，尚未部署服务。状态与后续步骤见 [部署准备](../docs/operations/DEPLOYMENT.md)。
+## 运行
 
-## 定位
+需要 Go 1.26.6+ 与 PostgreSQL 17。设置 DATABASE_URL 环境变量，在 server/ 执行：
 
-按 `ARCHITECTURE.md` §30，第一版是**单个 Go 服务**，不拆微服务。职责：
-
-```text
-REST API
-WebSocket signaling
-TURN credential
-Push integration
-Auth
+```powershell
+go run ./cmd/migrate
+go run ./cmd/server
 ```
 
-只承担 Control Plane。媒体不经过这里——1v1 走 P2P，打不通才回落到 TURN 中转（[ADR 0002](../docs/adr/0002-p2p-first.md)、[ADR 0004](../docs/adr/0004-cloudflare-turn.md)）。
+PORT 默认 8080。迁移使用建表账户；运行时仅需表的 SELECT/INSERT/UPDATE/DELETE 权限。初始迁移幂等，后续结构变化需版本化迁移。healthz 检查进程，readyz 检查数据库及表，支持 SIGTERM 关闭。
 
-## 为什么现在是空的
+## 协议
 
-M0 只交付 Android 工程框架与 Phase A 本地身份，本地身份不需要服务端。信令协议尚未定稿，此时初始化 Go module 只会产生需要跟着协议返工的空壳。
+- [身份协议](../docs/protocols/IDENTITY_PROTOCOL.md)：公钥 bootstrap、一次性挑战、15 分钟令牌、本人资料、改名、退出。
+- [信令会话](../docs/architecture/SIGNALING.md)：认证连接与心跳，尚无通话转发。
+- [部署状态](../docs/operations/DEPLOYMENT.md)：zisee-app 的 API 已启用，尚无云数据库和服务。
 
-按 `DOCS.md` §3：
+## 验证
 
-> 禁止为了「看起来完整」一次性创建大量空文档。
+```powershell
+go test ./...
+go vet ./...
+go build ./...
+go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+docker build -t zisee-server:dev .
+```
 
-## 什么时候开始写
+设置 TEST_DATABASE_URL 指向专用 PostgreSQL 后才执行 integration 测试，否则明确 skip。测试创建随机 schema，结束删除该 schema，禁止使用生产库。Linux/CI 运行 go test -race -count=1 ./...；Windows race 需要 CGO 和 C 编译器。
 
-M1，且顺序是先协议后实现：
+镜像非 root，包含 server/migrate，上传清单排除环境文件和测试数据。CI 提供真实 PostgreSQL 并执行 race、vet、build、容器和漏洞检查。
 
-1. 身份 bootstrap 与 device credential（`docs/product/ACCOUNT.md` Phase B）
-2. WebSocket 信令协议与消息 schema（`ARCHITECTURE.md` §7）
-3. 短期 TURN credential 签发（`ARCHITECTURE.md` §9.3）
+## 依赖与边界
 
-开始时需要一并补上：`go.mod`、`cmd/server/`、`.github/workflows/server.yml`，以及 `docs/architecture/SIGNALING.md`。
+pgx/v5（MIT）、coder/websocket（ISC）仅用于服务端，不增加 APK 体积或权限。版本锁定在 go.mod/go.sum，已按漏洞扫描修复。
 
-## 约束
+当前仅有单实例速率上限及每设备挑战数量限制。公网全局反滥用、邀请授权、跨实例通话投递、托管数据库及 IAM 配置后续完成，尚未公开部署注册接口。
 
-- TURN 账号密码不得下发到客户端硬编码，必须由本服务签发短期 credential。
-- 不保存音视频内容、屏幕画面、AR 原始帧与麦克风内容（`ARCHITECTURE.md` §29）。
-- 密钥与配置走环境变量，不进仓库（`AGENTS.md` §23）。
+2026-09-08：10 项测试通过，Linux race、vet、build 通过，govulncheck 未发现漏洞；非 root 容器构建、迁移和 healthz/readyz 冒烟通过。远端 CI 与 Android Keystore 真机联调未执行。
