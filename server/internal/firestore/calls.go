@@ -40,8 +40,10 @@ type inviteKeyDoc struct {
 }
 
 type callDoc struct {
-	CallerID string `firestore:"callerId"`
-	CalleeID string `firestore:"calleeId"`
+	MediaGeneration int       `firestore:"mediaGeneration"`
+	MediaStartedAt  time.Time `firestore:"mediaStartedAt"`
+	CallerID        string    `firestore:"callerId"`
+	CalleeID        string    `firestore:"calleeId"`
 	// Participants exists so one array-contains query can find either side.
 	Participants []string  `firestore:"participants"`
 	State        string    `firestore:"state"`

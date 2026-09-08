@@ -105,6 +105,34 @@ class RtcSmokeInstrumentation : Instrumentation() {
             output.putString("qualityCeiling", session.mediaStats.value.quality.name)
             output.putInt("sentWidth", session.mediaStats.value.sentWidth)
             output.putInt("sentHeight", session.mediaStats.value.sentHeight)
+            val beforeRestart = receivedFrames.get()
+            session.prepareIceGeneration(emptyList())
+            session.restartIce()
+            session.localDescription(true) // Simulate an offer whose answer was lost.
+            session.prepareIceGeneration(emptyList()) // Must roll back the outstanding local offer.
+            session.restartIce()
+            val restarted = session.localDescription(true)
+            fun ufrag(sdp: SessionDescription) = sdp.description.lineSequence().first { it.startsWith("a=ice-ufrag:") }
+            check(ufrag(offer) != ufrag(restarted))
+            candidates.clear()
+            set(receiver, restarted, false)
+            val restartAnswer = suspendCancellableCoroutine<SessionDescription> { continuation ->
+                receiver.createAnswer(object : DescriptionObserver() {
+                    override fun onCreateSuccess(sdp: SessionDescription) { if (continuation.isActive) continuation.resume(sdp) }
+                    override fun onCreateFailure(error: String) { if (continuation.isActive) continuation.resumeWithException(IllegalStateException()) }
+                }, MediaConstraints())
+            }
+            set(receiver, restartAnswer, true)
+            session.remoteDescription("answer", restartAnswer.description)
+            sent = 0
+            while (receivedFrames.get() < beforeRestart + 30 || session.iceState.value != IceState.CONNECTED) {
+                val local = session.localCandidates()
+                while (sent < local.size) check(receiver.addIceCandidate(local[sent++]))
+                while (true) session.addRemoteCandidate(candidates.poll() ?: break)
+                delay(100)
+            }
+            output.putString("iceRestart", "PASS: new credentials and continued decoded frames")
+
         } finally {
             withContext(NonCancellable) {
                 try { receiver?.dispose() }

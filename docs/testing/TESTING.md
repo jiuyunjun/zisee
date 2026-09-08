@@ -128,3 +128,12 @@ try {
 - 记录首次接通：真机对模拟器 P2P 直连，双向音视频。
 - 推翻 1.1.0 的模拟器结论，根因是网络监视器未被启动。
 - 记录 setup time 约 23 秒及其成因。
+
+
+## 换网恢复回归（2026-09-08）
+
+原生回环测试增加 ICE restart：确认新 offer 的 ufrag 已改变、同一采集会话继续解码至少 30 帧。运行成功输出 `iceRestart=PASS`。本机模拟器已通过；未验证真实换网。
+
+双真机需先升级后端和双方 APK，分别由 caller、callee 和双方同时执行 Wi-Fi→蜂窝→Wi-Fi，以及 Wi-Fi A→Wi-Fi B。记录网络变化、重启次数、选中候选、恢复首帧和音频中断时长；验证旧代候选不污染新代、静音／画面开关状态保持、挂断可取消恢复。关闭所有网络超过预算应明确结束，不无限重试；断网 1 秒恢复应优先自恢复。通话超过 2 分钟后重复上述测试，验证每代投递窗口。TURN 和真实移动网络仍必须双真机验收。
+
+本轮验证：47 项 Android JVM 测试全部通过，assembleDebug／assembleDebugAndroidTest／lintDebug 通过；Go 全套在 PostgreSQL 与 Firestore Emulator 下通过。原生模拟器测试确认未应答 offer rollback 后可再次重启、新 ICE 凭据生效、继续解码。未部署线上；真实 Wi-Fi↔蜂窝恢复仍待双真机验收。

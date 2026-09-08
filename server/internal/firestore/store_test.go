@@ -326,6 +326,39 @@ func TestCallTransitionsAndDescriptionExchange(t *testing.T) {
 	if err := store.SendCandidates(ctx, "zid_caller", created.ID, changed); !errors.Is(err, call.ErrTransition) {
 		t.Fatal("rewrote candidates", err)
 	}
+
+	time.Sleep(5100 * time.Millisecond)
+	generation, err := store.RestartMedia(ctx, "zid_caller", created.ID, 0)
+	if err != nil || generation != 1 {
+		t.Fatal("restart", generation, err)
+	}
+	generation, err = store.RestartMedia(ctx, "zid_callee", created.ID, 0)
+	if err != nil || generation != 1 {
+		t.Fatal("simultaneous restart must coalesce", generation, err)
+	}
+	if err = store.SendCandidates(ctx, "zid_caller", created.ID, candidates, 0); !errors.Is(err, call.ErrGeneration) {
+		t.Fatal("old candidates", err)
+	}
+	if _, err = store.SendDescription(ctx, "zid_caller", created.ID, "old", "offer", sdp, 0); !errors.Is(err, call.ErrGeneration) {
+		t.Fatal("old SDP", err)
+	}
+	fresh, err := store.SyncDescriptions(ctx, "zid_callee", created.ID, 0)
+	if err != nil || fresh.Generation != 1 || len(fresh.Descriptions) != 0 || len(fresh.Candidates) != 0 {
+		t.Fatal("generation snapshot", err)
+	}
+	if _, err = store.SendDescription(ctx, "zid_caller", created.ID, "restart-offer", "offer", sdp, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.SendDescription(ctx, "zid_callee", created.ID, "restart-answer", "answer", sdp, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.SendCandidates(ctx, "zid_caller", created.ID, candidates, 1); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err = store.SyncDescriptions(ctx, "zid_callee", created.ID, 1)
+	if err != nil || len(fresh.Candidates) != 2 {
+		t.Fatal("new candidates", err)
+	}
 	// Ending the call drops the descriptions: there is no cascade in Firestore.
 	if _, err := store.ActOnCall(ctx, "zid_caller", created.ID, "end"); err != nil {
 		t.Fatal(err)

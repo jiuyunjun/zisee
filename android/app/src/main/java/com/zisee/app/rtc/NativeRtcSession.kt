@@ -53,6 +53,9 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     var localFeed: VideoFeed? = null; private set
     var remoteFeed: VideoFeed? = null; private set
     private val candidates = mutableListOf<IceCandidate>()
+    private var acceptingCandidates = true
+    private var localUfrags = emptySet<String>()
+    private var configuration: PeerConnection.RTCConfiguration? = null
     private val networksReady = CompletableDeferred<Unit>()
     private val networkObserver = NetworkMonitor.NetworkObserver { type ->
         if (type != NetworkChangeDetector.ConnectionType.CONNECTION_NONE) {
@@ -120,6 +123,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             iceTransportsType = PeerConnection.IceTransportsType.ALL
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_ONCE
         }
+        configuration = config
         peer = requireNotNull(factory).createPeerConnection(config, observer) ?: throw IOException("peer_creation_failed")
         val enumerator: CameraEnumerator = if (Camera2Enumerator.isSupported(context)) Camera2Enumerator(context) else Camera1Enumerator(true)
         val name = enumerator.deviceNames.firstOrNull { enumerator.isFrontFacing(it) }
@@ -199,6 +203,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             }
             if (offer) pc.createOffer(observer, MediaConstraints()) else pc.createAnswer(observer, MediaConstraints())
         } }
+        localUfrags = description.description.lineSequence().filter { it.startsWith("a=ice-ufrag:") }.map { it.substringAfter(":").trim() }.toSet()
+        acceptingCandidates = true
         setDescription(description, local = true)
         // Send immediately. Candidates are delivered independently, including slow TURN results.
         description
@@ -273,7 +279,22 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         }
         Unit
     }
-    override suspend fun restartIce(): Unit = throw UnsupportedOperationException("initial_negotiation_only")
+    suspend fun prepareIceGeneration(iceServers: List<IceServerConfig>) = withContext(dispatcher) {
+        acceptingCandidates = false
+        candidates.clear()
+        val config = requireNotNull(configuration)
+        config.iceServers = iceServers.map { PeerConnection.IceServer.builder(it.urls)
+            .setUsername(it.username).setPassword(it.credential).createIceServer() }
+        check(requireNotNull(peer).setConfiguration(config))
+        // Roll back an unanswered old offer before the caller creates a new generation.
+        if (requireNotNull(peer).signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER) {
+            setDescription(SessionDescription(SessionDescription.Type.ROLLBACK, ""), local = true)
+        }
+    }
+    override suspend fun restartIce() = withContext(dispatcher) {
+        requireNotNull(peer).restartIce()
+        logger.info(AppEvent.RTC_ICE_RESTART)
+    }
 
     @Suppress("DEPRECATION")
     private fun acquireAudio() {
@@ -360,7 +381,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         override fun onSignalingChange(state: PeerConnection.SignalingState) = Unit
         override fun onIceConnectionReceivingChange(receiving: Boolean) = Unit
         override fun onIceCandidate(candidate: IceCandidate) { scope.launch {
-            if (!released && candidates.none { it.sdp == candidate.sdp && it.sdpMid == candidate.sdpMid }) {
+            val ufrag = Regex("(?:^| )ufrag ([^ ]+)").find(candidate.sdp)?.groupValues?.get(1)
+            if (!released && acceptingCandidates && (ufrag == null || ufrag in localUfrags) && candidates.none { it.sdp == candidate.sdp && it.sdpMid == candidate.sdpMid }) {
                 if (candidates.size >= 32) fail() else candidates.add(candidate)
             }
         } }

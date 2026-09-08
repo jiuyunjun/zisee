@@ -24,7 +24,6 @@ import com.zisee.app.rtc.VideoFeed
 import com.zisee.app.signaling.MediaSignaling
 import java.io.IOException
 import java.time.Instant
-import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
@@ -135,6 +134,7 @@ class CallViewModel(application: Application, private val container: AppContaine
             val calls = CallApi(api)
             var ended = false
             var mediaObservation: Job? = null
+            var networkWatcher: com.zisee.app.rtc.DefaultNetworkWatcher? = null
             var machine = CallState()
             fun event(event: CallEvent) {
                 machine.session?.let { machine = CallReducer.reduce(machine, it.callId, event) }
@@ -148,14 +148,11 @@ class CallViewModel(application: Application, private val container: AppContaine
                     inviteExpiry = created.second
                     mutable.update { it.copy(invite = created.first, status = "将邀请码发给对方，等待来电。") }
                 } else remote = calls.redeem(session, invite)
-                var localDescription: JSONObject? = null
-                val descriptionId = UUID.randomUUID().toString()
-                var sent = false
-                var cursor = 0
-                var sentCandidates = 0
-                var receivedCandidates = 0
-                var negotiationStarted: Instant? = null
-                var disconnectedAt: Instant? = null
+                var negotiator: com.zisee.app.signaling.MediaNegotiator? = null
+                val recovery = com.zisee.app.rtc.IceRecoveryPolicy(System.nanoTime() / 1_000_000)
+                val network = com.zisee.app.rtc.DefaultNetworkWatcher(getApplication<Application>(), container.logger)
+                network.start()
+                networkWatcher = network
                 val signalingRetry = com.zisee.app.signaling.SignalingRetryPolicy()
                 while (isActive) {
                     if (session == null || !Instant.now().isBefore(session.expiresAt.minusSeconds(30))) {
@@ -205,11 +202,12 @@ class CallViewModel(application: Application, private val container: AppContaine
                                     val media = NativeRtcSession(getApplication<Application>(), container.logger)
                                     rtc = media // Assign before start so partial initialization is always released.
                                     media.start(ice)
+                                    recovery.initialNegotiationStarted(System.nanoTime() / 1_000_000, network.version.value)
                                     mediaObservation = launch {
                                         combine(media.mediaStats, media.iceState) { stats, iceState -> stats to iceState }
                                             .collect { (stats, iceState) ->
                                                 when (iceState) {
-                                                    IceState.CONNECTED -> event(CallEvent.MEDIA_CONNECTED)
+                                                    IceState.CONNECTED -> if (negotiator?.complete == true) event(CallEvent.MEDIA_CONNECTED)
                                                     IceState.DISCONNECTED -> event(CallEvent.CONNECTION_LOST)
                                                     else -> Unit
                                                 }
@@ -217,74 +215,29 @@ class CallViewModel(application: Application, private val container: AppContaine
                                             }
                                     }
                                     mutable.update { it.copy(local = media.localFeed, remote = media.remoteFeed) }
-                                    negotiationStarted = Instant.now()
-                                    if (current.caller == identity.identityId) {
-                                        val sdp = media.localDescription(offer = true)
-                                        localDescription = JSONObject().put("type", "offer").put("sdp", sdp.description)
+                                    negotiator = com.zisee.app.signaling.MediaNegotiator(media, current.caller == identity.identityId) {
+                                        calls.iceServers(requireNotNull(session))
                                     }
                                 }
-                                if (localDescription != null && !sent) {
-                                    socket.exchange("media.send", JSONObject().put("callId", current.id).put("description", localDescription), descriptionId)
-                                    sent = true
+                                val negotiation = requireNotNull(negotiator)
+                                val action = recovery.evaluate(requireNotNull(rtc).iceState.value, network.version.value,
+                                    negotiation.complete, System.nanoTime() / 1_000_000)
+                                if (action == com.zisee.app.rtc.IceRecoveryPolicy.Action.FAIL) throw IOException("ice_timeout")
+                                if (action == com.zisee.app.rtc.IceRecoveryPolicy.Action.RESTART) {
+                                    event(CallEvent.CONNECTION_LOST)
+                                    mutable.update { it.copy(status = "网络已变化，正在恢复通话…") }
                                 }
-                                val candidates = requireNotNull(rtc).localCandidates()
-                                if (sent && candidates.size > sentCandidates) {
-                                    val batch = org.json.JSONArray()
-                                    candidates.forEach { batch.put(JSONObject().put("candidate", it.sdp)
-                                        .put("sdpMid", it.sdpMid).put("sdpMLineIndex", it.sdpMLineIndex)) }
-                                    socket.exchange("media.ice", JSONObject().put("callId", current.id).put("candidates", batch))
-                                    sentCandidates = candidates.size
+                                if (negotiation.exchange(socket, current.id, action == com.zisee.app.rtc.IceRecoveryPolicy.Action.RESTART)) {
+                                    recovery.generationStarted(System.nanoTime() / 1_000_000, network.version.value)
+                                    event(CallEvent.CONNECTION_LOST)
                                 }
-                                val snapshot = socket.exchange("media.sync", JSONObject().put("callId", current.id).put("after", cursor)).getJSONObject("snapshot")
-                                val descriptions = snapshot.getJSONArray("descriptions")
-                                for (index in 0 until descriptions.length()) {
-                                    val description = descriptions.getJSONObject(index)
-                                    val seq = description.getInt("sequence")
-                                    if (seq <= cursor) continue
-                                    val type = description.getString("type")
-                                    require(type == if (current.caller == identity.identityId) "answer" else "offer")
-                                    requireNotNull(rtc).remoteDescription(type, description.getString("sdp"))
-                                    cursor = seq
-                                    if (type == "offer") {
-                                        val answer = requireNotNull(rtc).localDescription(offer = false)
-                                        localDescription = JSONObject().put("type", "answer").put("sdp", answer.description)
-                                    }
-                                }
-                                // SDP must be applied before its candidates. Cursor advances only after success.
-                                val remoteCandidates = snapshot.optJSONArray("candidates")
-                                if (cursor > 0 && remoteCandidates != null) {
-                                    while (receivedCandidates < remoteCandidates.length()) {
-                                        val candidate = remoteCandidates.getJSONObject(receivedCandidates)
-                                        requireNotNull(rtc).addRemoteCandidate(org.webrtc.IceCandidate(
-                                            candidate.getString("sdpMid"), candidate.getInt("sdpMLineIndex"), candidate.getString("candidate")))
-                                        receivedCandidates++
-                                    }
-                                }
-                                // The answer is ready now; do not wait for the next polling interval.
-                                if (localDescription != null && !sent) {
-                                    socket.exchange("media.send", JSONObject().put("callId", current.id).put("description", localDescription), descriptionId)
-                                    sent = true
-                                }
-                                when (requireNotNull(rtc).iceState.value) {
-                                    IceState.CONNECTED -> {
-                                        event(CallEvent.MEDIA_CONNECTED); disconnectedAt = null
-                                        mutable.update { it.copy(status = "链路已连接，等待远端音视频…") }
-                                    }
-                                    IceState.DISCONNECTED -> {
-                                        event(CallEvent.CONNECTION_LOST)
-                                        if (disconnectedAt == null) disconnectedAt = Instant.now()
-                                        if (Instant.now().isAfter(disconnectedAt.plusSeconds(15))) throw IOException("ice_disconnected")
-                                        mutable.update { it.copy(status = "网络中断，等待恢复…") }
-                                    }
-                                    IceState.FAILED, IceState.CLOSED -> throw IOException("media_failed")
-                                    else -> if (negotiationStarted != null && Instant.now().isAfter(negotiationStarted.plusSeconds(60))) throw IOException("ice_timeout")
-                                }
+                                if (negotiation.complete && requireNotNull(rtc).iceState.value == IceState.CONNECTED) event(CallEvent.MEDIA_CONNECTED)
                                 val stats = requireNotNull(rtc).mediaStats.value
                                 mutable.update { it.copy(stats = stats, status = if (stats.videoFrames > 0 && stats.audioReceived > 0 && machine.phase == CallPhase.CONNECTED) "音视频已连接" else it.status) }
                             }
                         }
                         signalingRetry.recovered()
-                        delay(if (machine.phase == CallPhase.CONNECTING) 100 else 1_000)
+                        delay(if (machine.phase in setOf(CallPhase.CONNECTING, CallPhase.RECONNECTING)) 100 else 1_000)
                     } catch (error: IOException) {
                         // Retry transport failures using the same SDP message ID and receive cursor.
                         // Protocol, media and authorization failures are terminal in this first version.
@@ -311,6 +264,7 @@ class CallViewModel(application: Application, private val container: AppContaine
             } finally {
                 socket?.close()
                 withContext(NonCancellable) {
+                    networkWatcher?.close()
                     mediaObservation?.cancelAndJoin()
                     val media = rtc; rtc = null
                     mutable.update { it.copy(local = null, remote = null, invite = "") }

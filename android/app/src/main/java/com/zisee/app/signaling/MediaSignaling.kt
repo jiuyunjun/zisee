@@ -15,6 +15,8 @@ import okhttp3.WebSocketListener
 import okio.ByteString
 import org.json.JSONObject
 
+class StaleMediaGeneration : IOException("stale_media_generation")
+
 /** One request at a time; caller owns reconnect and retains acknowledged SDP/cursor in memory. */
 class MediaSignaling(api: BackendApi, client: OkHttpClient, session: AccessSession) : Closeable {
     private val incoming = Channel<String>(8)
@@ -50,8 +52,9 @@ class MediaSignaling(api: BackendApi, client: OkHttpClient, session: AccessSessi
         val id = stableId ?: "q${++sequence}"
         if (!socket.send(payload.put("v", 1).put("type", type).put("id", id).toString())) throw IOException("signaling_send")
         val result = receive()
+        if (result.optString("id") == id && result.optString("type") == "error" && result.optString("error") == "stale_media_generation") throw StaleMediaGeneration()
         if (result.optString("id") != id || result.optString("type") == "error") throw AuthFailure(AuthFailure.Reason.PROTOCOL)
-        val expected = when (type) { "call.sync" -> "call.snapshot"; "media.send", "media.ice" -> "media.ack"; "media.sync" -> "media.snapshot"; else -> "pong" }
+        val expected = when (type) { "call.sync" -> "call.snapshot"; "media.send", "media.ice", "media.restart" -> "media.ack"; "media.sync" -> "media.snapshot"; else -> "pong" }
         if (result.optString("type") != expected) throw AuthFailure(AuthFailure.Reason.PROTOCOL)
         return result
     }

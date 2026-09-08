@@ -340,6 +340,7 @@ func (s *Server) signaling(w http.ResponseWriter, r *http.Request) {
 			ID          string           `json:"id"`
 			CallID      string           `json:"callId"`
 			After       int              `json:"after"`
+			Generation  int              `json:"generation"`
 			Candidates  []call.Candidate `json:"candidates"`
 			Description struct {
 				Type string `json:"type"`
@@ -373,19 +374,23 @@ func (s *Server) signaling(w http.ResponseWriter, r *http.Request) {
 				_, code := callError(queryErr)
 				response = map[string]any{"v": 1, "type": "error", "id": message.ID, "error": code}
 			}
-		case "media.send", "media.sync", "media.ice":
+		case "media.send", "media.sync", "media.ice", "media.restart":
 			store, available := s.store.(call.MediaStore)
 			if !available {
 				return
 			}
 			queryCtx, queryCancel := context.WithTimeout(ctx, 5*time.Second)
 			var queryErr error
-			if message.Type == "media.ice" {
-				queryErr = store.SendCandidates(queryCtx, session.IdentityID, message.CallID, message.Candidates)
+			if message.Type == "media.restart" {
+				var generation int
+				generation, queryErr = store.RestartMedia(queryCtx, session.IdentityID, message.CallID, message.Generation)
+				response = map[string]any{"v": 1, "type": "media.ack", "id": message.ID, "generation": generation}
+			} else if message.Type == "media.ice" {
+				queryErr = store.SendCandidates(queryCtx, session.IdentityID, message.CallID, message.Candidates, message.Generation)
 				response = map[string]any{"v": 1, "type": "media.ack", "id": message.ID}
 			} else if message.Type == "media.send" {
 				var seq int
-				seq, queryErr = store.SendDescription(queryCtx, session.IdentityID, message.CallID, message.ID, message.Description.Type, message.Description.SDP)
+				seq, queryErr = store.SendDescription(queryCtx, session.IdentityID, message.CallID, message.ID, message.Description.Type, message.Description.SDP, message.Generation)
 				response = map[string]any{"v": 1, "type": "media.ack", "id": message.ID, "sequence": seq}
 			} else {
 				var snapshot call.MediaSnapshot

@@ -28,7 +28,7 @@ type descriptionDoc struct {
 // what limits a call to one offer and one answer.
 func descriptionID(callID string, sequence int) string { return fmt.Sprintf("%s:%d", callID, sequence) }
 
-func (s *Store) SendDescription(ctx context.Context, actor, id, messageID, kind, sdp string) (int, error) {
+func (s *Store) SendDescription(ctx context.Context, actor, id, messageID, kind, sdp string, generation ...int) (int, error) {
 	if len(messageID) < 1 || len(messageID) > 64 || len(sdp) > 49152 || !strings.HasPrefix(sdp, "v=0\r\n") || strings.ContainsRune(sdp, 0) {
 		return 0, identity.ErrInvalid
 	}
@@ -63,7 +63,10 @@ func (s *Store) SendDescription(ctx context.Context, actor, id, messageID, kind,
 		if current.State != "accepted" || (sequence == 1 && current.CallerID != actor) || (sequence == 2 && current.CalleeID != actor) {
 			return call.ErrTransition
 		}
-		ref := s.client.Collection(media).Doc(descriptionID(id, sequence))
+		if call.Generation(generation) != stored.MediaGeneration {
+			return call.ErrGeneration
+		}
+		ref := s.client.Collection(media).Doc(generationDescriptionID(id, sequence, stored.MediaGeneration))
 		existing, err := tx.Get(ref)
 		if err != nil && !notFound(err) {
 			return err
@@ -81,11 +84,15 @@ func (s *Store) SendDescription(ctx context.Context, actor, id, messageID, kind,
 			return nil
 		}
 		// Refuse a first description once the delivery window has passed.
-		if !current.ExpiresAt.After(now.Add(acceptedTTL - descriptionWindow)) {
+		started := stored.MediaStartedAt
+		if started.IsZero() {
+			started = current.ExpiresAt.Add(-acceptedTTL)
+		}
+		if !started.After(now.Add(-descriptionWindow)) {
 			return call.ErrTransition
 		}
 		if sequence == 2 {
-			offer, err := tx.Get(s.client.Collection(media).Doc(descriptionID(id, 1)))
+			offer, err := tx.Get(s.client.Collection(media).Doc(generationDescriptionID(id, 1, stored.MediaGeneration)))
 			if notFound(err) {
 				return call.ErrTransition
 			}
@@ -127,7 +134,7 @@ func (s *Store) SyncDescriptions(ctx context.Context, actor, id string, after in
 		return call.MediaSnapshot{}, call.ErrNotFound
 	}
 	current := stored.toCall(id, now)
-	result := call.MediaSnapshot{Call: current, Descriptions: []call.Description{}}
+	result := call.MediaSnapshot{Generation: stored.MediaGeneration, Call: current, Descriptions: []call.Description{}}
 	if current.State != "accepted" {
 		return result, nil
 	}
@@ -137,7 +144,7 @@ func (s *Store) SyncDescriptions(ctx context.Context, actor, id string, after in
 		peerSequence = 2
 	}
 
-	document, err := s.client.Collection(media).Doc(descriptionID(id, peerSequence)).Get(ctx)
+	document, err := s.client.Collection(media).Doc(generationDescriptionID(id, peerSequence, stored.MediaGeneration)).Get(ctx)
 	if notFound(err) {
 		return result, nil
 	}
@@ -164,7 +171,7 @@ func (s *Store) SyncDescriptions(ctx context.Context, actor, id string, after in
 	return result, nil
 }
 
-func (s *Store) SendCandidates(ctx context.Context, actor, id string, next []call.Candidate) error {
+func (s *Store) SendCandidates(ctx context.Context, actor, id string, next []call.Candidate, generation ...int) error {
 	if err := call.ValidateCandidates(next, nil); err != nil {
 		return err
 	}
@@ -190,7 +197,10 @@ func (s *Store) SendCandidates(ctx context.Context, actor, id string, next []cal
 		if actor == stored.CalleeID {
 			seq = 2
 		}
-		ref := s.client.Collection(media).Doc(descriptionID(id, seq))
+		if call.Generation(generation) != stored.MediaGeneration {
+			return call.ErrGeneration
+		}
+		ref := s.client.Collection(media).Doc(generationDescriptionID(id, seq, stored.MediaGeneration))
 		snapshot, err = tx.Get(ref)
 		if notFound(err) {
 			return call.ErrTransition
@@ -213,4 +223,52 @@ func (s *Store) SendCandidates(ctx context.Context, actor, id string, next []cal
 		}
 		return tx.Update(ref, []firestore.Update{{Path: "candidates", Value: next}})
 	})
+}
+
+func generationDescriptionID(id string, seq, generation int) string {
+	if generation == 0 {
+		return descriptionID(id, seq)
+	}
+	return fmt.Sprintf("%s:g%d:%d", id, generation, seq)
+}
+func (s *Store) RestartMedia(ctx context.Context, actor, id string, expected int) (int, error) {
+	if expected < 0 || expected >= call.MaxMediaGeneration {
+		return 0, identity.ErrInvalid
+	}
+	result := 0
+	err := s.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		ref := s.client.Collection(calls).Doc(id)
+		snapshot, err := tx.Get(ref)
+		if notFound(err) {
+			return call.ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		var stored callDoc
+		if err = stored.decode(snapshot); err != nil {
+			return err
+		}
+		if stored.CallerID != actor && stored.CalleeID != actor {
+			return call.ErrNotFound
+		}
+		now := time.Now().UTC()
+		if stored.toCall(id, now).State != "accepted" {
+			return call.ErrTransition
+		}
+		result = stored.MediaGeneration
+		if expected > result {
+			return call.ErrGeneration
+		}
+		started := stored.MediaStartedAt
+		if started.IsZero() {
+			started = stored.ExpiresAt.Add(-acceptedTTL)
+		}
+		if expected < result || now.Sub(started) < 5*time.Second {
+			return nil
+		}
+		result++
+		return tx.Update(ref, []firestore.Update{{Path: "mediaGeneration", Value: result}, {Path: "mediaStartedAt", Value: now}})
+	})
+	return result, err
 }

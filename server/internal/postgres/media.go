@@ -11,7 +11,7 @@ import (
 	"zisee/server/internal/identity"
 )
 
-func (s *Store) SendDescription(ctx context.Context, actor, id, messageID, kind, sdp string) (int, error) {
+func (s *Store) SendDescription(ctx context.Context, actor, id, messageID, kind, sdp string, generation ...int) (int, error) {
 	if len(messageID) < 1 || len(messageID) > 64 || len(sdp) > 49152 || !strings.HasPrefix(sdp, "v=0\r\n") || strings.ContainsRune(sdp, 0) {
 		return 0, identity.ErrInvalid
 	}
@@ -36,6 +36,13 @@ func (s *Store) SendDescription(ctx context.Context, actor, id, messageID, kind,
 	if c.State != "accepted" || (seq == 1 && c.CallerID != actor) || (seq == 2 && c.CalleeID != actor) {
 		return 0, call.ErrTransition
 	}
+	var currentGeneration int
+	if err = tx.QueryRow(ctx, `SELECT media_generation FROM calls WHERE id=$1`, id).Scan(&currentGeneration); err != nil {
+		return 0, err
+	}
+	if call.Generation(generation) != currentGeneration {
+		return 0, call.ErrGeneration
+	}
 	var oldID, oldSDP string
 	err = tx.QueryRow(ctx, `SELECT message_id,sdp FROM media_descriptions WHERE call_id=$1 AND sequence=$2`, id, seq).Scan(&oldID, &oldSDP)
 	if err == nil {
@@ -49,7 +56,7 @@ func (s *Store) SendDescription(ctx context.Context, actor, id, messageID, kind,
 	}
 	// One initial negotiation only. Bound retained SDP and refuse restart after its delivery window.
 	var allowed bool
-	err = tx.QueryRow(ctx, `SELECT expires_at > clock_timestamp()+interval '58 minutes' FROM calls WHERE id=$1`, id).Scan(&allowed)
+	err = tx.QueryRow(ctx, `SELECT COALESCE(media_started_at, expires_at-interval '1 hour') > clock_timestamp()-interval '2 minutes' FROM calls WHERE id=$1`, id).Scan(&allowed)
 	if err != nil {
 		return 0, err
 	}
@@ -88,6 +95,9 @@ func (s *Store) SyncDescriptions(ctx context.Context, actor, id string, after in
 		return call.MediaSnapshot{}, err
 	}
 	result := call.MediaSnapshot{Call: c, Descriptions: []call.Description{}}
+	if err = tx.QueryRow(ctx, `SELECT media_generation FROM calls WHERE id=$1`, id).Scan(&result.Generation); err != nil {
+		return result, err
+	}
 	if c.State != "accepted" {
 		return result, nil
 	}
@@ -122,7 +132,7 @@ func (s *Store) SyncDescriptions(ctx context.Context, actor, id string, after in
 	return result, rows.Err()
 }
 
-func (s *Store) SendCandidates(ctx context.Context, actor, id string, next []call.Candidate) error {
+func (s *Store) SendCandidates(ctx context.Context, actor, id string, next []call.Candidate, generation ...int) error {
 	if err := call.ValidateCandidates(next, nil); err != nil {
 		return err
 	}
@@ -137,6 +147,13 @@ func (s *Store) SendCandidates(ctx context.Context, actor, id string, next []cal
 	}
 	if c.State != "accepted" {
 		return call.ErrTransition
+	}
+	var currentGeneration int
+	if err = tx.QueryRow(ctx, `SELECT media_generation FROM calls WHERE id=$1`, id).Scan(&currentGeneration); err != nil {
+		return err
+	}
+	if call.Generation(generation) != currentGeneration {
+		return call.ErrGeneration
 	}
 	seq := 1
 	if actor == c.CalleeID {
@@ -168,4 +185,42 @@ func (s *Store) SendCandidates(ctx context.Context, actor, id string, next []cal
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// Both endpoints compare-and-swap the same generation; concurrent requests coalesce.
+func (s *Store) RestartMedia(ctx context.Context, actor, id string, expected int) (int, error) {
+	if expected < 0 || expected >= call.MaxMediaGeneration {
+		return 0, identity.ErrInvalid
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	c, err := scanCall(tx.QueryRow(ctx, `SELECT `+callColumns+` FROM calls WHERE id=$1 AND (caller_id=$2 OR callee_id=$2) FOR UPDATE`, id, actor))
+	if err != nil {
+		return 0, err
+	}
+	if c.State != "accepted" {
+		return 0, call.ErrTransition
+	}
+	var generation int
+	var ready bool
+	err = tx.QueryRow(ctx, `SELECT media_generation, COALESCE(media_started_at,expires_at-interval '1 hour')<clock_timestamp()-interval '5 seconds' FROM calls WHERE id=$1`, id).Scan(&generation, &ready)
+	if err != nil {
+		return 0, err
+	}
+	if expected > generation {
+		return generation, call.ErrGeneration
+	}
+	if expected < generation || !ready {
+		return generation, nil
+	}
+	if _, err = tx.Exec(ctx, `UPDATE calls SET media_generation=media_generation+1,media_started_at=clock_timestamp() WHERE id=$1`, id); err != nil {
+		return 0, err
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM media_descriptions WHERE call_id=$1`, id); err != nil {
+		return 0, err
+	}
+	return generation + 1, tx.Commit(ctx)
 }

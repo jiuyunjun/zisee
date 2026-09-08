@@ -112,6 +112,39 @@ func TestMediaConsentRolesReplayAndCleanup(t *testing.T) {
 	if err := store.SendCandidates(ctx, b, c.ID, changed); !errors.Is(err, call.ErrTransition) {
 		t.Fatal("rewrote candidates", err)
 	}
+
+	time.Sleep(5100 * time.Millisecond)
+	generation, err := store.RestartMedia(ctx, b, c.ID, 0)
+	if err != nil || generation != 1 {
+		t.Fatal("restart", generation, err)
+	}
+	generation, err = store.RestartMedia(ctx, a, c.ID, 0)
+	if err != nil || generation != 1 {
+		t.Fatal("simultaneous restart must coalesce", generation, err)
+	}
+	if err = store.SendCandidates(ctx, b, c.ID, candidates, 0); !errors.Is(err, call.ErrGeneration) {
+		t.Fatal("old candidates", err)
+	}
+	if _, err = store.SendDescription(ctx, b, c.ID, "old", "offer", sdp, 0); !errors.Is(err, call.ErrGeneration) {
+		t.Fatal("old SDP", err)
+	}
+	fresh, err := store.SyncDescriptions(ctx, a, c.ID, 0)
+	if err != nil || fresh.Generation != 1 || len(fresh.Descriptions) != 0 || len(fresh.Candidates) != 0 {
+		t.Fatal("generation snapshot", err)
+	}
+	if _, err = store.SendDescription(ctx, b, c.ID, "restart-offer", "offer", sdp, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.SendDescription(ctx, a, c.ID, "restart-answer", "answer", sdp, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.SendCandidates(ctx, b, c.ID, candidates, 1); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err = store.SyncDescriptions(ctx, a, c.ID, 1)
+	if err != nil || len(fresh.Candidates) != 2 {
+		t.Fatal("new candidates", err)
+	}
 	if err = store.Cleanup(ctx, time.Now().Add(3*time.Minute)); err != nil {
 		t.Fatal(err)
 	}

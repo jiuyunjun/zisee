@@ -60,6 +60,8 @@ func callError(err error) (int, string) {
 		return 404, "invite_unavailable"
 	case errors.Is(err, call.ErrBusy):
 		return 409, "participant_busy"
+	case errors.Is(err, call.ErrGeneration):
+		return http.StatusConflict, "stale_media_generation"
 	case errors.Is(err, call.ErrTransition):
 		return 409, "invalid_call_transition"
 	default:

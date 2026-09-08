@@ -2,6 +2,7 @@ package call
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"zisee/server/internal/identity"
 )
@@ -12,15 +13,19 @@ type Description struct {
 	SDP      string `json:"sdp"`
 }
 
+var ErrGeneration = errors.New("stale_media_generation")
+
 type MediaSnapshot struct {
+	Generation   int           `json:"generation"`
 	Call         Call          `json:"call"`
 	Descriptions []Description `json:"descriptions"`
 	Candidates   []Candidate   `json:"candidates"`
 }
 
 type MediaStore interface {
-	SendCandidates(context.Context, string, string, []Candidate) error
-	SendDescription(context.Context, string, string, string, string, string) (int, error)
+	SendCandidates(context.Context, string, string, []Candidate, ...int) error
+	RestartMedia(context.Context, string, string, int) (int, error)
+	SendDescription(context.Context, string, string, string, string, string, ...int) (int, error)
 	SyncDescriptions(context.Context, string, string, int) (MediaSnapshot, error)
 }
 
@@ -59,3 +64,13 @@ func printableASCII(value string) bool {
 	}
 	return true
 }
+
+// Missing generation remains generation zero for existing clients.
+func Generation(value []int) int {
+	if len(value) == 0 {
+		return 0
+	}
+	return value[0]
+}
+
+const MaxMediaGeneration = 64

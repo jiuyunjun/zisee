@@ -74,7 +74,7 @@ WebSocket 单条消息上限为 64 KiB，SDP UTF-8 上限为 48 KiB。所有媒�
 {"v":1,"type":"media.send","id":"<stable message ID>","callId":"<call ID>","description":{"type":"offer","sdp":"<SDP; candidates sent separately>"}}
 ```
 
-成功响应 `{v:1,type:"media.ack",id,sequence:1}`。只有 caller 可发送 offer（序号 1），只有 callee 可发送 answer（序号 2），answer 必须在 offer 后发送。每个角色只能提交一份 SDP，重复同一 ID 与同一内容返回原确认，其他重复返回 invalid_call_transition。只支持初次协商，暂不支持 renegotiation/ICE restart。
+成功响应 `{v:1,type:"media.ack",id,sequence:1}`。只有 caller 可发送 offer（序号 1），只有 callee 可发送 answer（序号 2），answer 必须在 offer 后发送。每个角色只能提交一份 SDP，重复同一 ID 与同一内容返回原确认，其他重复返回 invalid_call_transition。每代仅支持一轮协商；网络变化的代次重启见后文，不支持任意 Track renegotiation。
 
 接收：
 
@@ -117,3 +117,18 @@ SDP 创建并设置后立即发送，不等待 gathering COMPLETE。后续候选
 ## 1.0.0 - 2026-09-08
 
 - 实现邀请兑换、持久通话状态和受归属约束的按需快照协议。
+
+
+## 网络切换与 ICE 重启（2026-09-08）
+
+`media.sync` 快照新增 `generation`（初始为 0）。`media.send`、`media.ice` 必须携带当前 generation；缺失按 0 兼容旧端的初次通话。每代仍只有 caller offer、callee answer，sequence 仍为 1/2，每代独立重置 SDP 游标、稳定消息 ID 和候选数量。
+
+任一端发送 `{v:1,type:"media.restart",id,callId,generation:<当前代>}`。服务器在 accepted、未过期、成员校验后，以当前代作 compare-and-swap：相同代请求推进一次；另一端或 ACK 丢失后的旧代重试返回已推进的代，不再次递增。每代最短间隔 5 秒，每通话最多 64 次重启；请求太早返回原代，客户端稍后重试。响应为 `{v:1,type:"media.ack",id,generation}`。客户端只从 media.sync 权威快照采用新代。
+
+过期代的 SDP／候选返回 `stale_media_generation`，客户端重新同步而非挂断。调用方永远由原 caller 发 offer，两端同时换网不会产生双 offer。采用新代前刷新短期 TURN credential、更新 PeerConnection 配置；保留采集和 Track，调用 caller 的 restartIce，然后交换新 SDP。未应答的旧本地 offer 先 rollback。旧候选队列清空，native 带 ufrag 的迟到候选按新 SDP 凭据过滤。
+
+PostgreSQL 迁移 **005_ice_restart.sql** 增加通话代次和代次开始时间；推进时事务删除旧媒体行。Firestore 使用代次独立文档 ID，快照只查当前代，旧代沿用两分钟清理、结束时一起清理，避免后台清理任务误删新代文档。SDP 的两分钟投递窗口改为每代开始起算，因此长时通话也可重新协商。
+
+发布必须先升级服务端（PostgreSQL 先迁移 5），再更新双方 APK。旧客户端不处理新代，混合版本不保证换网恢复。初次连接仍兼容 generation 0。
+
+验证：PostgreSQL 和 Firestore 模拟器集成回归覆盖推进、另一端重复请求合并、旧代写入拒绝、新代候选隔离和新 offer/answer。Android 原生模拟器回环验证 ICE 凭据变化且解码继续；这不替代 Wi-Fi↔蜂窝双真机验证。
