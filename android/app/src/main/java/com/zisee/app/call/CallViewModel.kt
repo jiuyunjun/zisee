@@ -15,6 +15,7 @@ import com.zisee.app.call.state.CallSession
 import com.zisee.app.call.state.CallState
 import com.zisee.app.core.AppContainer
 import com.zisee.app.core.logging.AppEvent
+import com.zisee.app.core.logging.FailureReason
 import com.zisee.app.rtc.IceState
 import com.zisee.app.rtc.MediaStats
 import com.zisee.app.rtc.NativeRtcSession
@@ -226,14 +227,14 @@ class CallViewModel(application: Application, private val container: AppContaine
                 event(CallEvent.HANG_UP); event(CallEvent.RELEASED)
             } catch (error: TimeoutCancellationException) {
                 event(CallEvent.FAIL); mutable.update { it.copy(status = "连接超时，请确认两台手机网络后重试。") }
-                container.logger.error(AppEvent.CALL_FAILED)
+                container.logger.error(AppEvent.CALL_FAILED, FailureReason.of(error))
             } catch (error: CancellationException) {
                 event(CallEvent.HANG_UP); event(CallEvent.RELEASED)
                 mutable.update { it.copy(status = "通话已结束。") }
                 throw error
             } catch (error: Exception) {
                 event(CallEvent.FAIL); mutable.update { it.copy(status = "通话未能建立，请确认邀请码、权限和网络后重试。") }
-                container.logger.error(AppEvent.CALL_FAILED)
+                container.logger.error(AppEvent.CALL_FAILED, FailureReason.of(error))
             } finally {
                 socket?.close()
                 withContext(NonCancellable) {

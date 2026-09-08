@@ -60,6 +60,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         }
     }
     private var released = false
+    private var lastCandidate: String? = null
     private val audioManager = context.getSystemService(AudioManager::class.java)
     private var previousMode = AudioManager.MODE_NORMAL
     private var previousSpeaker = false
@@ -95,7 +96,11 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         // asynchronously. Registering before that guarantees the arrival callback is not missed.
         NetworkMonitor.addNetworkObserver(networkObserver)
         peer = requireNotNull(factory).createPeerConnection(config, observer) ?: throw IOException("peer_creation_failed")
-        if (!networksSeen) withTimeoutOrNull(NETWORK_WAIT_MS) { networksReady.await() }
+        // A timeout here means ICE will gather with no interface known yet, which is the usual
+        // cause of an empty candidate list, so record it rather than silently continuing.
+        if (!networksSeen && withTimeoutOrNull(NETWORK_WAIT_MS) { networksReady.await() } == null) {
+            logger.info(AppEvent.RTC_ICE_STATE, "networks_timeout")
+        }
         val enumerator: CameraEnumerator = if (Camera2Enumerator.isSupported(context)) Camera2Enumerator(context) else Camera1Enumerator(true)
         val name = enumerator.deviceNames.firstOrNull { enumerator.isFrontFacing(it) }
             ?: enumerator.deviceNames.firstOrNull() ?: throw IOException("camera_unavailable")
@@ -185,6 +190,12 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 val result = MediaStats(sum("inbound-rtp", "video", "framesDecoded"), sum("inbound-rtp", "audio", "bytesReceived"),
                     sum("outbound-rtp", "audio", "bytesSent"), type?.takeIf { it in setOf("host", "srflx", "prflx", "relay") } ?: "—",
                     ((pair?.members?.get("currentRoundTripTime") as? Number)?.toDouble()?.times(1000))?.toLong() ?: 0)
+                // Stats are polled every second; only a change is worth a line. This is the one
+                // signal that distinguishes a P2P pair from a TURN relay.
+                if (result.candidateType != lastCandidate) {
+                    lastCandidate = result.candidateType
+                    logger.info(AppEvent.RTC_SELECTED_CANDIDATE, result.candidateType)
+                }
                 if (continuation.isActive) continuation.resume(result)
             }
         }
@@ -257,6 +268,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private fun fail() { scope.launch { if (!released) { logger.error(AppEvent.RTC_MEDIA_FAILED); iceState.value = IceState.FAILED } } }
     private val observer = object : PeerConnection.Observer {
         override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
+            logger.info(AppEvent.RTC_ICE_STATE, state.name)
             scope.launch { if (!released) iceState.value = when (state) {
                 PeerConnection.IceConnectionState.NEW -> IceState.NEW
                 PeerConnection.IceConnectionState.CHECKING -> IceState.CHECKING

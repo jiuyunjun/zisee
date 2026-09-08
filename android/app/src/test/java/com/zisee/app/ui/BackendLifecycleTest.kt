@@ -27,7 +27,7 @@ class BackendLifecycleTest {
         override suspend fun create(displayName: String) { error("unexpected create") }
         override suspend fun rename(displayName: String) { error("unexpected rename") }
     }
-    private val logger = object : AppLogger { override fun error(event: AppEvent) = Unit }
+    private val logger = object : AppLogger { override fun error(event: AppEvent, reason: String?) = Unit }
 
     @Test fun foregroundOwnsConnectionAndIgnoresLateCallbacks() = runTest {
         Dispatchers.setMain(StandardTestDispatcher(testScheduler))
