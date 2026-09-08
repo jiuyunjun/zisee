@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -21,6 +22,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -33,6 +35,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.zisee.app.BuildConfig
 import com.zisee.app.call.CallUiState
 import com.zisee.app.call.CallViewModel
+import com.zisee.app.invite.InviteLink
 import com.zisee.app.call.state.CallPhase
 import com.zisee.app.rtc.VideoFeed
 import org.webrtc.RendererCommon
@@ -41,6 +44,11 @@ import org.webrtc.SurfaceViewRenderer
 @Composable
 fun CallScreen(state: CallUiState, model: CallViewModel) {
     var invite by remember { mutableStateOf("") }
+    // A code that arrived through a link replaces whatever was typed, so the field matches the
+    // invitation the user just opened.
+    LaunchedEffect(state.pendingInvite) {
+        if (state.pendingInvite.isNotEmpty()) invite = state.pendingInvite
+    }
     var permissionAction by remember { mutableStateOf<String?>(null) }
     val clipboard = LocalClipboardManager.current
     val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
@@ -67,8 +75,13 @@ fun CallScreen(state: CallUiState, model: CallViewModel) {
             }
             if (state.invite.isNotEmpty()) {
                 Text("邀请码（10 分钟有效）")
+                QrCode(InviteLink.of(state.invite), Modifier.size(220.dp))
+                Text("用对方手机的相机扫码，或复制链接发过去。", style = MaterialTheme.typography.bodySmall)
                 Text(state.invite, style = MaterialTheme.typography.bodySmall)
-                OutlinedButton(onClick = { clipboard.setText(AnnotatedString(state.invite)) }) { Text("复制邀请码") }
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedButton(onClick = { clipboard.setText(AnnotatedString(state.invite)) }) { Text("复制邀请码") }
+                    OutlinedButton(onClick = { clipboard.setText(AnnotatedString(InviteLink.of(state.invite))) }) { Text("复制链接") }
+                }
             }
             if (state.machine.phase == CallPhase.INCOMING && state.busy) {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -78,7 +91,7 @@ fun CallScreen(state: CallUiState, model: CallViewModel) {
             }
             if (!state.busy) {
                 Button(onClick = model::createInvite, enabled = BuildConfig.BACKEND_URL.isNotEmpty(), modifier = Modifier.fillMaxWidth()) { Text("创建邀请") }
-                OutlinedTextField(value = invite, onValueChange = { invite = it.take(80) }, label = { Text("对方的邀请码") },
+                OutlinedTextField(value = invite, onValueChange = { invite = it.take(80) }, label = { Text("对方的邀请码或链接") },
                     singleLine = true, modifier = Modifier.fillMaxWidth())
                 Button(onClick = { request("join") }, enabled = permissionAction == null && invite.isNotBlank() && BuildConfig.BACKEND_URL.isNotEmpty(),
                     modifier = Modifier.fillMaxWidth()) { Text("呼叫对方") }

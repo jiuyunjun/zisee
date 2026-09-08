@@ -70,6 +70,7 @@ dependencies {
     implementation(libs.coroutines.android)
     testImplementation(libs.junit)
     implementation(libs.okhttp)
+    implementation(libs.zxing)
     testImplementation(libs.mockwebserver)
     testImplementation(libs.json.test)
     testImplementation(libs.coroutines.test)
