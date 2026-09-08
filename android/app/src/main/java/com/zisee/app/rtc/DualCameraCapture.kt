@@ -32,6 +32,17 @@ class DualCameraCapture(private val context: Context, private val egl: EglBase.C
     private var selectors: List<CameraSelector>? = null
     private var owner: LifecycleOwner? = null
     private val bridges = mutableListOf<Bridge>()
+    private val previews = mutableListOf<Preview>()
+    @Volatile private var targetRotation = Surface.ROTATION_0
+
+    /**
+     * CameraX reports frame rotation relative to this, so it has to track the phone rather than the
+     * window: with auto-rotate off the window never turns and the scene would stay sideways.
+     */
+    suspend fun setTargetRotation(rotation: Int) = withContext(Dispatchers.Main.immediate) {
+        targetRotation = rotation
+        previews.forEach { it.targetRotation = rotation }
+    }
 
     suspend fun supported(): Boolean = withContext(Dispatchers.Main.immediate) {
         val future = ProcessCameraProvider.getInstance(context)
@@ -67,7 +78,8 @@ class DualCameraCapture(private val context: Context, private val egl: EglBase.C
                 // Conservative concurrent format; the primary may be upgraded after device validation.
                 val preview = Preview.Builder().setResolutionSelector(ResolutionSelector.Builder()
                     .setResolutionStrategy(ResolutionStrategy(Size(1280, 720), ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER))
-                    .build()).build()
+                    .build()).setTargetRotation(targetRotation).build()
+                previews.add(preview)
                 preview.setSurfaceProvider(ContextCompat.getMainExecutor(context)) { request ->
                     bridge.helper.setTextureSize(request.resolution.width, request.resolution.height)
                     request.setTransformationInfoListener(ContextCompat.getMainExecutor(context)) { bridge.rotation = it.rotationDegrees }
@@ -90,6 +102,7 @@ class DualCameraCapture(private val context: Context, private val egl: EglBase.C
         }
         bridges.forEach { it.close() }
         bridges.clear()
+        previews.clear()
     }
 
     private inner class Bridge(private val source: VideoSource, name: String) {

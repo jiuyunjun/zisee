@@ -18,10 +18,12 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Zisee"
         android:usesCleartextTraffic="false">
+        <!-- Handle rotation in place: recreating the activity runs onStop, which ends the call. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

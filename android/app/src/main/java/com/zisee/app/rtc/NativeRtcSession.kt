@@ -67,6 +67,11 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var frontSupportsFullHd = false
     private var dualCapture: DualCameraCapture? = null
     @Volatile private var cameraClosed: CompletableDeferred<Unit>? = null
+    private val deviceOrientation = DeviceOrientation(context) { rotation ->
+        // Single capture is restamped per frame; concurrent capture is told once per change.
+        scope.launch { if (!released) dualCapture?.setTargetRotation(rotation) }
+    }
+    @Volatile private var capturingFront = true
     private var control: DataChannel? = null
     private var changingCamera = false
     var localFeed: VideoFeed? = null; private set
@@ -201,6 +206,9 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         }) ?: throw IOException("camera_unavailable")
         texture = SurfaceTextureHelper.create("ZiseeCapture", shared)
         videoSource = requireNotNull(factory).createVideoSource(false)
+        capturingFront = enumerator.isFrontFacing(name)
+        deviceOrientation.start()
+        requireNotNull(videoSource).setVideoProcessor(orientationProcessor)
         requireNotNull(camera).initialize(texture, context, requireNotNull(videoSource).capturerObserver)
         val cameraId = MediaTrack.FRONT_CAMERA // Primary single-camera slot, including back-only devices.
         videoTrack = requireNotNull(factory).createVideoTrack(cameraId.wireId, videoSource).also {
@@ -411,6 +419,28 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         }
         Unit
     }
+    /**
+     * Restamps each captured frame with the orientation the phone is physically held at.
+     *
+     * libwebrtc folds the display rotation into every frame, which is correct only while the window
+     * follows the device. With auto-rotate off it never changes, so turning the phone sideways used
+     * to send a sideways picture that the viewer had no way to straighten. Concurrent capture comes
+     * from CameraX, which is told the target rotation directly, so those frames are already right
+     * and must not be turned twice.
+     */
+    private val orientationProcessor = object : VideoProcessor {
+        private var sink: VideoSink? = null
+        override fun setSink(value: VideoSink?) { sink = value }
+        override fun onCapturerStarted(success: Boolean) = Unit
+        override fun onCapturerStopped() = Unit
+        override fun onFrameCaptured(frame: VideoFrame) {
+            val target = sink ?: return
+            val correction = if (dualCapture != null) 0 else deviceOrientation.correction(capturingFront)
+            if (correction == 0) { target.onFrame(frame); return }
+            target.onFrame(VideoFrame(frame.buffer, (frame.rotation + correction) % 360, frame.timestampNs))
+        }
+    }
+
     private fun sendPresentation() {
         val channel = control ?: return
         if (channel.state() != DataChannel.State.OPEN) return
@@ -462,6 +492,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                         releaseCamera(); stopped = true
                         videoSource?.adaptOutputFormat(640, 360, 15)
                         dualCapture = dual
+                        dual.setTargetRotation(deviceOrientation.rotation)
                         dual.start(requireNotNull(videoSource), requireNotNull(backSource))
                         backTrack?.setEnabled(true)
                         presentationMode = CameraMode.DUAL
@@ -523,7 +554,10 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private suspend fun switchSingle(name: String) = withTimeout(5_000) {
         suspendCancellableCoroutine<Unit> { continuation ->
             requireNotNull(camera).switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
-                override fun onCameraSwitchDone(isFrontCamera: Boolean) { if (continuation.isActive) continuation.resume(Unit) }
+                override fun onCameraSwitchDone(isFrontCamera: Boolean) {
+                    capturingFront = isFrontCamera
+                    if (continuation.isActive) continuation.resume(Unit)
+                }
                 override fun onCameraSwitchError(error: String) { if (continuation.isActive) continuation.resumeWithException(IOException("camera_switch_failed")) }
             }, name)
         }
@@ -604,6 +638,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             try { dualCapture?.close() } catch (error: Exception) { logger.error(AppEvent.RTC_RELEASE_FAILED) }
             dualCapture = null
             cleanup { control?.unregisterObserver(); control?.close(); control?.dispose() }; control = null
+            cleanup { deviceOrientation.close() }
             cleanup { cellularStandby.close() }
             cleanup { if (monitoring) { NetworkMonitor.getInstance().stopMonitoring(); monitoring = false } }
             cleanup { NetworkMonitor.removeNetworkObserver(networkObserver) }
