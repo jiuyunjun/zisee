@@ -74,6 +74,7 @@ WebRTC 的 NetworkMonitor 从未被启动过：代码只调了 `addNetworkObserv
 
 回归：晚到 relay 候选、SDP 后到候选、信令断开后重复批次、不回传自己的候选、越权和挂断后拒绝写入、过期清理。两台真机继续验证 TURN fallback。
 
+通话 UI 验收：远端主画面按比例完整显示、本地右上角小窗、底部常驻静音／关闭画面／挂断；连接详情默认收起。检查横屏、窄屏和大字体下挂断可达，关闭画面后本地不显示旧帧，恢复后正常出帧。摄像头开关当前控制发送 Track，采集资源持续保留至挂断。
 
 本次代码验证：Android assembleDebug、testDebugUnitTest、lintDebug 通过；Go 全套测试在本地 PostgreSQL 17 与 Firestore Emulator 下通过（包括真实存储集成测试，非跳过）。尚未部署本次服务端或安装本次客户端复测首帧；不以构建和协议测试替代媒体与 UI 真机验收。
 

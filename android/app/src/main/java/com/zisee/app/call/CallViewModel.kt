@@ -44,7 +44,7 @@ data class CallUiState(
     val visible: Boolean = false, val busy: Boolean = false, val invite: String = "",
     val status: String = "邀请朋友开始视频通话，或输入对方的邀请码。",
     val machine: CallState = CallState(), val local: VideoFeed? = null, val remote: VideoFeed? = null,
-    val muted: Boolean = false, val stats: MediaStats = MediaStats(),
+    val cameraEnabled: Boolean = true, val muted: Boolean = false, val stats: MediaStats = MediaStats(),
     val pendingInvite: String = "",
 )
 
@@ -96,6 +96,18 @@ class CallViewModel(application: Application, private val container: AppContaine
             try {
                 current.setTrackEnabled(com.zisee.app.media.MediaTrack.MICROPHONE, enabled)
                 if (rtc === current) mutable.update { it.copy(muted = !enabled) }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) { container.logger.error(AppEvent.RTC_MEDIA_FAILED); stop() }
+        }
+    }
+
+    fun toggleCamera() {
+        val current = rtc ?: return
+        val enabled = !mutable.value.cameraEnabled
+        viewModelScope.launch {
+            try {
+                current.setTrackEnabled(com.zisee.app.media.MediaTrack.FRONT_CAMERA, enabled)
+                if (rtc === current) mutable.update { it.copy(cameraEnabled = enabled) }
             } catch (error: CancellationException) { throw error }
             catch (error: Exception) { container.logger.error(AppEvent.RTC_MEDIA_FAILED); stop() }
         }

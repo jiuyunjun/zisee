@@ -1,6 +1,18 @@
 package com.zisee.app.ui
 
 import android.Manifest
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Surface
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -62,6 +74,10 @@ fun CallScreen(state: CallUiState, model: CallViewModel) {
         permissions.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
     }
     BackHandler { model.close() }
+    if (state.local != null && state.busy) {
+        ActiveCall(state, model)
+        return
+    }
     Scaffold { insets ->
         Column(Modifier.fillMaxSize().padding(insets).verticalScroll(rememberScrollState()).padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -102,23 +118,77 @@ fun CallScreen(state: CallUiState, model: CallViewModel) {
                     Button(onClick = model::stop) { Text("结束") }
                 }
             }
-            if (BuildConfig.DEBUG && state.local != null) {
-                val stats = state.stats
-                Text("ICE ${state.machine.phase} · ${stats.candidateType}→${stats.remoteCandidateType} · RTT ${stats.rttMs} ms\n" +
-                    "收/发 ${stats.receiveKbps}/${stats.sendKbps} kbps · 抖动 ${stats.jitterMs} ms · 丢包 ${stats.packetsLost}\n" +
-                    "远端视频 ${stats.videoWidth}x${stats.videoHeight}@${stats.videoFps} · ${stats.videoFrames} 帧\n" +
-                    "音频收/发 ${stats.audioReceived}/${stats.audioSent} B",
-                    style = MaterialTheme.typography.bodySmall)
-            }
+
         }
     }
 }
 
 @Composable
-private fun VideoRenderer(feed: VideoFeed, modifier: Modifier) {
+private fun VideoRenderer(feed: VideoFeed, modifier: Modifier, overlay: Boolean = false) {
     androidx.compose.runtime.key(feed) {
         AndroidView(factory = { context -> SurfaceViewRenderer(context).also {
+            it.setZOrderMediaOverlay(overlay)
             feed.attach(it); it.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
         } }, modifier = modifier, onRelease = { feed.detach(it) })
+    }
+}
+
+
+@Composable
+private fun ActiveCall(state: CallUiState, model: CallViewModel) {
+    var diagnostics by remember { mutableStateOf(false) }
+    val background = Color(0xFF101718)
+    Surface(color = background, contentColor = Color.White, modifier = Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("咫尺 · 视频通话", style = MaterialTheme.typography.titleMedium)
+                    Text(if (state.machine.phase == CallPhase.CONNECTED && state.stats.videoFrames > 0) "通话中" else state.status,
+                        style = MaterialTheme.typography.bodySmall, color = Color(0xFFC7D5D1))
+                }
+                if (BuildConfig.DEBUG) TextButton(onClick = { diagnostics = !diagnostics }) {
+                    Text(if (diagnostics) "收起" else "连接详情", color = Color(0xFFB6E9D5))
+                }
+            }
+            BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().background(Color.Black)) {
+                state.remote?.let { VideoRenderer(it, Modifier.fillMaxSize()) }
+                if (state.stats.videoFrames == 0L) Column(Modifier.align(Alignment.Center).padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    CircularProgressIndicator(color = Color(0xFFB6E9D5), modifier = Modifier.size(28.dp))
+                    Text("正在等待对方画面…", textAlign = TextAlign.Center)
+                }
+                val previewHeight = minOf(160.dp, maxHeight * 0.45f)
+                Column(Modifier.align(Alignment.TopEnd).padding(12.dp).width(100.dp)) {
+                    Box(Modifier.fillMaxWidth().height(previewHeight).background(background)) {
+                        if (state.cameraEnabled) state.local?.let { VideoRenderer(it, Modifier.fillMaxSize(), overlay = true) }
+                        else Text("画面已关闭", Modifier.align(Alignment.Center), style = MaterialTheme.typography.labelSmall)
+                    }
+                    Text(if (state.muted) "我 · 已静音" else "我", Modifier.fillMaxWidth().background(background).padding(6.dp),
+                        style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
+                }
+            }
+            if (diagnostics) {
+                val stats = state.stats
+                Text("${stats.candidateType} → ${stats.remoteCandidateType} · RTT ${stats.rttMs} ms\n" +
+                    "收/发 ${stats.receiveKbps}/${stats.sendKbps} kbps · 丢包 ${stats.packetsLost}\n" +
+                    "${stats.videoWidth} × ${stats.videoHeight} · ${stats.videoFps} fps",
+                    Modifier.fillMaxWidth().heightIn(max = 100.dp).verticalScroll(rememberScrollState()).padding(12.dp),
+                    style = MaterialTheme.typography.bodySmall)
+            }
+            Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = model::toggleMute, modifier = Modifier.weight(1f).heightIn(min = 56.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = if (state.muted) Color(0xFFB6E9D5) else Color(0xFF33413E),
+                        contentColor = if (state.muted) background else Color.White)) {
+                    Text(if (state.muted) "取消静音" else "静音", textAlign = TextAlign.Center)
+                }
+                Button(onClick = model::toggleCamera, modifier = Modifier.weight(1f).heightIn(min = 56.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF33413E), contentColor = Color.White)) {
+                    Text(if (state.cameraEnabled) "关闭画面" else "开启画面", textAlign = TextAlign.Center)
+                }
+                Button(onClick = model::stop, modifier = Modifier.weight(1f).heightIn(min = 56.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFCA414D), contentColor = Color.White)) { Text("挂断") }
+            }
+        }
     }
 }
