@@ -1,6 +1,7 @@
 package com.zisee.app.ui
 
 import android.app.Activity
+import android.content.pm.ActivityInfo
 import android.os.SystemClock
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -90,15 +91,25 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
     // for as long as it is on screen.
     val view = LocalView.current
     DisposableEffect(view) {
-        val window = (view.context as? Activity)?.window
+        val activity = view.context as? Activity
+        val window = activity?.window
         val bars = window?.let { WindowInsetsControllerCompat(it, view) }
         val lightStatus = bars?.isAppearanceLightStatusBars
         val lightNavigation = bars?.isAppearanceLightNavigationBars
         bars?.isAppearanceLightStatusBars = false
         bars?.isAppearanceLightNavigationBars = false
+        // Orientation has two halves. The sender stamps each frame so it is upright with respect to
+        // gravity, but that leaves it upright in the *viewer's screen* coordinates: a viewer holding
+        // the phone sideways under a portrait-locked window still sees a sideways picture. Letting
+        // the call window follow the device settles both halves at once, because each end's display
+        // rotation then equals how that person is actually holding the phone. Auto-rotate is
+        // deliberately overridden here: it is a per-call surface, restored on the way out.
+        val previousOrientation = activity?.requestedOrientation
+        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
         onDispose {
             lightStatus?.let { bars?.isAppearanceLightStatusBars = it }
             lightNavigation?.let { bars?.isAppearanceLightNavigationBars = it }
+            previousOrientation?.let { activity.requestedOrientation = it }
         }
     }
     LaunchedEffect(state.machine.session?.callId) {
