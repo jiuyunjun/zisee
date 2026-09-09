@@ -10,7 +10,7 @@ Continue AR Assist implementation while preserving existing camera/UI work and h
 Exact-frame AR camera texture mapping and GPU background rendering primitives are implemented and verified. Full in-call AR remains incomplete.
 
 ## Last Good Checkpoint
-commit: 4440862 (baseline; AR milestone commit pending)
+commit: 431a7a3
 build: PASS (current combined working tree)
 tests: PASS (current combined working tree)
 
@@ -19,7 +19,7 @@ ArCoreBackend captures CPU-image-to-OES mapping with the historical frame. rende
 
 ## Repository State
 Preserve five pre-existing unstaged files: AGENTS.md; NativeRtcSession.kt (post-bind targetRotation workaround); ActiveCall.kt (user UI edits plus VIDEO_PROBE tip); CallVideoLayout.kt; CallVideoLayoutTest.kt. They are excluded from AR commits. Tests/builds include this combined working tree.
-Expected AR changes pending commit: CURRENT_TASK.md, HANDOFF.md, AR_FRAMEWORK.md, ArCoreBackend.kt, new ar/render files, CameraTextureMappingTest.kt, ArCameraRenderSmoke.kt, RtcSmokeInstrumentation.kt.
+AR implementation committed in 431a7a3. Only this checkpoint documentation update is pending; after its commit, the five pre-existing files above are the expected unstaged changes.
 
 ## Completed
 - Previous AR framework: history/depth/plane resolution, anchors and versioned protocol.
@@ -61,6 +61,7 @@ adb shell am instrument -w -e arCameraRender true com.lazydoglab.zisee.dev.test/
 adb shell am instrument -w -e arChannel true com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
 
 ## Latest Commits
+431a7a3 feat: render exact AR camera textures on the GPU
 4440862 feat: say why a handover seeded nothing
 2d90d49 docs: record the handover measurements and what remains
 e4499d0 feat: connect AR collaboration control channel

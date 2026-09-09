@@ -16,7 +16,7 @@ Capture IMAGE_NORMALIZED to TEXTURE_NORMALIZED mapping with each source frame; r
 Only the current successfully captured frame can render. Update/pause/close invalidate it. Crop and vertical orientation are explicit and tested. GPU draw works with a synthetic OES texture. No remote spatial clicks enabled before end-to-end frame identity exists.
 
 ## Validation
-159 JVM tests PASS; Debug/AndroidTest builds and lint PASS. Attached-device synthetic OES GPU corner test PASS. Actual ARCore and remote frame identity remain unverified. Checkpoint commit pending.
+159 JVM tests PASS; Debug/AndroidTest builds and lint PASS. Attached-device synthetic OES GPU corner test PASS. Actual ARCore and remote frame identity remain unverified. Implementation checkpoint: 431a7a3.
 
 ## State
 DONE
