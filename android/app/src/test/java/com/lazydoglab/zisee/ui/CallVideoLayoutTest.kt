@@ -13,8 +13,8 @@ class CallVideoLayoutTest {
             assertEquals(sources.size, sources.toSet().size)
             assertTrue(sources.size in 2..4)
             val expected = when {
-                local in setOf(CameraMode.DUAL, CameraMode.BACK_ONLY) -> CallVideoLayout.MeScene
-                remote in setOf(CameraMode.DUAL, CameraMode.BACK_ONLY) -> CallVideoLayout.PeerScene
+                local in setOf(CameraMode.DUAL, CameraMode.BACK_ONLY, CameraMode.AR) -> CallVideoLayout.MeScene
+                remote in setOf(CameraMode.DUAL, CameraMode.BACK_ONLY, CameraMode.AR) -> CallVideoLayout.PeerScene
                 else -> CallVideoLayout.PeerFace
             }
             assertEquals(expected, CallVideoLayout.main(sources, null))

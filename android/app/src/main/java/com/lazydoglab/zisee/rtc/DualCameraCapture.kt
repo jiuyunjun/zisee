@@ -106,7 +106,7 @@ class DualCameraCapture(private val context: Context, private val egl: EglBase.C
         withTimeout(5_000) { bridges.forEach { it.firstFrame.await() } }
     }
 
-    suspend fun close() {
+    suspend fun close(awaitCameraClosed: Boolean = false) {
         withContext(Dispatchers.Main.immediate) {
             (owner?.lifecycle as? LifecycleRegistry)?.currentState = Lifecycle.State.DESTROYED
             if (owner != null) provider?.unbindAll()
@@ -115,6 +115,11 @@ class DualCameraCapture(private val context: Context, private val egl: EglBase.C
         bridges.forEach { it.close() }
         bridges.clear()
         previews.clear()
+        if (awaitCameraClosed) withTimeout(3_000) {
+            while (!withContext(Dispatchers.Main.immediate) {
+                cameraInfos.orEmpty().all { it.cameraState.value?.type == androidx.camera.core.CameraState.Type.CLOSED }
+            }) kotlinx.coroutines.delay(20)
+        }
     }
 
     private inner class Bridge(private val source: VideoSource, name: String) {

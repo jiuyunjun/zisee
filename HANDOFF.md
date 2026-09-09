@@ -1,16 +1,16 @@
 # HANDOFF
 
 ## Status
-READY_FOR_REVIEW
+IN_PROGRESS
 
 ## Objective
 Continue AR Assist implementation while preserving existing camera/UI work and handover improvements.
 
 ## Active Task
-Exact-frame AR camera texture mapping and GPU background rendering primitives are implemented and verified. Full in-call AR remains incomplete.
+Implementing AR camera takeover, retained WebRTC GPU delivery, then exact remote displayed-frame identity.
 
 ## Last Good Checkpoint
-commit: 431a7a3
+commit: c34f0f6
 build: PASS (current combined working tree)
 tests: PASS (current combined working tree)
 
@@ -65,3 +65,8 @@ adb shell am instrument -w -e arChannel true com.lazydoglab.zisee.dev.test/com.l
 4440862 feat: say why a handover seeded nothing
 2d90d49 docs: record the handover measurements and what remains
 e4499d0 feat: connect AR collaboration control channel
+
+## Active implementation (2026-09-10)
+Baseline Git matches c34f0f6; the documented five pre-existing edits remain. CURRENT_TASK.md describes current WIP. No new verification yet. Preserve all AR WIP. Next: implement media owner and tests, then frame identity checkpoint.
+
+Camera media owner checkpoint: implementation, 159 JVM tests, Debug/AndroidTest builds and lint PASS. Device arFramePool PASS. No actual AR camera test yet. Next atomic task: in-band H264 SEI source identity and surface-latched receiver identity; unsupported codecs fail closed. Pre-existing edits remain excluded.

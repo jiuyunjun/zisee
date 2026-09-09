@@ -34,11 +34,13 @@ class ArCoreBackend private constructor(
     private val session: Session,
     private val cameraLease: ArCameraLease,
     val cameraTextureId: Int,
+    private val sensorOrientation: Int,
 ) : ArBackend {
     private val owner = Thread.currentThread()
     private val eglContext = EGL14.eglGetCurrentContext()
     private var closed = false
     private var running = false
+    private var displayRotation = 0
     private var lastCapturedTimestampNs = 0L
     private val currentTexture = CurrentCameraTexture()
     override val depthSupported = session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)
@@ -53,6 +55,12 @@ class ArCoreBackend private constructor(
         checkOwner()
         require(rotation in 0..3 && width > 0 && height > 0)
         session.setDisplayGeometry(rotation, width, height)
+        displayRotation = rotation
+    }
+
+    fun imageRotationDegrees(): Int {
+        checkOwner()
+        return (sensorOrientation - displayRotation * 90 + 360) % 360
     }
 
     override fun resume() {
@@ -188,7 +196,10 @@ class ArCoreBackend private constructor(
                 GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
                 GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
                 GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
-                return ArCoreBackend(session, cameraLease, textures[0])
+                val manager = context.getSystemService(android.hardware.camera2.CameraManager::class.java)
+                val orientation = requireNotNull(manager.getCameraCharacteristics(session.cameraConfig.cameraId)
+                    .get(android.hardware.camera2.CameraCharacteristics.SENSOR_ORIENTATION))
+                return ArCoreBackend(session, cameraLease, textures[0], orientation)
             } catch (error: Exception) {
                 try { session?.close() } catch (cleanup: Exception) { error.addSuppressed(cleanup) }
                 if (textures[0] != 0) GLES20.glDeleteTextures(1, textures, 0)

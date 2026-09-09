@@ -115,8 +115,8 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
     var tipInset by remember { mutableStateOf(0.dp) }
     val density = LocalDensity.current
     val remoteDual = state.remotePresentation.mode == CameraMode.DUAL
-    val scene = state.remotePresentation.mode in setOf(CameraMode.DUAL, CameraMode.BACK_ONLY)
-    val localScene = localMode in setOf(CameraMode.DUAL, CameraMode.BACK_ONLY)
+    val scene = state.remotePresentation.mode in setOf(CameraMode.DUAL, CameraMode.BACK_ONLY, CameraMode.AR)
+    val localScene = localMode in setOf(CameraMode.DUAL, CameraMode.BACK_ONLY, CameraMode.AR)
     val starting = state.showMe.mode == CameraMode.STARTING
     val hint = state.showMeHint && remoteDual
     // Priority: what is happening now, then what failed, then the one-time teaching hint.
@@ -173,9 +173,9 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
             }
             val aspects = mapOf(
                 MeFace to videoAspect(state.local),
-                MeScene to videoAspect(if (localMode == CameraMode.DUAL) state.localBack else state.local),
+                MeScene to videoAspect(if (localMode in setOf(CameraMode.DUAL, CameraMode.AR)) state.localBack else state.local),
                 PeerFace to videoAspect(state.remote),
-                PeerScene to videoAspect(if (remoteDual) state.remoteBack else state.remote),
+                PeerScene to videoAspect(if (remoteDual || state.remotePresentation.mode == CameraMode.AR) state.remoteBack else state.remote),
             )
             val positions = CallVideoLayout.thumbnails(maxWidth.value.coerceAtLeast(1f),
                 maxHeight.value.coerceAtLeast(1f), thumbs.map { aspects.getValue(it) }, 140f + tipInset.value)
@@ -247,7 +247,7 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                     slot(MeFace, video = true), MeFace != main, corner(MeFace))
             }
             if (MeScene in order) {
-                VideoTile(if (localMode == CameraMode.DUAL) state.localBack else state.local,
+                VideoTile(if (localMode in setOf(CameraMode.DUAL, CameraMode.AR)) state.localBack else state.local,
                     state.cameraEnabled && (MeScene == main || MeScene !in parked),
                     slot(MeScene, video = true), MeScene != main, corner(MeScene))
             }
@@ -256,7 +256,7 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                     slot(PeerFace, video = true), PeerFace != main, corner(PeerFace))
             }
             if (PeerScene in order) {
-                VideoTile(if (state.remotePresentation.mode == CameraMode.DUAL) state.remoteBack else state.remote,
+                VideoTile(if (state.remotePresentation.mode in setOf(CameraMode.DUAL, CameraMode.AR)) state.remoteBack else state.remote,
                     state.remotePresentation.enabled && (PeerScene == main || PeerScene !in parked),
                     slot(PeerScene, video = true), PeerScene != main, corner(PeerScene))
             }

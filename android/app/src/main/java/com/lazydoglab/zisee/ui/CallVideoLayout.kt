@@ -15,7 +15,7 @@ internal object CallVideoLayout {
         fun addCamera(mode: CameraMode, face: String, scene: String) {
             when (mode) {
                 CameraMode.DUAL -> { add(scene); add(face) }
-                CameraMode.BACK_ONLY -> add(scene)
+                CameraMode.BACK_ONLY, CameraMode.AR -> add(scene)
                 else -> add(face)
             }
         }
@@ -32,7 +32,7 @@ internal object CallVideoLayout {
         // BACK_ONLY uses the original single-camera/front track, not the concurrent back track.
         val frontLarge = main == PeerFace || (main == PeerScene && remote == CameraMode.BACK_ONLY)
         return ViewRequest(if (frontLarge) ViewSize.LARGE else ViewSize.SMALL,
-            if (main == PeerScene && remote == CameraMode.DUAL) ViewSize.LARGE else ViewSize.SMALL)
+            if (main == PeerScene && remote in setOf(CameraMode.DUAL, CameraMode.AR)) ViewSize.LARGE else ViewSize.SMALL)
     }
 
     data class Tile(val x: Float, val y: Float, val width: Float, val height: Float)

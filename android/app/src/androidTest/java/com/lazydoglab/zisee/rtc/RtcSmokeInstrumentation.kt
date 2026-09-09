@@ -27,6 +27,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
     private var cameraTransform = false
     private var arChannel = false
     private var arCameraRender = false
+    private var arFramePool = false
     private var audio = false
     private var repetitions = 1
     override fun onCreate(arguments: Bundle?) {
@@ -38,6 +39,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
         cameraTransform = arguments?.getString("cameraTransform") == "true"
         arChannel = arguments?.getString("arChannel") == "true"
         arCameraRender = arguments?.getString("arCameraRender") == "true"
+        arFramePool = arguments?.getString("arFramePool") == "true"
         audio = arguments?.getString("audio") == "true"
         repetitions = arguments?.getString("repeat")?.toIntOrNull()?.coerceIn(1, 3) ?: 1
         start()
@@ -46,6 +48,12 @@ class RtcSmokeInstrumentation : Instrumentation() {
     override fun onStart() {
         val output = Bundle()
         try {
+            if (arFramePool) {
+                ArFramePoolSmoke.run(targetContext)
+                output.putString("stream", "PASS: retained RGB pool, exhaustion, pixel stability and deferred GL cleanup\n")
+                finish(Activity.RESULT_OK, output)
+                return
+            }
             if (arCameraRender) {
                 ArCameraRenderSmoke.run()
                 output.putString("stream", "PASS: synthetic OES camera GPU rendering and CPU-image corner orientation; no ARCore camera validation\n")

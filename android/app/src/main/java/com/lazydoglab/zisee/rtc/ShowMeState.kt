@@ -1,6 +1,6 @@
 package com.lazydoglab.zisee.rtc
 
-enum class CameraMode { FACE, STARTING, DUAL, BACK_ONLY }
+enum class CameraMode { FACE, STARTING, DUAL, BACK_ONLY, AR }
 data class ShowMeState(val mode: CameraMode = CameraMode.FACE, val message: String = "")
 
 /** Versioned, bounded, ordered DataChannel state. Never a command to activate the peer camera. */

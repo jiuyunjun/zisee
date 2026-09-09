@@ -89,6 +89,9 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var control: DataChannel? = null
     var arCollaboration: com.lazydoglab.zisee.ar.collaboration.ArDataChannel? = null; private set
     private var changingCamera = false
+    private var arCapture: com.lazydoglab.zisee.ar.session.ArVideoCapture? = null
+    private var arLeaseId: java.util.UUID? = null
+    private var arStopRequested = false
     var localFeed: VideoFeed? = null; private set
     var remoteFeed: VideoFeed? = null; private set
     private val candidates = mutableListOf<IceCandidate>()
@@ -614,6 +617,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     }
 
     private fun applyQuality(decision: QualityDecision, changeCapture: Boolean = true) {
+        if (arLeaseId != null) return // AR preserves the full image; sender congestion control remains active.
         if (audioBandwidth.mode == com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.VIDEO_PROBE) return
         if (appliedQuality == decision.quality && appliedView == remoteView) return
         if (!adaptationEnabled) return
@@ -665,8 +669,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             MediaTrack.MICROPHONE -> audioTrack?.setEnabled(enabled)
             MediaTrack.FRONT_CAMERA, MediaTrack.BACK_CAMERA -> {
                 cameraEnabled = enabled
-                videoTrack?.setEnabled(enabled)
-                backTrack?.setEnabled(enabled && presentationMode == CameraMode.DUAL)
+                videoTrack?.setEnabled(enabled && arLeaseId == null)
+                backTrack?.setEnabled(enabled && (presentationMode == CameraMode.DUAL || arLeaseId != null))
                 sendPresentation()
             }
             MediaTrack.SCREEN -> throw UnsupportedOperationException("screen_not_available")
@@ -697,8 +701,91 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         if (channel.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(data), false))) sentView = desiredView
     }
 
+    /** Called only after user-triggered ARCore preparation. UI must stop AR when leaving foreground. */
+    suspend fun startAr(preparation: com.lazydoglab.zisee.ar.session.ArPreparation,
+        rotation: Int, width: Int, height: Int): Boolean = withContext(dispatcher + kotlinx.coroutines.NonCancellable) {
+        if (released || changingCamera || arLeaseId != null || !cameraEnabled ||
+            preparation != com.lazydoglab.zisee.ar.session.ArPreparation.READY ||
+            rotation !in 0..3 || width <= 0 || height <= 0) return@withContext false
+        val collaboration = arCollaboration ?: return@withContext false
+        val previous = presentationMode
+        val id = java.util.UUID.randomUUID()
+        changingCamera = true
+        arLeaseId = id
+        arStopRequested = false
+        val lease = com.lazydoglab.zisee.ar.session.ArCameraLease {
+            // Never block the GL owner waiting for RTC; channel close can itself be awaiting GL.
+            scope.launch { restoreAfterAr(id, previous) }
+        }
+        try {
+            if (dualCapture != null) {
+                dualCapture?.close(awaitCameraClosed = true)
+                dualCapture = null
+            } else releaseCamera(strict = true)
+            if (released) { lease.close(); return@withContext false }
+            videoTrack?.setEnabled(false)
+            val capture = com.lazydoglab.zisee.ar.session.ArVideoCapture.start(context,
+                requireNotNull(egl).eglBaseContext, requireNotNull(backSource), lease,
+                rotation, width, height) { scope.launch { stopAr() } }
+            arCapture = capture
+            if (released || arStopRequested || !collaboration.attach(capture)) {
+                capture.close()
+                return@withContext false
+            }
+            backTrack?.setEnabled(cameraEnabled)
+            presentationMode = CameraMode.AR
+            showMe.value = ShowMeState(CameraMode.AR)
+            sendPresentation()
+            true
+        } catch (_: Exception) {
+            logger.error(AppEvent.AR_CHANNEL_FAILED)
+            try { arCapture?.close() } catch (_: Exception) { logger.error(AppEvent.AR_CHANNEL_FAILED) }
+            lease.close()
+            false
+        } finally { changingCamera = false }
+    }
+
+    suspend fun updateArGeometry(rotation: Int, width: Int, height: Int) = withContext(dispatcher) {
+        arCapture?.setGeometry(rotation, width, height)
+    }
+
+    suspend fun stopAr() = withContext(dispatcher + kotlinx.coroutines.NonCancellable) {
+        arStopRequested = true
+        try { arCollaboration?.detach() }
+        finally { arCapture?.close(); arCapture = null }
+    }
+
+    private suspend fun restoreAfterAr(id: java.util.UUID, previous: CameraMode) {
+        if (arLeaseId != id) return
+        arCapture = null
+        arLeaseId = null
+        if (released) return
+        changingCamera = true
+        try {
+            backTrack?.setEnabled(false)
+            if (previous == CameraMode.DUAL) {
+                val dual = DualCameraCapture(context, requireNotNull(egl).eglBaseContext)
+                dualCapture = dual
+                check(dual.supported())
+                dual.setTargetRotation(deviceOrientation.rotation)
+                dual.start(requireNotNull(videoSource), requireNotNull(backSource))
+                dual.setTargetRotation(deviceOrientation.rotation)
+                backTrack?.setEnabled(cameraEnabled)
+            } else requireNotNull(camera).startCapture(1280, 720, 30)
+            presentationMode = previous
+            videoTrack?.setEnabled(cameraEnabled)
+            showMe.value = ShowMeState(previous)
+            appliedQuality = null
+            applyQuality(qualityPolicy.current)
+            sendPresentation()
+        } catch (_: Exception) {
+            logger.error(AppEvent.RTC_MEDIA_FAILED)
+            showMe.value = ShowMeState(previous, "摄像头恢复失败，请重试")
+        } finally { changingCamera = false }
+    }
+
     suspend fun toggleShowMe(preferDual: Boolean = true) = withContext(dispatcher) {
-        if (released || changingCamera || !cameraEnabled) return@withContext
+        if (released || changingCamera || !cameraEnabled || arLeaseId != null) return@withContext
         changingCamera = true
         showMe.value = ShowMeState(CameraMode.STARTING)
         try {
@@ -775,7 +862,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
      * produces a frame, and Show Me falls back to a single rear camera. Wait for the device to
      * actually close before handing the camera over.
      */
-    private suspend fun releaseCamera() {
+    private suspend fun releaseCamera(strict: Boolean = false) {
         val closed = CompletableDeferred<Unit>()
         cameraClosed = closed
         try {
@@ -783,6 +870,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             // A capturer that was never started reports no close, so this must not be fatal.
             if (withTimeoutOrNull(3_000) { closed.await() } == null) {
                 logger.info(AppEvent.RTC_SHOW_ME_FALLBACK, "camera_close_timeout")
+                check(!strict) { "camera_close_timeout" }
             }
         } finally { cameraClosed = null }
     }
@@ -866,6 +954,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             dualCapture = null
             try { arCollaboration?.close() } catch (error: Exception) { logger.error(AppEvent.AR_CHANNEL_FAILED) }
             arCollaboration = null
+            try { arCapture?.close() } catch (_: Exception) { logger.error(AppEvent.AR_CHANNEL_FAILED) }
+            arCapture = null
             cleanup { control?.unregisterObserver(); control?.close(); control?.dispose() }; control = null
             cleanup { deviceOrientation.close() }
             cleanup { cellularStandby.close() }

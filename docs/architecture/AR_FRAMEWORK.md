@@ -151,3 +151,13 @@ CameraTextureMappingTest covers all four rotations, reflection, crop, defensive 
 ```powershell
 adb shell am instrument -w -e arCameraRender true com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
 ```
+
+## AR camera media owner (1.3)
+
+NativeRtcSession.startAr consumes a user-triggered READY preparation result, stops ordinary capture, waits for native CLOSED, and attaches ArVideoCapture to collaboration. stopAr is also required on foreground exit; the AR product entry remains a separate UI task. CameraMode.AR displays only video_back; previous FACE/BACK_ONLY/DUAL capture is restored asynchronously when the lease returns. Hangup suppresses restoration. Close timeouts refuse AR ownership.
+
+ArVideoCapture owns a SurfaceTextureHelper EGL worker, controller and three-slot ArFramePool. Each accepted AR image is drawn into an independently retained RGB texture before the next Session.update. A full pool drops frames. glFinish provides conservative cross-context write completion without CPU image readback; its device cost is not yet measured. Software encoder I420 fallback is supported by WebRTC YuvConverter. Closing stops capture/controller first; retained buffers defer converter/EGL disposal until their final release.
+
+Output keeps CPU image aspect ratio and applies rear sensor-minus-display rotation once. Ordinary quality-format changes are suspended while the AR lease is active; WebRTC sender congestion control remains active. No spatial clicks are enabled by this milestone.
+
+Validation: 159 JVM tests, Debug/AndroidTest builds and lint passed. Connected-device arFramePool passed retained pixel stability, pool exhaustion and deferred cleanup. Initial layout test failed on the new AR enum and was corrected, then the full checks passed. Actual AR camera takeover and two-device video remain unverified.
