@@ -135,14 +135,14 @@ internal object ArChannelSmoke {
         } } finally { executor.close() }
     }
 
-    private suspend fun description(peer: PeerConnection, offer: Boolean): SessionDescription = suspendCancellableCoroutine { cont ->
+    internal suspend fun description(peer: PeerConnection, offer: Boolean): SessionDescription = suspendCancellableCoroutine { cont ->
         val observer = object : Observer() {
             override fun onCreateSuccess(sdp: SessionDescription) { if (cont.isActive) cont.resume(sdp) }
             override fun onCreateFailure(error: String) { if (cont.isActive) cont.resumeWithException(IllegalStateException("create_description_failed")) }
         }
         if (offer) peer.createOffer(observer, MediaConstraints()) else peer.createAnswer(observer, MediaConstraints())
     }
-    private suspend fun set(peer: PeerConnection, sdp: SessionDescription, local: Boolean) = suspendCancellableCoroutine<Unit> { cont ->
+    internal suspend fun set(peer: PeerConnection, sdp: SessionDescription, local: Boolean) = suspendCancellableCoroutine<Unit> { cont ->
         val observer = object : Observer() {
             override fun onSetSuccess() { if (cont.isActive) cont.resume(Unit) }
             override fun onSetFailure(error: String) { if (cont.isActive) cont.resumeWithException(IllegalStateException("set_description_failed")) }

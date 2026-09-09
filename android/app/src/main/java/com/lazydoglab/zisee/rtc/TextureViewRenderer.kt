@@ -7,6 +7,7 @@ import android.view.TextureView
 import android.view.View
 import android.view.ViewOutlineProvider
 import java.util.concurrent.CountDownLatch
+import kotlinx.coroutines.flow.asStateFlow
 import org.webrtc.EglBase
 import org.webrtc.EglRenderer
 import org.webrtc.GlRectDrawer
@@ -38,6 +39,13 @@ import org.webrtc.VideoSink
  */
 class TextureViewRenderer(context: Context) : TextureView(context), TextureView.SurfaceTextureListener, VideoSink {
     private val eglRenderer = EglRenderer("TextureViewRenderer(0x${Integer.toHexString(hashCode())})")
+    data class DisplayedArFrame(val identity: com.lazydoglab.zisee.ar.render.ArFrameIdentity,
+        val geometry: VideoGeometry, val mirrored: Boolean)
+    private val submitted = com.lazydoglab.zisee.ar.render.FrameIdentityIndex<DisplayedArFrame>()
+    private val displayed = kotlinx.coroutines.flow.MutableStateFlow<DisplayedArFrame?>(null)
+    val displayedArFrame = displayed.asStateFlow()
+    @Volatile private var mirror = false
+    private val renderTokens = java.util.concurrent.atomic.AtomicLong(System.nanoTime())
 
     init { surfaceTextureListener = this }
 
@@ -56,23 +64,41 @@ class TextureViewRenderer(context: Context) : TextureView(context), TextureView.
         }
 
     fun init(sharedContext: EglBase.Context) {
-        eglRenderer.init(sharedContext, EglBase.CONFIG_PLAIN, GlRectDrawer())
+        eglRenderer.init(sharedContext, EglBase.CONFIG_PLAIN, GlRectDrawer(), true)
         surfaceTexture?.let { eglRenderer.createEglSurface(it) }
     }
 
-    fun setMirror(mirror: Boolean) = eglRenderer.setMirror(mirror)
+    fun setMirror(mirror: Boolean) {
+        if (this.mirror != mirror) { submitted.clear(); displayed.value = null }
+        this.mirror = mirror
+        eglRenderer.setMirror(mirror)
+    }
 
-    fun release() = eglRenderer.release()
+    fun release() { submitted.clear(); displayed.value = null; eglRenderer.release() }
 
-    override fun onFrame(frame: VideoFrame) = eglRenderer.onFrame(frame)
+    override fun onFrame(frame: VideoFrame) = onIdentifiedFrame(frame, null)
+
+    fun onIdentifiedFrame(frame: VideoFrame, identity: com.lazydoglab.zisee.ar.render.ArFrameIdentity?) {
+        val token = renderTokens.updateAndGet { maxOf(it + 1, System.nanoTime()) }
+        submitted.put(token, identity?.let {
+            DisplayedArFrame(it, VideoGeometry(frame.buffer.width, frame.buffer.height, frame.rotation), mirror)
+        })
+        frame.buffer.retain()
+        val output = VideoFrame(frame.buffer, frame.rotation, token)
+        try { eglRenderer.onFrame(output) } finally { output.release() }
+    }
 
     override fun onSurfaceTextureAvailable(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
         eglRenderer.createEglSurface(surfaceTexture)
     }
     override fun onSurfaceTextureSizeChanged(surfaceTexture: SurfaceTexture, width: Int, height: Int) = Unit
-    override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) = Unit
+    override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {
+        // This timestamp belongs to the texture latched by Android, not the newest received frame.
+        displayed.value = submitted.get(surfaceTexture.timestamp)
+    }
     /** Must not let the platform release the SurfaceTexture before the render thread is done with it. */
     override fun onSurfaceTextureDestroyed(surfaceTexture: SurfaceTexture): Boolean {
+        submitted.clear(); displayed.value = null
         val completion = CountDownLatch(1)
         eglRenderer.releaseEglSurface { completion.countDown() }
         try { completion.await() } catch (interrupted: InterruptedException) { Thread.currentThread().interrupt() }

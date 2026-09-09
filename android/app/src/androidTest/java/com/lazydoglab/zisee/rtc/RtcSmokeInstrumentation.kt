@@ -28,6 +28,8 @@ class RtcSmokeInstrumentation : Instrumentation() {
     private var arChannel = false
     private var arCameraRender = false
     private var arFramePool = false
+    private var arVideoIdentity = false
+    private var arDisplayedIdentity = false
     private var audio = false
     private var repetitions = 1
     override fun onCreate(arguments: Bundle?) {
@@ -40,6 +42,8 @@ class RtcSmokeInstrumentation : Instrumentation() {
         arChannel = arguments?.getString("arChannel") == "true"
         arCameraRender = arguments?.getString("arCameraRender") == "true"
         arFramePool = arguments?.getString("arFramePool") == "true"
+        arVideoIdentity = arguments?.getString("arVideoIdentity") == "true"
+        arDisplayedIdentity = arguments?.getString("arDisplayedIdentity") == "true"
         audio = arguments?.getString("audio") == "true"
         repetitions = arguments?.getString("repeat")?.toIntOrNull()?.coerceIn(1, 3) ?: 1
         start()
@@ -48,6 +52,12 @@ class RtcSmokeInstrumentation : Instrumentation() {
     override fun onStart() {
         val output = Bundle()
         try {
+            if (arVideoIdentity || arDisplayedIdentity) {
+                ArVideoIdentitySmoke.run(targetContext, this, arDisplayedIdentity)
+                output.putString("stream", "PASS: synthetic AR RGB source through native H264 RTP and decoder with exact source identity; surface assertion=$arDisplayedIdentity\n")
+                finish(Activity.RESULT_OK, output)
+                return
+            }
             if (arFramePool) {
                 ArFramePoolSmoke.run(targetContext)
                 output.putString("stream", "PASS: retained RGB pool, exhaustion, pixel stability and deferred GL cleanup\n")

@@ -30,7 +30,7 @@ class ArVideoCapture private constructor(
     private lateinit var renderer: ArCameraRenderer
     private lateinit var pool: ArFramePool
     override val depthSupported: Boolean get() = backend.depthSupported
-    private var closed = false
+    @Volatile private var closed = false
     private var rotationDegrees = 0
     private var outputSize: Pair<Int, Int>? = null
     private val tick = object : Runnable {
@@ -51,7 +51,9 @@ class ArVideoCapture private constructor(
                         backend.renderCamera(snapshot.frame, renderer, width, height)
                     }
                     if (buffer != null) {
-                        val frame = VideoFrame(buffer, rotationDegrees, snapshot.frame.timestampNs)
+                        val tagged = com.lazydoglab.zisee.ar.render.ArTextureBuffer(buffer,
+                            com.lazydoglab.zisee.ar.render.ArFrameIdentity(sessionId, snapshot.frame))
+                        val frame = VideoFrame(tagged, rotationDegrees, snapshot.frame.timestampNs)
                         try { source.capturerObserver.onFrameCaptured(frame) }
                         finally { frame.release() }
                     }
@@ -70,14 +72,17 @@ class ArVideoCapture private constructor(
 
     override suspend fun execute(message: ArMessage) = endpoint.execute(message)
 
-    override suspend fun close() = withContext(NonCancellable + dispatcher) {
-        if (!closed) {
-            closed = true
-            handler.removeCallbacks(tick)
-            try { source.capturerObserver.onCapturerStopped() }
-            finally {
-                try { controller.close() }
-                finally { try { renderer.close() } finally { pool.close() } }
+    override suspend fun close() {
+        if (closed) return // The drained pool may already have shut down its HandlerThread.
+        withContext(NonCancellable + dispatcher) {
+            if (!closed) {
+                closed = true
+                handler.removeCallbacks(tick)
+                try { source.capturerObserver.onCapturerStopped() }
+                finally {
+                    try { controller.close() }
+                    finally { try { renderer.close() } finally { pool.close() } }
+                }
             }
         }
     }

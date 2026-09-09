@@ -92,6 +92,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var arCapture: com.lazydoglab.zisee.ar.session.ArVideoCapture? = null
     private var arLeaseId: java.util.UUID? = null
     private var arStopRequested = false
+    private var arStarting: CompletableDeferred<Unit>? = null
     var localFeed: VideoFeed? = null; private set
     var remoteFeed: VideoFeed? = null; private set
     private val candidates = mutableListOf<IceCandidate>()
@@ -203,8 +204,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         factory = PeerConnectionFactory.builder().setAudioDeviceModule(audioModule)
             .setAudioProcessingFactory(processingFactory)
             .setOptions(options)
-            .setVideoEncoderFactory(DefaultVideoEncoderFactory(shared, true, true))
-            .setVideoDecoderFactory(DefaultVideoDecoderFactory(shared)).createPeerConnectionFactory()
+            .setVideoEncoderFactory(com.lazydoglab.zisee.ar.render.ArEncoderFactory(shared))
+            .setVideoDecoderFactory(com.lazydoglab.zisee.ar.render.ArDecoderFactory(shared)).createPeerConnectionFactory()
         val servers = iceServers.map { entry ->
             PeerConnection.IceServer.builder(entry.urls)
                 .setUsername(entry.username).setPassword(entry.credential).createIceServer()
@@ -284,6 +285,14 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         backTrack = requireNotNull(factory).createVideoTrack(MediaTrack.BACK_CAMERA.wireId, backSource).also {
             it.setEnabled(false); it.addSink(localBackFeed)
             backSender = requireNotNull(peer).addTrack(it, listOf("zisee"))
+        }
+        // Rear video carries AR identities through H264 SEI; retain every fallback codec.
+        val rearCodecs = requireNotNull(factory).getRtpSenderCapabilities(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO).codecs
+        if (rearCodecs.any { it.name.equals("H264", true) }) {
+            try {
+                requireNotNull(peer).transceivers.firstOrNull { it.sender.id() == backSender?.id() }
+                    ?.setCodecPreferences(rearCodecs.sortedBy { if (it.name.equals("H264", true)) 0 else 1 })
+            } catch (_: Exception) { logger.error(AppEvent.RTC_CAPABILITY_UNAVAILABLE) }
         }
         control = requireNotNull(peer).createDataChannel("camera-state", DataChannel.Init().apply { negotiated = true; id = 0 })
         arCollaboration = com.lazydoglab.zisee.ar.collaboration.ArDataChannel(
@@ -713,6 +722,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         changingCamera = true
         arLeaseId = id
         arStopRequested = false
+        val starting = CompletableDeferred<Unit>()
+        arStarting = starting
         val lease = com.lazydoglab.zisee.ar.session.ArCameraLease {
             // Never block the GL owner waiting for RTC; channel close can itself be awaiting GL.
             scope.launch { restoreAfterAr(id, previous) }
@@ -742,7 +753,11 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             try { arCapture?.close() } catch (_: Exception) { logger.error(AppEvent.AR_CHANNEL_FAILED) }
             lease.close()
             false
-        } finally { changingCamera = false }
+        } finally {
+            changingCamera = false
+            arStarting = null
+            starting.complete(Unit)
+        }
     }
 
     suspend fun updateArGeometry(rotation: Int, width: Int, height: Int) = withContext(dispatcher) {
@@ -751,16 +766,20 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
 
     suspend fun stopAr() = withContext(dispatcher + kotlinx.coroutines.NonCancellable) {
         arStopRequested = true
+        arStarting?.await()
         try { arCollaboration?.detach() }
         finally { arCapture?.close(); arCapture = null }
     }
 
     private suspend fun restoreAfterAr(id: java.util.UUID, previous: CameraMode) {
+        arStarting?.await()
         if (arLeaseId != id) return
         arCapture = null
         arLeaseId = null
         if (released) return
         changingCamera = true
+        val restoring = CompletableDeferred<Unit>()
+        arStarting = restoring
         try {
             backTrack?.setEnabled(false)
             if (previous == CameraMode.DUAL) {
@@ -781,7 +800,11 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         } catch (_: Exception) {
             logger.error(AppEvent.RTC_MEDIA_FAILED)
             showMe.value = ShowMeState(previous, "摄像头恢复失败，请重试")
-        } finally { changingCamera = false }
+        } finally {
+            changingCamera = false
+            arStarting = null
+            restoring.complete(Unit)
+        }
     }
 
     suspend fun toggleShowMe(preferDual: Boolean = true) = withContext(dispatcher) {
@@ -944,6 +967,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         withContext(dispatcher) {
             if (released) return@withContext
             released = true
+            arStopRequested = true
+            arStarting?.await() // Keep sources/factory/EGL alive while GL startup is in flight.
             statsJob?.cancel(); statsJob = null
             withContext(Dispatchers.Main.immediate) {
                 localFeed?.close(); remoteFeed?.close(); localBackFeed?.close(); remoteBackFeed?.close()

@@ -31,7 +31,8 @@ class VideoFeed(val eglContext: EglBase.Context, mirrored: Boolean, private val 
         if (closed) return
         frameGeometry.value = VideoGeometry(frame.buffer.width, frame.buffer.height, frame.rotation)
         if (!receivedFrame) { receivedFrame = true; onFirstFrame() }
-        renderers.forEach { it.onFrame(frame) }
+        val identity = (frame.buffer as? com.lazydoglab.zisee.ar.render.ArTextureBuffer)?.identity
+        renderers.forEach { it.onIdentifiedFrame(frame, identity) }
     }
     @Synchronized fun close() {
         closed = true

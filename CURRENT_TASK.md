@@ -1,22 +1,26 @@
 # Current Task
 
 ## Task
-Integrate exclusive AR camera ownership and retained GPU frames into the existing rear WebRTC track.
+Carry AR source identity inside H264 access units and resolve the identity of the SurfaceTexture-latched frame.
 
 ## Why
-The AR framework currently has no media owner; mutable OES textures cannot cross an asynchronous encoder boundary.
+Capture/decoder clocks and a latest DataChannel timestamp cannot identify the displayed historical AR image.
 
 ## Scope
-AR media adapters, NativeRtcSession integration, focused tests and architecture/checkpoint documents. Preserve the five pre-existing edits (including the concurrent targetRotation hunk).
+AR identity protocol, codec adapters, GPU frame tags, VideoFeed/TextureViewRenderer, tests and architecture documents.
 
 ## Planned Changes
-Add a bounded RGB framebuffer pool on a dedicated EGL worker, controller endpoint ownership, explicit start/stop APIs and camera restoration. Then implement encoded-content identity correlation and surface-latched frame references as a separate checkpoint.
+Versioned unregistered-user-data SEI (session UUID + source timestamp), bounded codec correlation, texture tags surviving full-frame scaling, exact surface timestamp lookup. Preserve default codec availability and fail closed when identity cannot survive the selected codec/path.
 
 ## Acceptance Criteria
-AR starts only after ordinary capture closes, delivers independent video_back frames, drops under pool pressure, and releases GL only after retained buffers return. Failure/exit/hangup must clean up and restore capture when the call remains active.
+Reordering, drops, invalid/duplicate metadata and unknown frame timestamps never guess a reference. UI receives only a source reference matched to the actual latched texture with that frame geometry. No pixel readback for synchronization.
 
 ## Validation
-JVM tests, Debug and AndroidTest builds, lint; available device instrumentation. Physical ARCore and two-device behavior must be reported separately.
+JVM parser/state tests, builds/lint, native encode/decode/renderer smoke where available.
 
 ## State
-IMPLEMENTING
+DONE
+
+## Notes
+Previous checkpoint fe4ecc4: 159 JVM tests, builds/lint and connected-device arFramePool PASS. Pre-existing five-file edits remain unstaged.
+Identity implementation verified by 162 JVM tests, builds/lint and real H264 codec loopback. Surface display verification remains blocked by MIUI background Activity launch denial; see HANDOFF.md.

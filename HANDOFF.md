@@ -1,72 +1,60 @@
 # HANDOFF
 
 ## Status
-IN_PROGRESS
+READY_FOR_REVIEW
 
 ## Objective
-Continue AR Assist implementation while preserving existing camera/UI work and handover improvements.
+Implement the next AR media milestone: camera takeover, WebRTC delivery and remote displayed-frame identity.
 
 ## Active Task
-Implementing AR camera takeover, retained WebRTC GPU delivery, then exact remote displayed-frame identity.
+Implementation complete for media APIs and H264 source identity; device acceptance remains incomplete. No AR UI entry or spatial-click tool enabled.
 
 ## Last Good Checkpoint
-commit: c34f0f6
+commit: fe4ecc4 (camera media checkpoint; identity commit follows)
 build: PASS (current combined working tree)
-tests: PASS (current combined working tree)
+tests: PASS (162 JVM tests)
 
 ## Current Work
-ArCoreBackend captures CPU-image-to-OES mapping with the historical frame. renderCamera only accepts the current reference. Every native update, pause and close invalidates old texture access. ArCameraRenderer draws to a caller-owned framebuffer on the owner GL thread/context. EIS disabled explicitly. No new dependencies or AR UI entry.
+ArVideoCapture owns ARCore on its GL worker. Three retained RGB slots feed video_back. NativeRtcSession startAr/stopAr/updateArGeometry manage camera lease and restore previous capture, with startup/restoration barriers against hangup. H264 SEI carries frame identity; decoded texture tags reach VideoFeed. TextureViewRenderer publishes identity only after exact SurfaceTexture timestamp lookup.
 
 ## Repository State
-Preserve five pre-existing unstaged files: AGENTS.md; NativeRtcSession.kt (post-bind targetRotation workaround); ActiveCall.kt (user UI edits plus VIDEO_PROBE tip); CallVideoLayout.kt; CallVideoLayoutTest.kt. They are excluded from AR commits. Tests/builds include this combined working tree.
-AR implementation committed in 431a7a3. Only this checkpoint documentation update is pending; after its commit, the five pre-existing files above are the expected unstaged changes.
+Preserve the five pre-existing modified files: AGENTS.md; NativeRtcSession.kt concurrent post-bind targetRotation hunk; ActiveCall.kt user UI/probe tip; CallVideoLayout.kt thumbnail sizing; CallVideoLayoutTest.kt corresponding sizing test. They remain excluded from AR commits. All other current changes belong to this task and must be retained until committed. No debug diagnostic logging remains.
 
 ## Completed
-- Previous AR framework: history/depth/plane resolution, anchors and versioned protocol.
-- e4499d0: reliable ordered AR DataChannel id 2; ready/join/joined/leave/ended, bounded traffic, endpoint cleanup and RTC failure isolation.
-- Current milestone: affine raw CPU-image texture mapping, exact current-texture gate, GPU draw and thread/EGL checks.
-- Existing camera orientation and handover commits remain in history; latest baseline 4440862. Previous handover measurements and remaining promotion interruption are recorded in commit 2d90d49.
+- fe4ecc4: exclusive camera lease, retained GPU video delivery, AR rear-track presentation and previous-mode restoration.
+- Identity implementation: versioned H264 SEI, bounded exact codec correlation, tagged texture ownership and actual surface-latch lookup.
+- Rear track prefers H264 with other codecs retained as ordinary video fallbacks.
+- Tests for SEI escaping/validation, duplicate and bounded correlation; native GPU pool and H264 loopback fixtures.
 
 ## Verified
-- 159 JVM tests: zero failures/errors/skips (including 3 new mapping/gate tests).
-- :app:assembleDebug, :app:assembleDebugAndroidTest and :app:lintDebug PASS, including rerun after adding backend EGL-context validation.
-- Attached device arCameraRender instrumentation PASS: synthetic four-color OES texture, real EGL/shader drawing and pixel corner orientation. No actual ARCore camera involved. Test ran before the final backend-only EGL guard; render code/test unchanged.
-- Debug and test APKs installed for that device test.
-- Initial sandbox Gradle run failed on network permission; approved outside-sandbox rerun passed.
-- Diff review and UTF-8 validation performed before commit; no sensitive payloads/media added.
+- 162 JVM tests PASS; :app:assembleDebug, :app:assembleDebugAndroidTest, :app:lintDebug PASS.
+- Connected-device arFramePool PASS: bounded exhaustion, retained pixel stability and deferred GL cleanup.
+- Connected-device arVideoIdentity PASS: synthetic RGB through actual PeerConnection/H264 RTP and MediaCodec with exact source timestamp/session. Repeated after codec correction.
+- Initial JNI decode crash (null DecodeInfo) fixed; initial decoder output timeout (changed timestamp rejected by native bookkeeping) fixed. No failures concealed.
+- Latest whitespace-only close-block indentation: compileDebugKotlin PASS.
 
 ## Not Yet Verified
-Actual ARCore texture FOV/alignment, anchors/depth, camera lease handover, EGL recreation and foreground/background behavior. Two-device AR video, displayed-frame identity, spatial clicks and overlays. Physical Show Me rotation and Wi-Fi/cellular/TURN handovers remain separate device acceptance items.
+Physical ARCore camera takeover/restore, raw image orientation/depth alignment, lifecycle/hangup races on hardware, EGL recreation, actual TextureView identity, two-device spatial clicks and overlays. glFinish performance/power not measured.
 
 ## Known Issues / Blockers
-No build blocker. Default JAVA_HOME is Java 8; use Android Studio jbr. AR UI/camera startup remains disabled. The OES texture is mutable and must not be handed directly to an asynchronous encoder. Historical frames cannot render a camera texture after its next native update. Output dimensions should preserve CPU-image aspect ratio.
+MIUI denied background launch of ArVideoTestActivity (result 102); arDisplayedIdentity could not reach renderer assertions. Instrumentation process stopped after stalled launch. No permission bypass/settings changes. The test now bounds Activity launch to 5 seconds; rerun with application foreground. AR UI startup remains intentionally absent from this media milestone. Non-H264 or I420/cropped paths fail closed for identity while video continues.
 
 ## Decisions
-- Map from IMAGE_NORMALIZED, without baking in display VIEW crop/rotation; downstream display geometry remains explicit.
-- Use existing WebRTC GlRectDrawer and zero CPU camera pixel copies; readPixels exists only in instrumentation.
-- Reject stale/missing texture references rather than using a latest timestamp. Remote spatial clicks still require exact displayed-frame identity.
-- Media owner must keep GL/EGL alive until endpoint/controller/renderer cleanup completes. Camera lease close must not wait synchronously for RTC dispatcher.
-- Preserve independent tracks, P2P/TURN fallback and all unrelated edits.
+Use in-band per-access-unit SEI, not a latest timestamp or content hash. Native decoder timestamp is immutable for WebRTC bookkeeping; attach identity to texture instead. Renderer-local tokens belong only to the renderer. Retained RGB frames keep their independent GL worker alive after camera close until downstream releases. Lease return posts restoration without synchronously waiting for RTC. Preserve raw CPU-image aspect ratio. Keep existing P2P/TURN behavior.
 
 ## Next Action
-Implement exclusive camera lease integration and bounded reference-counted RGB framebuffer delivery into WebRTC. Read AR_FRAMEWORK.md, ArCoreBackend.renderCamera, ArCameraRenderer, ArControllerEndpoint and NativeRtcSession camera lifecycle first. ARCore OES must be copied on GPU before next Session.update; retained RGB buffers cannot be recycled until downstream release. Establish source-to-encoded-to-displayed identity before enabling spatial clicks. Add actual ARCore capture/lifecycle device tests when the media owner exists.
+Review identity checkpoint, then run arDisplayedIdentity with the app foreground. Add foreground AR UI/controller integration calling prepare, startAr, updateArGeometry and stopAr on pause; verify real ARCore and two-device flow before exposing spatial controls. Use docs/architecture/AR_FRAMEWORK.md 1.3/1.4 contracts.
 
 ## Done When
-This atomic render milestone is committed with passing available checks. Full AR product acceptance still requires camera/media ownership, frame identity, UI and real two-device annotation verification.
+Media implementation committed with available tests passing and explicit remaining physical-device acceptance. Full AR product completion requires UI, lifecycle device checks and spatial annotations on two devices.
 
 ## Relevant Commands
-From android, JAVA_HOME=C:/Program Files/Android/Android Studio/jbr:
-./gradlew.bat :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug
-adb shell am instrument -w -e arCameraRender true com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
-adb shell am instrument -w -e arChannel true com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
+JAVA_HOME=C:/Program Files/Android/Android Studio/jbr
+./android/gradlew.bat -p android :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug
+adb shell am instrument -w -e arVideoIdentity true com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
+adb shell am instrument -w -e arDisplayedIdentity true com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
 
 ## Latest Commits
+fe4ecc4 feat: deliver AR camera frames through retained WebRTC textures
+c34f0f6 docs: record AR camera rendering checkpoint
 431a7a3 feat: render exact AR camera textures on the GPU
-4440862 feat: say why a handover seeded nothing
-2d90d49 docs: record the handover measurements and what remains
-e4499d0 feat: connect AR collaboration control channel
-
-## Active implementation (2026-09-10)
-Baseline Git matches c34f0f6; the documented five pre-existing edits remain. CURRENT_TASK.md describes current WIP. No new verification yet. Preserve all AR WIP. Next: implement media owner and tests, then frame identity checkpoint.
-
-Camera media owner checkpoint: implementation, 159 JVM tests, Debug/AndroidTest builds and lint PASS. Device arFramePool PASS. No actual AR camera test yet. Next atomic task: in-band H264 SEI source identity and surface-latched receiver identity; unsupported codecs fail closed. Pre-existing edits remain excluded.

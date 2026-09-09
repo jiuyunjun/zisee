@@ -1,7 +1,7 @@
 ---
 title: AR Assist 框架与接入契约
 document_id: ARCH-AR-001
-version: 1.2.0
+version: 1.4.0
 status: Active
 created: 2026-09-09
 updated: 2026-09-10
@@ -15,7 +15,7 @@ owners:
 
 实现 `ARCHITECTURE.md` 第 18–22 节的现场端框架：ARCore 能力/安装检查、独占相机会话、历史帧缓存、历史深度/平面投影、本地锚点及生命周期、Pin/Arrow/Circle 类型、归一化坐标变换和版本化协议。框架通过接口接入媒体层，不在普通通话期间启动 AR。
 
-现已增加双端 DataChannel 接线与 controller 线程适配。不包含通话 AR 按钮、叠加渲染、AR 视频编码、M3 屏幕共享或完整的 M5 视频时间戳传递。因此 M4/M5 的产品退出条件仍未达到。`design/ARAssist.dc.html` 与 `docs/product/DESIGN.md` 的 scanning/tracking lost/标记工具栏属于后续 UI 接入。
+现已增加双端 DataChannel、相机接管 API、GPU 视频投递和 H264 帧身份传递；最新接入与验证状态见 1.3/1.4 节。通话 AR 按钮、叠加渲染、M3 屏幕共享及完整双设备 M5 验收仍待完成。因此 M4/M5 的产品退出条件仍未达到。`design/ARAssist.dc.html` 与 `docs/product/DESIGN.md` 的 scanning/tracking lost/标记工具栏属于后续 UI 接入。
 
 ## 模块
 
@@ -161,3 +161,27 @@ ArVideoCapture owns a SurfaceTextureHelper EGL worker, controller and three-slot
 Output keeps CPU image aspect ratio and applies rear sensor-minus-display rotation once. Ordinary quality-format changes are suspended while the AR lease is active; WebRTC sender congestion control remains active. No spatial clicks are enabled by this milestone.
 
 Validation: 159 JVM tests, Debug/AndroidTest builds and lint passed. Connected-device arFramePool passed retained pixel stability, pool exhaustion and deferred cleanup. Initial layout test failed on the new AR enum and was corrected, then the full checks passed. Actual AR camera takeover and two-device video remain unverified.
+## Source-to-display identity (1.4)
+
+AR frames carry ArFrameIdentity(session UUID, video_back source timestamp) in a retained texture wrapper. Full-frame scaling preserves it; cropping or an arbitrary texture transform discards it. The H264 Java hardware encoder correlates its input/output timestamps and prepends one versioned user_data_unregistered SEI NAL to that same access unit. The application UUID is 871c8aef-43dd-4617-a4a8-702d22b135b1. The payload is 41 bytes: 16-byte application UUID, version 1, 16-byte session UUID, positive signed 64-bit source timestamp, all integer fields big-endian. Standard emulation prevention applies. No camera pixels, poses or depth are logged/persisted.
+
+Rear-track negotiation prefers H264 while retaining fallback codecs. Other codecs, native software paths, missing tags, malformed/duplicate SEI and unknown timestamps provide ordinary video without a spatial reference. No latest-value DataChannel synchronization is used. Existing AR ready/join/session authorization remains required for marker requests.
+
+The Java decoder reads the SEI and matches MediaCodec's microsecond presentation time before attaching identity to its output texture. It preserves the decoder timestamp required by native WebRTC frame bookkeeping. Native JNI can pass null DecodeInfo. Buffer tags survive the native texture adapter (verified on the connected device); I420 conversion/cropping fails closed. Correlation caches have at most 180 entries, with no nearest-time matching.
+
+VideoFeed forwards the per-frame identity to each TextureViewRenderer. Each renderer assigns a unique local presentation token and requests EGL presentation timestamps. Only onSurfaceTextureUpdated reads the SurfaceTexture timestamp and publishes the exact corresponding DisplayedArFrame (source identity, dimensions, rotation, mirror). Receiving/queuing a newer frame does not publish it. Unknown surface timestamps and surface release clear identity. This represents Android texture latching, not a physical screen scanout timing measurement. UI integration must validate the current remote AR session UUID and use the clicked renderer's displayedArFrame plus its current FIT/view geometry; spatial controls remain unopened here.
+
+Verification: 162 JVM tests, Debug/AndroidTest builds and lint PASS. Real local PeerConnection/H264 RTP/MediaCodec smoke passed with synthetic RGB source identity. Initial native crash was traced to null DecodeInfo; subsequent dropped-output timeout was traced to altering the decoder timestamp; both fixed and the real codec smoke passed. The display test could not complete because MIUI denied the instrumentation Activity background launch (ActivityTaskManager result 102). No device permission was changed. The test now times out its Activity launch after 5 seconds.
+
+Commands (from repository root after installing the Debug and AndroidTest APKs):
+
+```powershell
+adb shell am instrument -w -e arFramePool true com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
+adb shell am instrument -w -e arVideoIdentity true com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
+# Run with the application foreground and the test Activity allowed to launch:
+adb shell am instrument -w -e arDisplayedIdentity true com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
+```
+
+Remaining device acceptance: actual ARCore takeover/restore from FACE/BACK_ONLY/DUAL, permission/install failure, foreground exit, rotation, camera-close timeout, hangup during startup/restoration, SurfaceTexture identity, and two-device historical clicks. Existing CameraMode peers must be upgraded to understand AR. A successful codec smoke is not full AR product acceptance. GPU copy uses conservative glFinish; performance is unmeasured.
+
+Implementation contracts were checked against the pinned WebRTC fork's [decoder wrapper](https://github.com/webrtc-sdk/webrtc/blob/m144_release/sdk/android/src/jni/video_decoder_wrapper.cc), [Android decoder](https://github.com/webrtc-sdk/webrtc/blob/m144_release/sdk/android/src/java/org/webrtc/AndroidVideoDecoder.java), and [EglRenderer](https://github.com/webrtc-sdk/webrtc/blob/m144_release/sdk/android/api/org/webrtc/EglRenderer.java).
