@@ -27,6 +27,24 @@ class MediaStatsSamplerTest {
         assertEquals(50.0, second.jitterBufferMs!!, 0.001)
         assertEquals(0.01, second.outboundLoss!!, 0.001)
         assertEquals(4_000L, second.availableOutgoingKbps)
+        assertEquals(1_000L, second.sampledAtMs)
+        assertEquals(202_000L, second.inboundBytes)
+        assertEquals("pair", second.selectedPairId)
+    }
+
+    @Test fun `same candidate types still expose pair changes without network addresses`() {
+        val sampler = MediaStatsSampler()
+        fun path(id: String) = listOf(
+            StatsEntry("transport", "transport", mapOf("selectedCandidatePairId" to id)),
+            StatsEntry(id, "candidate-pair", mapOf("localCandidateId" to "local")),
+            StatsEntry("local", "local-candidate", mapOf("candidateType" to "srflx", "networkType" to "cellular", "protocol" to "udp")),
+        )
+        val before = sampler.sample(path("first"), 0)
+        val after = sampler.sample(path("second"), 200)
+        assertEquals(before.candidateType, after.candidateType)
+        assertNotEquals(before.selectedPairId, after.selectedPairId)
+        assertEquals("cellular", after.networkType)
+        assertEquals("udp", after.protocol)
     }
 
     @Test fun `counter resets and changed stream identities cannot produce negative rates`() {

@@ -28,6 +28,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
@@ -265,10 +266,11 @@ class CallViewModel(application: Application, private val container: AppContaine
                 val routeWake = Channel<Unit>(Channel.CONFLATED)
                 var socketNetworkVersion = network.version.value
                 networkObservation = launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
-                    network.version.drop(1).collect {
+                    network.version.drop(1).collectLatest {
+                        rtc?.networkChanged()
+                        kotlinx.coroutines.delay(com.zisee.app.rtc.WebRtcRecoveryConfig().networkDebounceMs)
                         socket?.networkChanged()
                         routeWake.trySend(Unit)
-                        event(CallEvent.CONNECTION_LOST)
                     }
                 }
                 while (isActive) {
@@ -346,8 +348,12 @@ class CallViewModel(application: Application, private val container: AppContaine
                                     }
                                 }
                                 val negotiation = requireNotNull(negotiator)
+                                val wasCheckingRoute = recovery.checkingRoute
                                 val action = recovery.evaluate(requireNotNull(rtc).iceState.value, network.version.value,
-                                    negotiation.complete, System.nanoTime() / 1_000_000)
+                                    negotiation.complete, System.nanoTime() / 1_000_000, requireNotNull(rtc).mediaStats.value)
+                                if (wasCheckingRoute && !recovery.checkingRoute && recovery.lastNaturalRecoveryMs != null) {
+                                    container.logger.info(AppEvent.RTC_ROUTE_RECOVERED, "durationMs=${recovery.lastNaturalRecoveryMs}")
+                                }
                                 if (action == com.zisee.app.rtc.IceRecoveryPolicy.Action.FAIL) throw IOException("ice_timeout")
                                 if (action == com.zisee.app.rtc.IceRecoveryPolicy.Action.RESTART) {
                                     event(CallEvent.CONNECTION_LOST)
@@ -363,7 +369,7 @@ class CallViewModel(application: Application, private val container: AppContaine
                             }
                         }
                         signalingRetry.recovered()
-                        withTimeoutOrNull(if (machine.phase in setOf(CallPhase.CONNECTING, CallPhase.RECONNECTING)) 100L else 1_000L) {
+                        withTimeoutOrNull(if (recovery.checkingRoute || machine.phase in setOf(CallPhase.CONNECTING, CallPhase.RECONNECTING)) 100L else 1_000L) {
                             routeWake.receive()
                         }
                     } catch (error: IOException) {

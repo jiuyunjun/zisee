@@ -1587,3 +1587,7 @@ Zisee 的文档遵循：
 ## 视频体验专项（2026-09-08）
 
 [VIDEO_EXPERIENCE.md](docs/architecture/VIDEO_EXPERIENCE.md)：ARCH-VIDEO-EXPERIENCE-001，Active；高清上限、拥塞控制分工、过热保护、媒体监测与真机验收目标。
+
+## 网络切换专项（2026-09-09）
+
+[NETWORK_HANDOVER.md](docs/architecture/NETWORK_HANDOVER.md)：网络切换低卡顿设计；第 39 节记录当前实施范围与待验收项。

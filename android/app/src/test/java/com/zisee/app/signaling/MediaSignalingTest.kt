@@ -30,7 +30,7 @@ class MediaSignalingTest {
             }
             override fun onMessage(webSocket: WebSocket, text: String) { requestSeen.complete(Unit) }
         }))
-        val transport = MediaSignaling(BackendApi(server.url("/"), client), client,
+        val transport = MediaSignaling(BackendApi(server.url("/").newBuilder().host("127.0.0.1").build(), client), client,
             AccessSession("t".repeat(43), Instant.now().plusSeconds(900)))
         try {
             withTimeout(5_000) {

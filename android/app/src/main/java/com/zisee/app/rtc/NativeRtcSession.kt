@@ -98,6 +98,10 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     val mediaStats = sampledStats.asStateFlow()
     private val sampler = MediaStatsSampler()
     private var statsJob: Job? = null
+    private val recoveryConfig = WebRtcRecoveryConfig()
+    private val statsWake = kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.CONFLATED)
+    private var handoverStatsUntilMs = 0L
+    private var lastSelectedPairId: String? = null
     private var videoSender: RtpSender? = null
     private var qualityPolicy = VideoQualityPolicy(false)
     private var appliedQuality: VideoQuality? = null
@@ -262,7 +266,9 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         statsJob = scope.launch {
             var missing = false
             while (isActive && !released) {
-                delay(1_000)
+                val interval = if (System.nanoTime() / 1_000_000 < handoverStatsUntilMs)
+                    recoveryConfig.handoverStatsIntervalMs else 1_000L
+                withTimeoutOrNull(interval) { statsWake.receive() }
                 try {
                     val result = stats()
                     val thermal = if (Build.VERSION.SDK_INT >= 29) powerManager.currentThermalStatus else null
@@ -351,8 +357,12 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         val result = sampler.sample(report.statsMap.values.map { StatsEntry(it.id, it.type, it.members) },
             System.nanoTime() / 1_000_000, localBack = dualCapture != null,
             remoteTrackId = (if (remotePresentation.value.mode == CameraMode.DUAL) remoteBackTrack else remoteTrack)?.id())
-        val route = "${result.candidateType}/${result.remoteCandidateType}"
-        if (route != lastCandidate) { lastCandidate = route; logger.info(AppEvent.RTC_SELECTED_CANDIDATE, route) }
+        val route = "${result.candidateType}/${result.remoteCandidateType} ${result.networkType}/${result.protocol}"
+        if (route != lastCandidate || result.selectedPairId != lastSelectedPairId) {
+            lastCandidate = route; lastSelectedPairId = result.selectedPairId
+            // Log pair transitions even when both paths have the same candidate types. Never log IPs or SDP.
+            logger.info(AppEvent.RTC_SELECTED_CANDIDATE, "$route atMs=${result.sampledAtMs}")
+        }
         return@withTimeout result
     }
 
@@ -583,6 +593,12 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             setDescription(SessionDescription(SessionDescription.Type.ROLLBACK, ""), local = true)
         }
     }
+    suspend fun networkChanged() = withContext(dispatcher) {
+        handoverStatsUntilMs = System.nanoTime() / 1_000_000 + recoveryConfig.handoverStatsDurationMs
+        statsWake.trySend(Unit)
+        Unit
+    }
+
     override suspend fun restartIce() = withContext(dispatcher) {
         requireNotNull(peer).restartIce()
         logger.info(AppEvent.RTC_ICE_RESTART)

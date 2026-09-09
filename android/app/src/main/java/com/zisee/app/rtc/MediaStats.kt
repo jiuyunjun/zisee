@@ -2,6 +2,10 @@ package com.zisee.app.rtc
 
 data class MediaStats(
     val sampleAvailable: Boolean = false,
+    val sampledAtMs: Long = 0,
+    val inboundBytes: Long = 0,
+    val selectedPairId: String? = null,
+    val networkType: String = "unknown", val protocol: String = "unknown",
     val videoFrames: Long = 0, val audioReceived: Long = 0, val audioSent: Long = 0,
     val candidateType: String = "—", val rttMs: Long = 0,
     val remoteCandidateType: String = "—",
@@ -64,6 +68,7 @@ class MediaStatsSampler {
         val remote = byId[outbound?.members?.get("remoteId")]
         val transport = entries.firstOrNull { it.type == "transport" && it.members["selectedCandidatePairId"] != null }
         val pair = byId[transport?.members?.get("selectedCandidatePairId")]
+        val localCandidate = byId[pair?.members?.get("localCandidateId")]
         fun candidate(key: String) = (byId[pair?.members?.get(key)]?.members?.get("candidateType") as? String)
             ?.takeIf { it in setOf("host", "srflx", "prflx", "relay") } ?: "—"
         fun long(entry: StatsEntry?, key: String) = entry?.number(key)?.toLong() ?: 0L
@@ -71,6 +76,12 @@ class MediaStatsSampler {
         val rtt = pair?.number("currentRoundTripTime")?.takeIf { it >= 0 }?.times(1000)?.toLong()
         val result = MediaStats(
             sampleAvailable = true,
+            sampledAtMs = nowMs, inboundBytes = total("inbound-rtp", null, "bytesReceived"),
+            selectedPairId = pair?.id,
+            networkType = (localCandidate?.members?.get("networkType") as? String)
+                ?.takeIf { it in setOf("wifi", "cellular", "ethernet", "vpn", "unknown") } ?: "unknown",
+            protocol = (localCandidate?.members?.get("protocol") as? String)
+                ?.takeIf { it in setOf("udp", "tcp") } ?: "unknown",
             videoFrames = long(inbound, "framesDecoded"), audioReceived = total("inbound-rtp", "audio", "bytesReceived"),
             audioSent = total("outbound-rtp", "audio", "bytesSent"), candidateType = candidate("localCandidateId"),
             remoteCandidateType = candidate("remoteCandidateId"), rttMs = rtt ?: 0, measuredRttMs = rtt,
