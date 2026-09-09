@@ -86,6 +86,8 @@ internal val ButtonShape = RoundedCornerShape(28.dp)
 // Foundations.dc.html: primary/secondary actions round to 26, cards/panels to 20-28.
 internal val PillShape = RoundedCornerShape(26.dp)
 internal val CardShape = RoundedCornerShape(28.dp)
+// Foundations.dc.html "圆角": ordinary cards and settings groups round to 24, not 28.
+internal val StandardCardShape = RoundedCornerShape(24.dp)
 private val PipShape = RoundedCornerShape(20.dp)
 // A parked thumbnail keeps only the rounded edge that faces the picture.
 private val HandleLeftShape = RoundedCornerShape(topEnd = 7.dp, bottomEnd = 7.dp)
@@ -516,6 +518,13 @@ internal fun DrawScope.callIcon(kind: String, ink: Color, knockout: Color = Colo
         }
         "share" -> { path("M12 16V4"); path("M7.5 8.5 12 4l4.5 4.5"); path("M4.5 14v4.5a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V14") }
         "contact" -> { drawCircle(ink, 4f, Offset(10f, 8.5f), style = stroke); path("M3 20c0-3.6 3.1-6 7-6 1.5 0 2.9.35 4 .96"); path("M18 14v6M15 17h6") }
+        "lock" -> { drawRoundRect(ink, Offset(4f, 10.5f), Size(16f, 10.5f), CornerRadius(3f), style = stroke); path("M8 10.5V7.5a4 4 0 0 1 8 0v3") }
+        "back" -> path("M15 5l-7 7 7 7")
+        "forward" -> path("M9 5l7 7-7 7")
+        "gear" -> {
+            drawCircle(ink, 3.2f, Offset(12f, 12f), style = stroke)
+            path("M19.6 14.4a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-2.9 1.22V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-2.9-1.16l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0-1.16-2.9H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.16-2.9l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 2.9-1.16V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.16l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0 1.16 2.9H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.3.41z")
+        }
     }
     if (off) path("M4 4 20 20")
 }
