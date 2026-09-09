@@ -1,9 +1,6 @@
 package com.zisee.app.rtc
 
 import android.content.Context
-import android.media.AudioAttributes
-import android.media.AudioFocusRequest
-import android.media.AudioManager
 import android.os.Build
 import android.os.PowerManager
 import android.util.Log
@@ -113,11 +110,15 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private val powerManager = context.getSystemService(PowerManager::class.java)
     @Volatile private var startedNanos = 0L
     private var setupReported = false
-    private val audioManager = context.getSystemService(AudioManager::class.java)
-    private var previousMode = AudioManager.MODE_NORMAL
-    private var previousSpeaker = false
-    private var focus: AudioFocusRequest? = null
-    private var speakerOn = true
+    private val callAudio = com.zisee.app.rtc.audio.CallAudioManager(context, logger) { interrupted ->
+        scope.launch {
+            if (!released) {
+                audioModule?.setMicrophoneMute(interrupted)
+                audioModule?.setSpeakerMute(interrupted)
+            }
+        }
+    }
+    val audioDeviceState = callAudio.state
 
     suspend fun start(iceServers: List<IceServerConfig>) = withContext(dispatcher) {
         initialize(context, logger)
@@ -125,6 +126,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         egl = EglBase.create()
         val shared = requireNotNull(egl).eglBaseContext
         audioModule = JavaAudioDeviceModule.builder(context).setEnableVolumeLogger(false)
+            .setInputSampleRate(48_000).setUseStereoInput(false).setUseStereoOutput(false)
+            .setUseHardwareAcousticEchoCanceler(false).setUseHardwareNoiseSuppressor(false)
             .setAudioRecordErrorCallback(object : JavaAudioDeviceModule.AudioRecordErrorCallback {
                 override fun onWebRtcAudioRecordInitError(error: String) = fail()
                 override fun onWebRtcAudioRecordStartError(code: JavaAudioDeviceModule.AudioRecordStartErrorCode, error: String) = fail()
@@ -253,11 +256,16 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 }
             }
         })
-        audioSource = requireNotNull(factory).createAudioSource(MediaConstraints())
+        audioSource = requireNotNull(factory).createAudioSource(MediaConstraints().apply {
+            mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "true"))
+        })
         audioTrack = requireNotNull(factory).createAudioTrack(MediaTrack.MICROPHONE.wireId, audioSource).also {
             requireNotNull(peer).addTrack(it, listOf("zisee"))
         }
-        withContext(Dispatchers.Main.immediate) { acquireAudio() }
+        withContext(Dispatchers.Main.immediate) { callAudio.start() }
         // Open the supported quality ceiling immediately; native congestion control adapts output.
         val initialQuality = qualityPolicy.current.quality
         requireNotNull(camera).startCapture(initialQuality.width, initialQuality.height, initialQuality.fps)
@@ -296,13 +304,14 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
 
     suspend fun localDescription(offer: Boolean): SessionDescription = withContext(dispatcher) {
         val pc = requireNotNull(peer)
-        val description = withTimeout(10_000) { suspendCancellableCoroutine { continuation ->
+        val created = withTimeout(10_000) { suspendCancellableCoroutine { continuation ->
             val observer = object : DescriptionObserver() {
                 override fun onCreateSuccess(sdp: SessionDescription) { if (continuation.isActive) continuation.resume(sdp) }
                 override fun onCreateFailure(error: String) { if (continuation.isActive) continuation.resumeWithException(IOException("sdp_create_failed")) }
             }
             if (offer) pc.createOffer(observer, MediaConstraints()) else pc.createAnswer(observer, MediaConstraints())
         } }
+        val description = SessionDescription(created.type, com.zisee.app.rtc.audio.OpusPolicy.apply(created.description))
         localUfrags = description.description.lineSequence().filter { it.startsWith("a=ice-ufrag:") }.map { it.substringAfter(":").trim() }.toSet()
         acceptingCandidates = true
         setDescription(description, local = true)
@@ -585,47 +594,9 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         logger.info(AppEvent.RTC_ICE_RESTART)
     }
 
-    @Suppress("DEPRECATION")
-    private fun acquireAudio() {
-        previousMode = audioManager.mode
-        previousSpeaker = audioManager.isSpeakerphoneOn
-        val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
-            .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
-            .setOnAudioFocusChangeListener { if (it < 0) fail() }.build()
-        focus = request
-        if (audioManager.requestAudioFocus(request) != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) throw IOException("audio_focus_denied")
-        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-        if (Build.VERSION.SDK_INT >= 31) {
-            val speaker = audioManager.availableCommunicationDevices.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
-            if (speaker != null && !audioManager.setCommunicationDevice(speaker)) throw IOException("audio_route_failed")
-        } else audioManager.isSpeakerphoneOn = true
-        speakerOn = true
-    }
-
-    /**
-     * Routes call audio between the loudspeaker and the earpiece and reports the route actually in
-     * effect. Unlike the initial route, a later failure degrades to the current one: audio the user
-     * can still hear on the wrong speaker beats ending the call.
-     */
     suspend fun setSpeaker(enabled: Boolean): Boolean = withContext(dispatcher) {
-        if (released || focus == null) return@withContext speakerOn
-        withContext(Dispatchers.Main.immediate) { applyRoute(enabled) }
-    }
-
-    @Suppress("DEPRECATION")
-    private fun applyRoute(enabled: Boolean): Boolean {
-        try {
-            if (Build.VERSION.SDK_INT >= 31) {
-                val type = if (enabled) android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
-                    else android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
-                val device = audioManager.availableCommunicationDevices.firstOrNull { it.type == type }
-                    ?: return speakerOn
-                if (!audioManager.setCommunicationDevice(device)) return speakerOn
-            } else audioManager.isSpeakerphoneOn = enabled
-            speakerOn = enabled
-        } catch (error: Exception) { logger.error(AppEvent.RTC_MEDIA_FAILED) }
-        return speakerOn
+        if (released) return@withContext false
+        withContext(Dispatchers.Main.immediate) { callAudio.setSpeaker(enabled) }
     }
 
     @Suppress("DEPRECATION")
@@ -665,11 +636,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             cleanup { audioModule?.release() }; audioModule = null
             cleanup { egl?.release() }; egl = null
             withContext(Dispatchers.Main.immediate) {
-                if (focus != null) {
-                    cleanup { if (Build.VERSION.SDK_INT >= 31) audioManager.clearCommunicationDevice() else audioManager.isSpeakerphoneOn = previousSpeaker }
-                    cleanup { audioManager.mode = previousMode }
-                    cleanup { audioManager.abandonAudioFocusRequest(requireNotNull(focus)) }; focus = null
-                }
+                cleanup { callAudio.stop() }
             }
             iceState.value = IceState.CLOSED
         }

@@ -1595,3 +1595,7 @@ Zisee 的文档遵循：
 ## 视频方向专项（2026-09-09）
 
 [VIDEO_ORIENTATION.md](docs/architecture/VIDEO_ORIENTATION.md)：ARCH-VIDEO-ORIENTATION-001，Active；双方横竖屏矩阵、Show Me 主辅视角、镜像、逐 Track 帧方向、布局适配和设备验收。
+
+## 音频专项（2026-09-09）
+
+[AUDIO.md](docs/architecture/AUDIO.md)：音频处理、Opus、设备路由、DeepFilterNet 与自动降级设计；第 56 节记录实际实施和验证边界。

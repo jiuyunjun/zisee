@@ -19,6 +19,7 @@ data class MediaStats(
     val codec: String = "unknown", val encoder: String = "unknown", val powerEfficientEncoder: Boolean? = null,
     val qualityLimitation: String = "unknown", val thermalStatus: Int? = null,
     val quality: VideoQuality = VideoQuality.HD,
+    val audio: com.zisee.app.rtc.audio.quality.AudioStats = com.zisee.app.rtc.audio.quality.AudioStats(),
 )
 
 /** Framework-free input makes direction, missing values and counter resets testable on the JVM. */
@@ -62,6 +63,13 @@ class MediaStatsSampler {
             // the identifier is missing entirely.
             ?: inboundVideos.maxByOrNull { it.number("framesDecoded")?.toLong() ?: 0L }
         val audio = entries.firstOrNull { it.type == "inbound-rtp" && it.kind == "audio" }
+        val sentAudio = entries.firstOrNull { it.type == "outbound-rtp" && it.kind == "audio" }
+        val remoteAudio = byId[sentAudio?.members?.get("remoteId")]
+        val audioSource = byId[sentAudio?.members?.get("mediaSourceId")]
+        fun ratio(numerator: Double?, denominator: Double?): Double? =
+            if (numerator != null && denominator != null && denominator > 0) (numerator / denominator).takeIf { it in 0.0..1.0 } else null
+        val lost = delta(audio, "packetsLost")
+        val received = delta(audio, "packetsReceived")
         val outboundVideos = entries.filter { it.type == "outbound-rtp" && it.kind == "video" && it.number("framesEncoded") != null }
         val outbound = outboundVideos.firstOrNull { byId[it.members["mediaSourceId"]]?.members?.get("trackIdentifier") == if (localBack) "video_back" else "video_front" }
             ?: outboundVideos.firstOrNull()
@@ -75,6 +83,25 @@ class MediaStatsSampler {
         val codec = byId[outbound?.members?.get("codecId")]?.members?.get("mimeType") as? String
         val rtt = pair?.number("currentRoundTripTime")?.takeIf { it >= 0 }?.times(1000)?.toLong()
         val result = MediaStats(
+            audio = com.zisee.app.rtc.audio.quality.AudioStats(
+                sentPackets = sentAudio?.number("packetsSent")?.toLong(), receivedPackets = audio?.number("packetsReceived")?.toLong(),
+                lostPackets = audio?.number("packetsLost")?.toLong(),
+                sendKbps = delta(sentAudio, "bytesSent")?.let { it * 8 / requireNotNull(elapsed) },
+                receiveKbps = delta(audio, "bytesReceived")?.let { it * 8 / requireNotNull(elapsed) },
+                outboundLoss = remoteAudio?.number("fractionLost")?.takeIf { it in 0.0..1.0 },
+                inboundLoss = ratio(lost, if (lost != null && received != null) lost + received else null),
+                jitterMs = audio?.number("jitter")?.takeIf { it >= 0 }?.times(1000),
+                rttMs = remoteAudio?.number("roundTripTime")?.takeIf { it >= 0 }?.times(1000),
+                localLevel = audioSource?.number("audioLevel"), remoteLevel = audio?.number("audioLevel"),
+                totalEnergy = audio?.number("totalAudioEnergy"),
+                concealedSamples = audio?.number("concealedSamples")?.toLong(), concealmentEvents = audio?.number("concealmentEvents")?.toLong(),
+                concealmentRatio = ratio(delta(audio, "concealedSamples"), delta(audio, "totalSamplesReceived")),
+                jitterBufferMs = average(audio, "jitterBufferDelay", "jitterBufferEmittedCount"),
+                insertedSamples = audio?.number("insertedSamplesForDeceleration")?.toLong(),
+                removedSamples = audio?.number("removedSamplesForAcceleration")?.toLong(),
+                codec = (byId[sentAudio?.members?.get("codecId")]?.members?.get("mimeType") as? String)
+                    ?.takeIf { it in setOf("audio/opus", "audio/PCMU", "audio/PCMA", "audio/G722") } ?: "unknown",
+            ),
             sampleAvailable = true,
             sampledAtMs = nowMs, inboundBytes = total("inbound-rtp", null, "bytesReceived"),
             selectedPairId = pair?.id,

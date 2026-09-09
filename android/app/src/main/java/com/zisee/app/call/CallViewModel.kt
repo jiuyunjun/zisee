@@ -324,14 +324,14 @@ class CallViewModel(application: Application, private val container: AppContaine
                                     media.start(ice)
                                     recovery.initialNegotiationStarted(System.nanoTime() / 1_000_000, network.version.value)
                                     mediaObservation = launch {
-                                        combine(media.mediaStats, media.iceState) { stats, iceState -> stats to iceState }
-                                            .collect { (stats, iceState) ->
+                                        combine(media.mediaStats, media.iceState, media.audioDeviceState) { stats, iceState, device -> Triple(stats, iceState, device) }
+                                            .collect { (stats, iceState, device) ->
                                                 when (iceState) {
                                                     IceState.CONNECTED -> if (negotiator?.complete == true) event(CallEvent.MEDIA_CONNECTED)
                                                     IceState.DISCONNECTED -> event(CallEvent.CONNECTION_LOST)
                                                     else -> Unit
                                                 }
-                                                mutable.update { it.copy(stats = stats) }
+                                                mutable.update { it.copy(stats = stats, speakerOn = device.output == com.zisee.app.rtc.audio.AudioRoute.SPEAKER) }
                                             }
                                     }
                                     cameraObservation = launch {
