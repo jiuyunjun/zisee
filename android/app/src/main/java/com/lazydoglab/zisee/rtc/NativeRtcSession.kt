@@ -126,6 +126,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var desiredView = ViewRequest.Default
     private var adaptationEnabled = true
     private val audioBandwidth = com.lazydoglab.zisee.rtc.audio.AudioBandwidthPolicy()
+    private val handover = HandoverReport()
+    private var sustainedSendKbps = 0L
     private val videoSending = mutableMapOf<RtpSender, Pair<Boolean, Boolean>>()
     private val powerManager = context.getSystemService(PowerManager::class.java)
     @Volatile private var startedNanos = 0L
@@ -209,6 +211,12 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             stableWritableConnectionPingIntervalMs = recoveryConfig.stablePingIntervalMs
             iceUnwritableTimeMs = recoveryConfig.unwritableTimeoutMs
             iceUnwritableMinChecks = recoveryConfig.unwritableMinChecks
+            // A cellular pair reached through a relay is usually the one a handover lands on.
+            // Sending as soon as both ends are relayed removes a round trip from that switch.
+            presumeWritableWhenFullyRelayed = true
+            // The jitter buffer grows across the gap; without this it drains at real time and the
+            // added delay outlives the handover that caused it.
+            audioJitterBufferFastAccelerate = true
         }
         configuration = config
         peer = requireNotNull(factory).createPeerConnection(config, observer) ?: throw IOException("peer_creation_failed")
@@ -470,11 +478,24 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             remoteTrackId = (if (remotePresentation.value.mode == CameraMode.DUAL) remoteBackTrack else remoteTrack)?.id())
         val route = "${result.candidateType}/${result.remoteCandidateType} ${result.networkType}/${result.protocol}"
         if (route != lastCandidate || result.selectedPairId != lastSelectedPairId) {
-            audioBandwidth.routeChanged(result.sampledAtMs)
+            // The first pair a call selects is not a handover away from anything.
+            if (lastSelectedPairId != null || lastCandidate != null) {
+                audioBandwidth.routeChanged(result.sampledAtMs)
+                qualityPolicy.routeChanged(result.sampledAtMs)
+                handover.pairChanged(result.sampledAtMs, appliedQuality)
+                seedBitrate()
+            }
             lastCandidate = route; lastSelectedPairId = result.selectedPairId
             // Log pair transitions even when both paths have the same candidate types. Never log IPs or SDP.
             logger.info(AppEvent.RTC_SELECTED_CANDIDATE, "$route atMs=${result.sampledAtMs}")
+        } else if (result.sendKbps > 0 && audioBandwidth.mode == com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.ALL_VIDEO) {
+            // A recent peak, not an all-call one: what the next route has to reach is what this one
+            // was carrying lately, so an old high water mark decays out of it.
+            sustainedSendKbps = maxOf(result.sendKbps, sustainedSendKbps * 9 / 10)
         }
+        handover.sample(result)?.let { logger.info(AppEvent.RTC_HANDOVER, it.encode()) }
+        handover.qualityRestored(appliedQuality, result.sampledAtMs)
+            ?.let { logger.info(AppEvent.RTC_QUALITY_RESTORED, "ms=$it") }
         return@withTimeout result
     }
 
@@ -487,6 +508,18 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         val parameters = sender?.parameters ?: return
         parameters.encodings.forEach { it.maxBitrateBps = 450_000; it.maxFramerate = 15; it.minBitrateBps = null }
         if (!sender.setParameters(parameters)) logger.error(AppEvent.RTC_QUALITY_REJECTED)
+    }
+
+    /**
+     * Congestion control starts over on a new route, and climbing back from its opening estimate
+     * takes far longer than the link needs. Re-seed it with half of what the previous route was
+     * actually carrying, bounded on both sides; everything after that is still libwebrtc's call.
+     */
+    private fun seedBitrate() {
+        if (sustainedSendKbps <= 0) return
+        if (audioBandwidth.mode == com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.AUDIO_ONLY) return
+        val seed = (sustainedSendKbps * 1_000 / 2).coerceIn(MIN_SEED_BPS, MAX_SEED_BPS).toInt()
+        if (peer?.setBitrate(null, seed, null) == false) logger.error(AppEvent.RTC_QUALITY_REJECTED)
     }
 
     private fun applyQuality(decision: QualityDecision, changeCapture: Boolean = true) {
@@ -693,11 +726,14 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         // The old path's estimate and loss say nothing about the new one, and a suspension entered
         // on the old path must not outlive it.
         audioBandwidth.routeChanged(nowMs)
+        qualityPolicy.routeChanged(nowMs)
+        handover.routeChanged(nowMs, appliedQuality)
         statsWake.trySend(Unit)
         Unit
     }
 
     override suspend fun restartIce() = withContext(dispatcher) {
+        handover.restartRequested()
         requireNotNull(peer).restartIce()
         logger.info(AppEvent.RTC_ICE_RESTART)
     }
@@ -827,6 +863,10 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         private const val MONITOR_TAG = "Zisee"
         private const val NETWORK_WAIT_MS = 2_000L
         private const val LOOPBACK_ADAPTER = 1 shl 4
+        // Low enough that a genuinely slower route sheds it in a second, high enough to skip the
+        // slow opening ramp; the per-sender ceilings still bound what the encoder does with it.
+        private const val MIN_SEED_BPS = 300_000L
+        private const val MAX_SEED_BPS = 2_500_000L
         @Volatile private var networksSeen = false
         private var initialized = false
         @Synchronized private fun initialize(context: Context, logger: AppLogger) {

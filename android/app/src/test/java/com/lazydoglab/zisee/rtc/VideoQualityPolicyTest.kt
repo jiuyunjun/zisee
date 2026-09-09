@@ -88,6 +88,43 @@ class VideoQualityPolicyTest {
         for (time in 22_000L..37_000L step 1_000) policy.update(good.copy(availableOutgoingKbps = 600), time)
         assertEquals(VideoQuality.HD, policy.current.quality)
     }
+    @Test fun `a handover restores the quality the previous route held without the full climb`() {
+        val policy = VideoQualityPolicy(true, preferFullHd = true)
+        for (time in 0L..3_000L step 1_000) policy.update(fast, time)
+        assertEquals(VideoQuality.FULL_HD, policy.current.quality)
+        // The route is replaced, and only then does the collapsed estimate cost resolution.
+        policy.routeChanged(4_000)
+        for (time in 4_000L..9_000L step 1_000) policy.update(fast.copy(availableOutgoingKbps = 200), time)
+        assertEquals(VideoQuality.ECONOMY, policy.current.quality)
+        for (time in 10_000L..12_000L step 1_000) policy.update(fast, time)
+        assertEquals(VideoQuality.HD, policy.current.quality)
+        for (time in 13_000L..15_000L step 1_000) policy.update(fast, time)
+        assertEquals(VideoQuality.FULL_HD, policy.current.quality)
+    }
+
+    @Test fun `restoration stops at the ceiling the previous route held`() {
+        val policy = VideoQualityPolicy(true)
+        policy.routeChanged(1_000)
+        for (time in 1_000L..6_000L step 1_000) policy.update(fast.copy(availableOutgoingKbps = 200), time)
+        assertEquals(VideoQuality.ECONOMY, policy.current.quality)
+        val excellent = fast.copy(availableOutgoingKbps = 12_000, encodeMs = 8.0)
+        for (time in 7_000L..9_000L step 1_000) policy.update(excellent, time)
+        assertEquals(VideoQuality.HD, policy.current.quality)
+        // 1080p is above what the previous route held, so it still earns its way at the normal pace.
+        assertEquals(VideoQuality.HD, policy.update(excellent, 11_000).quality)
+        for (time in 12_000L..20_000L step 1_000) policy.update(excellent, time)
+        assertEquals(VideoQuality.FULL_HD, policy.current.quality)
+    }
+
+    @Test fun `an unreported round trip or loss does not hold the picture down`() {
+        val policy = VideoQualityPolicy(true)
+        for (time in 0L..12_000L step 1_000) policy.update(fast.copy(availableOutgoingKbps = 200), time)
+        assertEquals(VideoQuality.ECONOMY, policy.current.quality)
+        // Exactly what a fresh route reports before the first remote report arrives.
+        val unmeasured = MediaStats(availableOutgoingKbps = 4_000, qualityLimitation = "none", sendDelayMs = 10.0)
+        for (time in 13_000L..20_000L step 1_000) policy.update(unmeasured, time)
+        assertTrue(policy.current.quality.ordinal >= VideoQuality.HD.ordinal)
+    }
 }
 
 class SixtyFrameTest {
@@ -128,4 +165,5 @@ class SixtyFrameTest {
         for (time in 31_000L..60_000L step 1_000) policy.update(ample.copy(availableOutgoingKbps = 7_000), time)
         assertEquals(VideoQuality.FULL_HD_60, policy.current.quality)
     }
+
 }
