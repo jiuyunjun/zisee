@@ -130,6 +130,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private val gatheredOrigins = mutableSetOf<String>()
     private var connectedSinceMs = Long.MAX_VALUE
     private var lastSeedMs: Long? = null
+    private var lastRouteChangeMs: Long? = null
+    private var previousInboundBytes: Long? = null
     private var sustainedSendKbps = 0L
     private val videoSending = mutableMapOf<RtpSender, Pair<Boolean, Boolean>>()
     private val powerManager = context.getSystemService(PowerManager::class.java)
@@ -487,6 +489,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             val origin = "${entry.members["networkType"] ?: "unknown"}/${entry.members["candidateType"] ?: "unknown"}"
             if (gatheredOrigins.add(origin)) logger.info(AppEvent.RTC_LOCAL_CANDIDATE, origin)
         }
+        val stalled = previousInboundBytes?.let { result.inboundBytes <= it } == true
+        previousInboundBytes = result.inboundBytes
         val route = "${result.candidateType}/${result.remoteCandidateType} ${result.networkType}/${result.protocol}"
         if (route != lastCandidate || result.selectedPairId != lastSelectedPairId) {
             // The first pair a call selects is not a handover away from anything, and neither is
@@ -496,12 +500,20 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 // costs media of its own. Measure and react to those at handover resolution too.
                 handoverStatsUntilMs = result.sampledAtMs + recoveryConfig.handoverStatsDurationMs
                 audioBandwidth.routeChanged(result.sampledAtMs)
-                qualityPolicy.routeChanged(result.sampledAtMs)
                 handover.pairChanged(result.sampledAtMs, appliedQuality)
-                seedBitrate(result.sampledAtMs)
-                // Push the smaller frame out now rather than a tick later, and without restarting
-                // the camera: the key frame this asks for is the one the viewer is waiting on.
-                applyQuality(qualityPolicy.current, changeCapture = false)
+                // Coming back small only pays for itself when the picture actually stopped. ICE
+                // promotes the relay pair to a direct one seconds after a handover, on a route the
+                // network never changed and while media is still flowing: giving up the picture
+                // there costs four seconds of soft image to save a key frame nobody is waiting on.
+                val handingOver = stalled ||
+                    lastRouteChangeMs?.let { result.sampledAtMs - it <= HANDOVER_WINDOW_MS } == true
+                if (handingOver) {
+                    qualityPolicy.routeChanged(result.sampledAtMs)
+                    seedBitrate(result.sampledAtMs)
+                    // Push the smaller frame out now rather than a tick later, and without
+                    // restarting the camera: this key frame is the one the viewer is waiting on.
+                    applyQuality(qualityPolicy.current, changeCapture = false)
+                }
             }
             lastCandidate = route; lastSelectedPairId = result.selectedPairId
             // Log pair transitions even when both paths have the same candidate types. Never log IPs or SDP.
@@ -752,6 +764,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     suspend fun networkChanged() = withContext(dispatcher) {
         val nowMs = System.nanoTime() / 1_000_000
         handoverStatsUntilMs = nowMs + recoveryConfig.handoverStatsDurationMs
+        lastRouteChangeMs = nowMs
         // The old path's estimate and loss say nothing about the new one, and a suspension entered
         // on the old path must not outlive it.
         audioBandwidth.routeChanged(nowMs)
@@ -897,6 +910,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         // slow opening ramp; the per-sender ceilings still bound what the encoder does with it.
         // ICE promotes its way to the best pair over the first seconds of a call.
         private const val SETTLED_MS = 3_000L
+        // How long after the network changed a new pair still belongs to that handover.
+        private const val HANDOVER_WINDOW_MS = 5_000L
         private const val MIN_SEED_BPS = 300_000L
         private const val MAX_SEED_BPS = 1_000_000L
         private const val SEED_COOLDOWN_MS = 10_000L
