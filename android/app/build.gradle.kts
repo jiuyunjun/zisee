@@ -15,16 +15,16 @@ require(backendUrl.isEmpty() || backendUrl.matches(Regex("https://[A-Za-z0-9.-]+
 }
 
 android {
-    namespace = "com.zisee.app"
+    namespace = "com.lazydoglab.zisee"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.zisee.app"
+        applicationId = "com.lazydoglab.zisee"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0-dev"
-        testInstrumentationRunner = "com.zisee.app.rtc.RtcSmokeInstrumentation"
+        testInstrumentationRunner = "com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation"
         buildConfigField("String", "BACKEND_URL", "\"$backendUrl\"")
     }
     signingConfigs {
@@ -40,7 +40,7 @@ android {
     }
     buildTypes {
         debug {
-            applicationIdSuffix = ".debug"
+            applicationIdSuffix = ".dev"
             signingConfig = signingConfigs.getByName("debug")
             if (localBackend) buildConfigField("String", "BACKEND_URL", "\"http://127.0.0.1:8080\"")
         }

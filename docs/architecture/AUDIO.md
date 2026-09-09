@@ -1975,8 +1975,8 @@ AI 跑不动时：
 Debug/Release APK、Debug instrumentation APK、JVM 单元测试、Debug lint 已通过。原生 ELF LOAD 段已核对 16 KB 对齐。设备测试命令：
 
 ```powershell
-adb shell am instrument -w -r -e audio true com.zisee.app.debug.test/com.zisee.app.rtc.RtcSmokeInstrumentation
-adb shell am instrument -w -r -e repeat 2 com.zisee.app.debug.test/com.zisee.app.rtc.RtcSmokeInstrumentation
+adb shell am instrument -w -r -e audio true com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
+adb shell am instrument -w -r -e repeat 2 com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
 ```
 
 上述是短时功能和耗时验证，不是降噪主观质量、A/B 结论或端到端延迟测量。仍需低/中/高端多设备、蓝牙/有线/USB 路由矩阵、失焦/恢复、真实弱网、双讲回声、风噪、长通话功耗/温度及 RNNoise 对照验收。AI 音质和电量收益尚未证实。Phase 4 未实施。

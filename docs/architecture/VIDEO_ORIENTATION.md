@@ -142,7 +142,7 @@ Debug 预览使用合成 YUV 箭头、边框和左右标记，通过真实 Surfa
 .\gradlew.bat :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug
 adb -s <emulator> install -r app/build/outputs/apk/debug/app-debug.apk
 adb -s <emulator> install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
-adb -s <emulator> shell am instrument -w -e orientationPreview true com.zisee.app.debug.test/com.zisee.app.rtc.RtcSmokeInstrumentation
+adb -s <emulator> shell am instrument -w -e orientationPreview true com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
 ```
 
 生成 Face、单方 Show Me、双方 Show Me × 观看端横/竖 × 远端横/竖的 12 张布局图。成功生成截图仅证明夹具执行完成，仍需人工查看完整边框、正立箭头、小窗比例、控件可见性和叠放。

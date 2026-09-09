@@ -54,18 +54,18 @@ cd android
 ./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
 ```
 
-APK：`android/app/build/outputs/apk/debug/app-debug.apk`。Debug 包名 `com.zisee.app.debug`；基础包名 `com.zisee.app` 为当前工程默认值，发布前确认。Release 不配置任何签名密钥。
+APK：`android/app/build/outputs/apk/debug/app-debug.apk`。Debug 包名 `com.lazydoglab.zisee.dev`；基础包名 `com.lazydoglab.zisee` 为当前工程默认值，发布前确认。Release 不配置任何签名密钥。
 
 Debug 签名使用仓库内的 `android/app/debug.keystore`，而不是各自机器上的 `~/.android/debug.keystore`，因此本地构建与 CI 产出的 APK 签名一致，可以互相覆盖安装。它使用 Android 固定的口令与别名（`android` / `androiddebugkey`），不是机密，仅用于 Debug；Release 绝不使用该证书。
 
 - SHA-1：`4C:6F:CA:CE:11:61:6A:7E:91:0D:05:98:30:27:13:9A:7F:48:67:01`
 - SHA-256：`26:78:9E:5C:76:FC:6C:40:62:35:09:6B:C4:DA:74:98:C4:07:A0:69:A5:B4:E0:18:98:22:69:60:00:5B:BE:7E`
 
-切换到该证书后，此前用个人 debug 证书装过 `com.zisee.app.debug` 的设备需要先卸载再安装一次。
+切换到该证书后，此前用个人 debug 证书装过 `com.lazydoglab.zisee.dev` 的设备需要先卸载再安装一次。
 
 ## 代码入口
 
-| 路径（`android/app/src/main/java/com/zisee/app/` 下） | 职责 |
+| 路径（`android/app/src/main/java/com/lazydoglab/zisee/` 下） | 职责 |
 |---|---|
 | `MainActivity.kt`、`ui/` | 生命周期感知状态订阅、Compose 页面与主题 |
 | `core/AppContainer.kt` | 手动依赖注入的唯一组装入口，Application 持有 |

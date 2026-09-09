@@ -7,9 +7,9 @@
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:1042746204547:android:8500f6278322017bca16b6",
+        "mobilesdk_app_id": "1:1042746204547:android:580d2bdfb9107eb9ca16b6",
         "android_client_info": {
-          "package_name": "com.zisee.app"
+          "package_name": "com.lazydoglab.zisee"
         }
       },
       "oauth_client": [],
@@ -26,9 +26,9 @@
     },
     {
       "client_info": {
-        "mobilesdk_app_id": "1:1042746204547:android:dea8b1f92a284540ca16b6",
+        "mobilesdk_app_id": "1:1042746204547:android:73adffc905cb4b1fca16b6",
         "android_client_info": {
-          "package_name": "com.zisee.app.debug"
+          "package_name": "com.lazydoglab.zisee.dev"
         }
       },
       "oauth_client": [],

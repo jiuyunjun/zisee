@@ -87,9 +87,9 @@ cd android
 .\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest
 adb -s emulator-5554 install -r app/build/outputs/apk/debug/app-debug.apk
 adb -s emulator-5554 install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
-adb -s emulator-5554 shell pm grant com.zisee.app.debug android.permission.CAMERA
-adb -s emulator-5554 shell pm grant com.zisee.app.debug android.permission.RECORD_AUDIO
-adb -s emulator-5554 shell am instrument -w -r com.zisee.app.debug.test/com.zisee.app.rtc.RtcSmokeInstrumentation
+adb -s emulator-5554 shell pm grant com.lazydoglab.zisee.dev android.permission.CAMERA
+adb -s emulator-5554 shell pm grant com.lazydoglab.zisee.dev android.permission.RECORD_AUDIO
+adb -s emulator-5554 shell am instrument -w -r com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
 ```
 
 成功必须同时包含 `stream=PASS` 和 `INSTRUMENTATION_CODE: -1`；不能以 adb 命令退出码为准。输出包括 SDP、首解码帧、至少 30 帧的耗时和实际发送尺寸；不等于公网通话或真实摄像头的设备验证。测试不清除应用身份数据，但 install 会替换该设备的 Debug APK。
@@ -99,7 +99,7 @@ adb -s emulator-5554 shell am instrument -w -r com.zisee.app.debug.test/com.zise
 ```powershell
 try {
     adb -s emulator-5554 shell cmd thermalservice override-status 3
-    adb -s emulator-5554 shell am instrument -w -r -e expectedQuality ECONOMY com.zisee.app.debug.test/com.zisee.app.rtc.RtcSmokeInstrumentation
+    adb -s emulator-5554 shell am instrument -w -r -e expectedQuality ECONOMY com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
 } finally {
     adb -s emulator-5554 shell cmd thermalservice reset
 }
@@ -109,7 +109,7 @@ try {
 
 ## 真机签名与安装
 
-统一 debug 签名后，此前用个人 debug 证书装过 `com.zisee.app.debug` 的设备必须先卸载再安装，否则报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`。小米 HyperOS／MIUI 默认拒绝 ADB 安装，报 `INSTALL_FAILED_USER_RESTRICTED`，需在开发者选项中打开「USB 安装」。
+统一 debug 签名后，此前用个人 debug 证书装过 `com.lazydoglab.zisee.dev` 的设备必须先卸载再安装，否则报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`。小米 HyperOS／MIUI 默认拒绝 ADB 安装，报 `INSTALL_FAILED_USER_RESTRICTED`，需在开发者选项中打开「USB 安装」。
 
 # Changelog
 
