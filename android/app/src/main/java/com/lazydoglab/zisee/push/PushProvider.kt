@@ -19,6 +19,14 @@ interface PushProvider {
 class FcmPushProvider : PushProvider {
     override val name = "fcm"
 
+    /**
+     * Null whenever FCM cannot register at all — most often a device with no usable Google Play
+     * Services, which is the normal state of a mainland-China ROM. The reason is logged in debug
+     * builds only, because it is the difference between "push is broken" and "this device has no
+     * FCM to begin with" and there is nothing else on the device that can tell them apart yet.
+     */
     override suspend fun currentToken(): String? =
-        runCatching { FirebaseMessaging.getInstance().token.await() }.getOrNull()
+        runCatching { FirebaseMessaging.getInstance().token.await() }
+            .onFailure { PushDebug.tokenUnavailable(it) }
+            .getOrNull()
 }

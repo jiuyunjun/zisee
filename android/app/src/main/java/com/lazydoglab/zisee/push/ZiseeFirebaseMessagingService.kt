@@ -19,11 +19,13 @@ class ZiseeFirebaseMessagingService : FirebaseMessagingService() {
         val invite = CallInvite.parse(message.data)
         if (invite == null) {
             container.logger.info(AppEvent.PUSH_IGNORED)
+            PushDebug.ignored()
             return
         }
         // onMessageReceived must finish its work before returning: afterwards the
         // freshly started process may be killed before any detached work runs (§10).
-        runBlocking { container.incomingPushGate.onInvite(invite) }
+        val outcome = runBlocking { container.incomingPushGate.onInvite(invite) }
+        PushDebug.received(invite.callId, outcome)
     }
 
     override fun onNewToken(token: String) {

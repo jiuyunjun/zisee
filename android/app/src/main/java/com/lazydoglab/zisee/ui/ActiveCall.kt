@@ -88,7 +88,8 @@ internal val PillShape = RoundedCornerShape(26.dp)
 internal val CardShape = RoundedCornerShape(28.dp)
 // Foundations.dc.html "圆角": ordinary cards and settings groups round to 24, not 28.
 internal val StandardCardShape = RoundedCornerShape(24.dp)
-private val PipShape = RoundedCornerShape(20.dp)
+private val PipCorner = 20.dp
+private val PipShape = RoundedCornerShape(PipCorner)
 // A parked thumbnail keeps only the rounded edge that faces the picture.
 private val HandleLeftShape = RoundedCornerShape(topEnd = 7.dp, bottomEnd = 7.dp)
 private val HandleRightShape = RoundedCornerShape(topStart = 7.dp, bottomStart = 7.dp)
@@ -210,7 +211,10 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                 val snapped = if (x + w / 2 < width / 2) edge else (width - w - edge).coerceAtLeast(0f)
                 return Offset(snapped - with(density) { rect.x.dp.toPx() }, held.y)
             }
-            fun slot(tile: String): Modifier {
+            // [video] omits the rounding and border: the picture rounds itself through the
+            // renderer's outline (an ancestor clip makes a TextureView composite as nothing), and
+            // the gesture overlay drawn on top of it already carries the border.
+            fun slot(tile: String, video: Boolean = false): Modifier {
                 if (tile == main) return Modifier.fillMaxSize()
                 val rect = tiles.getValue(tile)
                 // Clamp during composition as well: layout changes precede the reset effect.
@@ -227,26 +231,34 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                         .border(1.dp, CallText.copy(alpha = 0.16f),
                             if (left) HandleLeftShape else HandleRightShape)
                 }
-                return Modifier.align(Alignment.TopStart)
+                val placed = Modifier.align(Alignment.TopStart)
                     .offset { IntOffset((with(density) { rect.x.dp.toPx() } + drag.x).roundToInt(), y.roundToInt()) }
-                    .size(rect.width.dp, rect.height.dp).clip(PipShape)
-                    .border(1.dp, CallText.copy(alpha = 0.16f), PipShape)
+                    .size(rect.width.dp, rect.height.dp)
+                return if (video) placed
+                else placed.clip(PipShape).border(1.dp, CallText.copy(alpha = 0.16f), PipShape)
             }
             // Fixed call sites keep each renderer's node identity across a swap. Moving a renderer
             // between parents would recreate its surface and flash black.
+            // A parked tile is a bare edge handle, and the main view fills the screen; only a
+            // real thumbnail rounds its picture.
+            fun corner(tile: String) = if (tile == main || tile in parked) 0.dp else PipCorner
             if (MeFace in order) {
-                VideoTile(state.local, state.cameraEnabled && (MeFace == main || MeFace !in parked), slot(MeFace), MeFace != main)
+                VideoTile(state.local, state.cameraEnabled && (MeFace == main || MeFace !in parked),
+                    slot(MeFace, video = true), MeFace != main, corner(MeFace))
             }
             if (MeScene in order) {
                 VideoTile(if (localMode == CameraMode.DUAL) state.localBack else state.local,
-                    state.cameraEnabled && (MeScene == main || MeScene !in parked), slot(MeScene), MeScene != main)
+                    state.cameraEnabled && (MeScene == main || MeScene !in parked),
+                    slot(MeScene, video = true), MeScene != main, corner(MeScene))
             }
             if (PeerFace in order) {
-                VideoTile(state.remote, state.remotePresentation.enabled && (PeerFace == main || PeerFace !in parked), slot(PeerFace), PeerFace != main)
+                VideoTile(state.remote, state.remotePresentation.enabled && (PeerFace == main || PeerFace !in parked),
+                    slot(PeerFace, video = true), PeerFace != main, corner(PeerFace))
             }
             if (PeerScene in order) {
                 VideoTile(if (state.remotePresentation.mode == CameraMode.DUAL) state.remoteBack else state.remote,
-                    state.remotePresentation.enabled && (PeerScene == main || PeerScene !in parked), slot(PeerScene), PeerScene != main)
+                    state.remotePresentation.enabled && (PeerScene == main || PeerScene !in parked),
+                    slot(PeerScene, video = true), PeerScene != main, corner(PeerScene))
             }
             val mainIsPeer = main == PeerFace || main == PeerScene
             if (mainIsPeer && !state.remotePresentation.enabled) {
@@ -423,11 +435,16 @@ private fun videoAspect(feed: com.lazydoglab.zisee.rtc.VideoFeed?): Float {
 
 /** A camera's slot in the layout: its picture when it is live, its dark placeholder when not. */
 @Composable
-private fun VideoTile(feed: com.lazydoglab.zisee.rtc.VideoFeed?, live: Boolean, modifier: Modifier, thumbnail: Boolean) {
-    if (live && feed != null) VideoRenderer(feed, modifier)
+private fun VideoTile(feed: com.lazydoglab.zisee.rtc.VideoFeed?, live: Boolean, modifier: Modifier,
+    thumbnail: Boolean, corner: Dp = 0.dp) {
+    // The picture rounds itself inside the renderer; only the placeholder can be clipped out here,
+    // because it is ordinary Compose drawing rather than a TextureView's own layer.
+    if (live && feed != null) VideoRenderer(feed, modifier, corner)
     // The main tile already sits on the call surface's own background; only a thumbnail needs its
     // placeholder painted, so the base surface is not redrawn under a live full-screen picture.
-    else Box(if (thumbnail) modifier.background(CallInk) else modifier)
+    else Box(if (!thumbnail) modifier
+        else if (corner > 0.dp) modifier.clip(RoundedCornerShape(corner)).background(CallInk)
+        else modifier.background(CallInk))
 }
 
 @Composable

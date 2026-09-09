@@ -18,6 +18,19 @@ Firestore 没有唯一约束、外键、CHECK 与级联删除，这些不变量�
 
 设备通过 `PUT /v1/devices/{deviceId}/push-token`（`{"provider":"fcm","token":"…"}`）上报 token，`deviceId` 必须等于会话认证的设备。FCM 返回 `UNREGISTERED` 时服务端清除该 token。
 
+### 单独验证一台设备的推送可达性
+
+整条来电链路有八个环节，"没响"无法区分是哪一环。`send-test-push.ps1` 绕过身份、邀请、通话状态机和信令，直接给一台设备发一条 `call_invite`，失败即可判定为推送通道本身的问题。这在小米/HyperOS 上尤其有用：那里最常见的失败（没有可用的 Google Play 服务、ROM 冻结了应用）从外部看和通话故障完全一样。
+
+debug 包每次启动都会打印 token：
+
+```powershell
+adb logcat -s ZiseePush          # provider=fcm registered=<bool> token=<...>
+./send-test-push.ps1 -Token "<token>"
+```
+
+FCM 接受只代表已入队，仍要在手机侧用同一个 `adb logcat -s ZiseePush` 确认 `call_invite call=<id> -> RINGING`。
+
 ## 运行
 
 需要 Go 1.26.6+。用 PostgreSQL 时设置 DATABASE_URL 并先执行迁移：

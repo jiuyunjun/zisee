@@ -14,6 +14,9 @@ fun interface IncomingCallSurface {
     fun showIncoming(invite: CallInvite)
 }
 
+/** What [IncomingPushGate] did with a push: rang, dropped it as stale, or collapsed a repeat. */
+enum class PushOutcome { RINGING, EXPIRED, DUPLICATE }
+
 /**
  * The single entry point every incoming-call push funnels through
  * (docs/architecture/CALL_DELIVERY.md §11). Phase 1 keeps it deliberately thin:
@@ -30,14 +33,17 @@ class IncomingPushGate(
 ) {
     private val seen = LinkedHashSet<String>()
 
-    suspend fun onInvite(invite: CallInvite) {
+    /** Returns what became of the push, so its Android caller can report it without this class
+     * having to touch the platform log. */
+    suspend fun onInvite(invite: CallInvite): PushOutcome {
         if (!now().isBefore(invite.expiresAt)) {
             logger.info(AppEvent.PUSH_EXPIRED)
-            return
+            return PushOutcome.EXPIRED
         }
-        if (!firstSeen(invite.callId)) return
+        if (!firstSeen(invite.callId)) return PushOutcome.DUPLICATE
         logger.info(AppEvent.PUSH_RECEIVED)
         surface.showIncoming(invite)
+        return PushOutcome.RINGING
     }
 
     /** True the first time a call id is seen; survives process death via DataStore. */

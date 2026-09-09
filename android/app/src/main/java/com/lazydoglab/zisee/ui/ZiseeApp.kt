@@ -1,6 +1,10 @@
 package com.lazydoglab.zisee.ui
 
+import android.Manifest
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -28,8 +32,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -57,13 +63,32 @@ import com.lazydoglab.zisee.auth.LocalIdentity
 import com.lazydoglab.zisee.auth.remote.ConnectionState
 import com.lazydoglab.zisee.ui.theme.ZiseeTheme
 
-private enum class Page { HOME, SETTINGS, START_CALL, JOIN_CALL }
+private enum class Page { HOME, SETTINGS }
+
+/**
+ * What the home screen can do with the call feature. Null in previews and before an identity
+ * exists; the home screen then still lays out, with its call actions inert.
+ */
+class CallHomeActions(
+    val contacts: List<com.lazydoglab.zisee.call.Contact> = emptyList(),
+    val pendingInvite: String = "",
+    val notice: String = "",
+    val contactsStatus: String = "",
+    val onInvite: () -> Unit = {},
+    val onJoin: (String) -> Unit = {},
+    val onCallContact: (String) -> Unit = {},
+    val onRemoveContact: (String) -> Unit = {},
+    val onPermissionsDenied: () -> Unit = {},
+)
 
 /**
  * Welcome.dc.html / Main.dc.html / Settings.dc.html: unlike the call surface (always dark, a video
  * call looks like a video call regardless of system theme), these screens follow [ZiseeTheme]'s
  * light/dark [MaterialTheme.colorScheme] so they read correctly in both — colors here are always
  * semantic roles, never the call surface's fixed hex tokens.
+ *
+ * Main.dc.html and HomeLight.dc.html are one screen in two palettes, so this is the only home:
+ * its call actions start a call directly rather than opening a second, dark copy of itself.
  */
 @Composable
 fun ZiseeApp(
@@ -74,8 +99,7 @@ fun ZiseeApp(
     connection: ConnectionState = ConnectionState.NOT_CONFIGURED,
     onConnect: () -> Unit = {},
     onDisconnect: () -> Unit = {},
-    contacts: List<com.lazydoglab.zisee.call.Contact> = emptyList(),
-    onVideoCall: (() -> Unit)? = null,
+    call: CallHomeActions? = null,
 ) {
     var page by rememberSaveable { mutableStateOf(Page.HOME) }
     BackHandler(enabled = page != Page.HOME) { page = Page.HOME }
@@ -97,19 +121,11 @@ fun ZiseeApp(
                     }
                     IdentityState.Welcome -> WelcomeScreen(saveState, onSaveName)
                     is IdentityState.Ready -> when (page) {
-                        Page.HOME -> HomeScreen(identityState.identity, contacts, onNavigate = {
-                            if (onVideoCall != null && it in setOf(Page.START_CALL, Page.JOIN_CALL)) onVideoCall() else page = it
-                        })
+                        Page.HOME -> HomeScreen(call) { page = Page.SETTINGS }
                         Page.SETTINGS -> Column(verticalArrangement = Arrangement.spacedBy(26.dp)) {
                             PageHeader(stringResource(R.string.settings)) { page = Page.HOME }
                             SettingsScreen(identityState.identity, saveState, onSaveName)
                             if (BuildConfig.DEBUG) BackendPanel(connection, onConnect, onDisconnect)
-                        }
-                        Page.START_CALL, Page.JOIN_CALL -> Column(verticalArrangement = Arrangement.spacedBy(26.dp)) {
-                            PageHeader(stringResource(if (page == Page.START_CALL) R.string.start_call else R.string.join_call)) {
-                                page = Page.HOME
-                            }
-                            InfoPanel(stringResource(R.string.call_unavailable_title), stringResource(R.string.call_unavailable_body))
                         }
                     }
                 }
@@ -158,44 +174,149 @@ private fun WelcomeScreen(save: SaveState, onSaveName: (String) -> Unit) {
     InfoPanel(icon = "lock", body = stringResource(R.string.onboarding_note))
 }
 
-/** Main.dc.html: no per-user greeting line in the design, so this omits the one the old layout had. */
+/**
+ * Main.dc.html / HomeLight.dc.html: no per-user greeting line in the design, so this omits the one
+ * the old layout had. Its actions place the call themselves — camera and microphone are asked for
+ * here, at the tap, so nothing turns a camera on without one.
+ */
 @Composable
-private fun HomeScreen(identity: LocalIdentity, contacts: List<com.lazydoglab.zisee.call.Contact>, onNavigate: (Page) -> Unit) {
+private fun HomeScreen(call: CallHomeActions?, onSettings: () -> Unit) {
+    val configured = BuildConfig.BACKEND_URL.isNotEmpty() && call != null
+    var code by rememberSaveable { mutableStateOf("") }
+    var showJoin by rememberSaveable { mutableStateOf(false) }
+    val pending = call?.pendingInvite.orEmpty()
+    // A code that arrived through a link replaces whatever was typed and opens the join field, so
+    // the field matches the invitation the user just opened.
+    var pendingDismissed by rememberSaveable(pending) { mutableStateOf(false) }
+    LaunchedEffect(pending) { if (pending.isNotEmpty()) { code = pending; showJoin = true } }
+
+    var granting by remember { mutableStateOf<(() -> Unit)?>(null) }
+    val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
+        val action = granting
+        granting = null
+        if (grants[Manifest.permission.CAMERA] == true && grants[Manifest.permission.RECORD_AUDIO] == true) action?.invoke()
+        else call?.onPermissionsDenied?.invoke()
+    }
+    fun withCameraAndMic(action: () -> Unit) {
+        granting = action
+        permissions.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
+    }
+    val busy = granting != null
+
     Spacer(Modifier.height(20.dp))
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
         Brand()
-        RoundIcon("gear", stringResource(R.string.settings)) { onNavigate(Page.SETTINGS) }
+        RoundIcon("gear", stringResource(R.string.settings), onClick = onSettings)
     }
     Spacer(Modifier.height(46.dp))
-    Text(stringResource(R.string.home_headline), fontSize = 26.sp, lineHeight = 38.sp, letterSpacing = (-0.2).sp)
-    Spacer(Modifier.height(30.dp))
-    PrimaryPill(stringResource(R.string.start_call), icon = "camera", height = 62.dp, onClick = { onNavigate(Page.START_CALL) })
-    Spacer(Modifier.height(12.dp))
-    SecondaryPill(stringResource(R.string.join_call), icon = "code", onClick = { onNavigate(Page.JOIN_CALL) })
-    Spacer(Modifier.height(42.dp))
-    if (contacts.isEmpty()) {
-        SectionLabel(stringResource(R.string.recent))
+    if (pending.isNotEmpty() && !pendingDismissed) {
+        PendingInvite(busy = busy, onDismiss = { pendingDismissed = true },
+            onOpen = { withCameraAndMic { call?.onJoin(pending) } })
+    } else {
+        Text(stringResource(R.string.home_headline), fontSize = 26.sp, lineHeight = 38.sp, letterSpacing = (-0.2).sp)
+        Spacer(Modifier.height(30.dp))
+        // This publishes an invitation to be scanned or opened; it does not dial anyone, so it
+        // says so rather than promising a call that nobody is on the other end of yet.
+        PrimaryPill(stringResource(R.string.invite_peer), icon = "camera", height = 62.dp,
+            enabled = configured && !busy, onClick = { withCameraAndMic { call?.onInvite() } })
         Spacer(Modifier.height(12.dp))
+        SecondaryPill(stringResource(R.string.join_call), icon = "code", onClick = { showJoin = !showJoin })
+        AnimatedVisibility(showJoin) {
+            Column(Modifier.padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                CodeField(code, onValueChange = { code = it })
+                PrimaryPill(stringResource(R.string.call_peer), icon = "camera", height = 58.dp,
+                    enabled = configured && !busy && code.isNotBlank(),
+                    onClick = { withCameraAndMic { call?.onJoin(code.trim()) } })
+            }
+        }
+        if (BuildConfig.BACKEND_URL.isEmpty()) Text(stringResource(R.string.backend_missing_call),
+            Modifier.padding(top = 10.dp), fontSize = 12.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    // Both "the call ended" and "permissions were refused" land here; neither is loud enough to
+    // deserve the error colour, and the destructive-looking red would misread on the ordinary one.
+    if (!call?.notice.isNullOrEmpty()) Text(call.notice, Modifier.padding(top = 14.dp),
+        fontSize = 12.5.sp, lineHeight = 20.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Spacer(Modifier.height(42.dp))
+    SectionLabel(stringResource(R.string.recent))
+    Spacer(Modifier.height(12.dp))
+    val contacts = call?.contacts.orEmpty()
+    if (contacts.isEmpty()) {
         Text(stringResource(R.string.no_recent_calls), fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     } else {
-        SectionLabel(stringResource(R.string.recent))
-        Spacer(Modifier.height(12.dp))
         Column {
             contacts.forEach { contact ->
-                Row(Modifier.fillMaxWidth().clickable { onNavigate(Page.START_CALL) }.padding(vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    IdentityAvatar(contact.displayName, size = 48.dp)
-                    Text(contact.displayName, Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.Medium)
-                    RoundIcon("camera", stringResource(R.string.start_call),
-                        tint = MaterialTheme.colorScheme.primary,
-                        background = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)) { onNavigate(Page.START_CALL) }
-                }
+                ContactRow(contact, enabled = configured && !busy,
+                    onCall = { withCameraAndMic { call?.onCallContact(contact.identityId) } },
+                    onRemove = { call?.onRemoveContact(contact.identityId) })
             }
         }
     }
-    Spacer(Modifier.height(42.dp))
+    if (!call?.contactsStatus.isNullOrEmpty()) Text(call.contactsStatus, Modifier.padding(top = 8.dp),
+        fontSize = 12.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Spacer(Modifier.height(28.dp))
+    Text(stringResource(R.string.call_permission_note), fontSize = 12.sp, lineHeight = 18.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+        modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+    Spacer(Modifier.height(24.dp))
     Text(stringResource(R.string.slogan), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
         modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+}
+
+/** InviteOpen.dc.html, adapted: the caller's identity is unknown until the invitation is redeemed. */
+@Composable
+private fun PendingInvite(busy: Boolean, onOpen: () -> Unit, onDismiss: () -> Unit) {
+    Column(Modifier.fillMaxWidth().clip(StandardCardShape).background(MaterialTheme.colorScheme.surface)
+        .padding(horizontal = 22.dp, vertical = 26.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(Modifier.size(88.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center) {
+            val ink = MaterialTheme.colorScheme.onSurfaceVariant
+            Canvas(Modifier.size(34.dp)) { scale(size.width / 24f, size.width / 24f, Offset.Zero) { callIcon("camera", ink) } }
+        }
+        Spacer(Modifier.height(18.dp))
+        Text(stringResource(R.string.invite_opened), fontSize = 17.sp, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(20.dp))
+        PrimaryPill(stringResource(R.string.start_call), icon = "camera", height = 56.dp, enabled = !busy, onClick = onOpen)
+        Spacer(Modifier.height(10.dp))
+        Text(stringResource(R.string.later), Modifier.clickable(enabled = !busy, onClick = onDismiss).padding(10.dp),
+            fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/** Main.dc.html contact row: avatar, name, one-tap call. Removal has no mock; kept small and muted. */
+@Composable
+private fun ContactRow(contact: com.lazydoglab.zisee.call.Contact, enabled: Boolean, onCall: () -> Unit, onRemove: () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+        IdentityAvatar(contact.displayName, size = 48.dp)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(contact.displayName, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+            Text(stringResource(R.string.contact_call_hint), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        RoundIcon("camera", stringResource(R.string.call_contact, contact.displayName),
+            tint = MaterialTheme.colorScheme.primary,
+            background = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+            enabled = enabled, onClick = onCall)
+        val remove = stringResource(R.string.remove_contact, contact.displayName)
+        val ink = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+        Box(Modifier.size(28.dp).clickable(enabled = enabled, onClick = onRemove)
+            .semantics { role = Role.Button; contentDescription = remove }, contentAlignment = Alignment.Center) {
+            Canvas(Modifier.size(13.dp)) { scale(size.width / 24f, size.width / 24f, Offset.Zero) { callIcon("close", ink) } }
+        }
+    }
+}
+
+@Composable
+private fun CodeField(value: String, onValueChange: (String) -> Unit) {
+    Box(Modifier.fillMaxWidth().height(58.dp).clip(PillShape).background(MaterialTheme.colorScheme.surface)
+        .border(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.13f), PillShape)
+        .padding(horizontal = 20.dp), contentAlignment = Alignment.CenterStart) {
+        if (value.isEmpty()) Text(stringResource(R.string.invite_code_hint), fontSize = 14.5.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        BasicTextField(value = value, onValueChange = { onValueChange(it.take(80)) }, singleLine = true,
+            textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface, fontSize = 14.5.sp),
+            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), modifier = Modifier.fillMaxWidth())
+    }
 }
 
 /** Settings.dc.html: identity card, then grouped rows for what actually exists (no fabricated
@@ -327,10 +448,13 @@ private fun IdentityAvatar(name: String, size: androidx.compose.ui.unit.Dp) {
 
 @Composable
 private fun RoundIcon(icon: String, description: String, tint: Color = MaterialTheme.colorScheme.onSurfaceVariant,
-    background: Color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f), onClick: () -> Unit) {
-    Box(Modifier.size(44.dp).clip(CircleShape).background(background).clickable(onClick = onClick)
+    background: Color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f), enabled: Boolean = true,
+    onClick: () -> Unit) {
+    val dim = if (enabled) 1f else 0.4f
+    Box(Modifier.size(44.dp).clip(CircleShape).background(background.copy(alpha = background.alpha * dim))
+        .clickable(enabled = enabled, onClick = onClick)
         .semantics { role = Role.Button; contentDescription = description }, contentAlignment = Alignment.Center) {
-        Canvas(Modifier.size(19.dp)) { scale(size.width / 24f, size.width / 24f, Offset.Zero) { callIcon(icon, tint) } }
+        Canvas(Modifier.size(19.dp)) { scale(size.width / 24f, size.width / 24f, Offset.Zero) { callIcon(icon, tint.copy(alpha = tint.alpha * dim)) } }
     }
 }
 

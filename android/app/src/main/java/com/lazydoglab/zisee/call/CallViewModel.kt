@@ -44,6 +44,10 @@ import org.json.JSONObject
 
 data class CallUiState(
     val visible: Boolean = false, val busy: Boolean = false, val invite: String = "",
+    /** This end is publishing an invitation and waiting to be joined, not placing a call. */
+    val inviting: Boolean = false,
+    /** A message for the home screen (permissions, a malformed code). Call status lives in [status]. */
+    val notice: String = "",
     val status: String = "邀请朋友开始视频通话，或输入对方的邀请码。",
     val machine: CallState = CallState(), val local: VideoFeed? = null, val remote: VideoFeed? = null,
     val cameraEnabled: Boolean = true, val muted: Boolean = false, val stats: MediaStats = MediaStats(),
@@ -137,25 +141,17 @@ class CallViewModel(application: Application, private val container: AppContaine
         }
     }
 
-    fun open(identity: LocalIdentity) {
-        // Returning here leaves this.identity unset, which would later make begin() refuse the
-        // call with nothing on screen to explain it.
-        if (job != null) return notStarted("open_during_call")
-        this.identity = identity
-        mutable.value = CallUiState(visible = true, contacts = mutable.value.contacts, status = if (container.backendApi == null)
-            "尚未配置通话服务器。请安装已配置服务器的测试版本。" else "邀请朋友开始视频通话，或输入对方的邀请码。")
-    }
     fun setForeground(value: Boolean) { foreground = value; if (!value) { idleJob?.cancel(); stop() } else startIdle() }
     fun close() { stop(); mutable.update { it.copy(visible = false) } }
     fun stop() { job?.cancel() }
     fun accept() { commands.trySend("accept") }
     fun reject() { commands.trySend("reject") }
-    fun permissionsDenied() { mutable.update { it.copy(status = "视频通话需要摄像头和麦克风权限，请允许后重试。") } }
+    fun permissionsDenied() { mutable.update { it.copy(notice = "视频通话需要摄像头和麦克风权限，请允许后重试。") } }
     fun createInvite() = begin(null)
     fun join(invite: String) {
         val token = InviteLink.token(invite)
         if (token == null) {
-            mutable.update { it.copy(status = "请输入完整的邀请码或邀请链接。") }; return
+            mutable.update { it.copy(notice = "请输入完整的邀请码或邀请链接。") }; return
         }
         begin(token)
     }
@@ -166,7 +162,7 @@ class CallViewModel(application: Application, private val container: AppContaine
      */
     fun prefill(invite: String) {
         val token = InviteLink.token(invite) ?: return
-        mutable.update { it.copy(pendingInvite = token, status = "已填入邀请码，点\u201C呼叫对方\u201D开始通话。") }
+        mutable.update { it.copy(pendingInvite = token, notice = "") }
     }
     fun toggleShowMe(preferDual: Boolean = true) {
         val media = rtc ?: return
@@ -240,7 +236,12 @@ class CallViewModel(application: Application, private val container: AppContaine
         if (!foreground) return notStarted("background")
         if (job != null) return notStarted("call_in_progress")
         while (commands.tryReceive().isSuccess) { /* Clear previous call actions. */ }
-        mutable.value = CallUiState(visible = true, busy = true, contacts = mutable.value.contacts, status = "正在连接…")
+        // Publishing an invitation is not placing a call: say so from the first frame, so the
+        // invite page opens directly instead of flashing a "calling 对方" screen at nobody.
+        val publishing = invite == null && contact == null && incoming == null
+        mutable.value = CallUiState(visible = true, busy = true, inviting = publishing,
+            contacts = mutable.value.contacts,
+            status = if (publishing) "正在生成邀请…" else "正在连接…")
         job = viewModelScope.launch {
             idleJob?.cancelAndJoin(); idleJob = null
             var session: AccessSession? = null
@@ -308,7 +309,10 @@ class CallViewModel(application: Application, private val container: AppContaine
                             if (machine.phase == CallPhase.IDLE) {
                                 val peer = if (current.caller == identity.identityId) current.callee else current.caller
                                 machine = CallReducer.start(machine, CallSession(current.id, peer), current.callee == identity.identityId)
-                                mutable.update { it.copy(machine = machine, invite = "", peerName = it.contacts.firstOrNull { c -> c.identityId == peer }?.displayName ?: "对方") }
+                                // The invitation has been taken up: this is a real call now, not a
+                                // page of QR code waiting to be scanned.
+                                mutable.update { it.copy(machine = machine, invite = "", inviting = false,
+                                    peerName = it.contacts.firstOrNull { c -> c.identityId == peer }?.displayName ?: "对方") }
                             }
                             if (current.state in setOf("ended", "rejected", "expired")) {
                                 ended = true
@@ -428,7 +432,9 @@ class CallViewModel(application: Application, private val container: AppContaine
                         }
                     }
                 }
-                mutable.update { it.copy(busy = false) }
+                // The call surface has nothing left to show, so hand the screen back to the home
+                // it was opened from and let the outcome be read there.
+                mutable.update { it.copy(busy = false, visible = false, inviting = false, notice = it.status) }
                 job = null
                 startIdle()
             }

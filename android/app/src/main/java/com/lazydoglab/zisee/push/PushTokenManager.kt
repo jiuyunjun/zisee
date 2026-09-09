@@ -31,12 +31,17 @@ class PushTokenManager(
         mutex.withLock {
             val token = provider.currentToken()?.takeIf { it.isNotBlank() } ?: return
             val synced = runCatching { store.data.first()[SYNCED_KEY] }.getOrNull()
+            // Printed on every launch, before the early return: a device whose token was registered
+            // long ago would otherwise never show it, which is exactly when it is needed.
+            PushDebug.token(provider.name, token, alreadyRegistered = token == synced)
             if (token == synced) return
             try {
                 api.registerPushToken(session, deviceId, provider.name, token)
                 runCatching { store.edit { it[SYNCED_KEY] = token } }
+                PushDebug.registered(deviceId)
             } catch (error: Exception) {
                 logger.error(AppEvent.PUSH_REGISTER_FAILED, FailureReason.of(error))
+                PushDebug.registrationFailed(error)
             }
         }
     }

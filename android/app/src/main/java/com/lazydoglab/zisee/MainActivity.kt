@@ -15,6 +15,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
+import com.lazydoglab.zisee.ui.CallHomeActions
 import com.lazydoglab.zisee.ui.ZiseeApp
 import com.lazydoglab.zisee.ui.ZiseeViewModel
 import com.lazydoglab.zisee.ui.theme.ZiseeTheme
@@ -63,30 +64,35 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(identity) {
                 (identity as? IdentityState.Ready)?.let { callModel.observeIdentity(it.identity) }
             }
-            // The call screen needs a ready identity, so a link that arrives first waits here
-            // rather than being dropped.
+            // Placing the call needs a ready identity, so a link that arrives first waits here
+            // rather than being dropped. It only fills the code in: the tap stays the user's.
             LaunchedEffect(invite, identity) {
                 val token = invite ?: return@LaunchedEffect
-                val ready = (identity as? IdentityState.Ready) ?: return@LaunchedEffect
+                if (identity !is IdentityState.Ready) return@LaunchedEffect
                 opened.value = null
                 viewModel.disconnectBackend()
-                callModel.open(ready.identity)
                 callModel.prefill(token)
             }
             androidx.compose.runtime.DisposableEffect(call.busy) {
                 if (call.busy) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 onDispose { window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
             }
+            // The home screen places calls itself, so the debug backend session has to be released
+            // before the call model logs in: the server allows one session per device.
+            fun release(action: () -> Unit): () -> Unit = { viewModel.disconnectBackend(); action() }
+            val actions = CallHomeActions(
+                contacts = call.contacts, pendingInvite = call.pendingInvite,
+                notice = call.notice, contactsStatus = call.contactsStatus,
+                onInvite = release(callModel::createInvite),
+                onJoin = { code -> viewModel.disconnectBackend(); callModel.join(code) },
+                onCallContact = { peer -> viewModel.disconnectBackend(); callModel.callContact(peer) },
+                onRemoveContact = callModel::removeContact,
+                onPermissionsDenied = callModel::permissionsDenied,
+            )
             ZiseeTheme {
-                if (call.visible) CallScreen(call, callModel) else {
-                    ZiseeApp(identity, save, viewModel::saveName, viewModel::load,
-                        connection, viewModel::connectBackend, viewModel::disconnectBackend, contacts = call.contacts) {
-                        (identity as? IdentityState.Ready)?.let {
-                            viewModel.disconnectBackend()
-                            callModel.open(it.identity)
-                        }
-                    }
-                }
+                if (call.visible) CallScreen(call, callModel)
+                else ZiseeApp(identity, save, viewModel::saveName, viewModel::load,
+                    connection, viewModel::connectBackend, viewModel::disconnectBackend, actions)
             }
         }
     }

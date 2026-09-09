@@ -36,7 +36,8 @@ class IncomingPushGateTest {
             val gate = IncomingPushGate({ shown.add(it) }, noopLogger, store(CoroutineScope(Dispatchers.IO + job)),
                 now = { Instant.parse("2026-09-09T15:30:00Z") })
             val expires = Instant.parse("2026-09-09T15:30:30Z")
-            repeat(3) { gate.onInvite(invite("call-1", expires)) }
+            val outcomes = (1..3).map { gate.onInvite(invite("call-1", expires)) }
+            assertEquals(listOf(PushOutcome.RINGING, PushOutcome.DUPLICATE, PushOutcome.DUPLICATE), outcomes)
             assertEquals(1, shown.size)
             assertEquals("call-1", shown.single().callId)
         } finally {
@@ -50,7 +51,7 @@ class IncomingPushGateTest {
             val shown = mutableListOf<CallInvite>()
             val gate = IncomingPushGate({ shown.add(it) }, noopLogger, store(CoroutineScope(Dispatchers.IO + job)),
                 now = { Instant.parse("2026-09-09T15:31:00Z") })
-            gate.onInvite(invite("call-late", Instant.parse("2026-09-09T15:30:30Z")))
+            assertEquals(PushOutcome.EXPIRED, gate.onInvite(invite("call-late", Instant.parse("2026-09-09T15:30:30Z"))))
             assertEquals(0, shown.size)
         } finally {
             job.cancelAndJoin()
@@ -63,15 +64,18 @@ class IncomingPushGateTest {
         val first = SupervisorJob()
         val shown = mutableListOf<CallInvite>()
         try {
-            IncomingPushGate({ shown.add(it) }, noopLogger, store(CoroutineScope(Dispatchers.IO + first)), now)
-                .onInvite(invite("call-1", expires))
+            assertEquals(PushOutcome.RINGING,
+                IncomingPushGate({ shown.add(it) }, noopLogger, store(CoroutineScope(Dispatchers.IO + first)), now)
+                    .onInvite(invite("call-1", expires)))
         } finally {
             first.cancelAndJoin()
         }
+        // A second process, its in-memory set empty: only the persisted record can catch this.
         val second = SupervisorJob()
         try {
-            IncomingPushGate({ shown.add(it) }, noopLogger, store(CoroutineScope(Dispatchers.IO + second)), now)
-                .onInvite(invite("call-1", expires))
+            assertEquals(PushOutcome.DUPLICATE,
+                IncomingPushGate({ shown.add(it) }, noopLogger, store(CoroutineScope(Dispatchers.IO + second)), now)
+                    .onInvite(invite("call-1", expires)))
         } finally {
             second.cancelAndJoin()
         }
