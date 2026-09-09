@@ -1,16 +1,21 @@
 package com.lazydoglab.zisee.ar.session
 
 import android.content.Context
+import android.opengl.EGL14
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
 import android.os.Looper
 import com.google.ar.core.Config
+import com.google.ar.core.Coordinates2d
 import com.google.ar.core.Plane
 import com.google.ar.core.Pose
 import com.google.ar.core.Session
 import com.google.ar.core.TrackingState
 import com.google.ar.core.exceptions.NotYetAvailableException
 import com.lazydoglab.zisee.ar.annotation.VideoFrameReference
+import com.lazydoglab.zisee.ar.render.ArCameraRenderer
+import com.lazydoglab.zisee.ar.render.CameraTextureMapping
+import com.lazydoglab.zisee.ar.render.CurrentCameraTexture
 import com.lazydoglab.zisee.ar.spatial.*
 import com.lazydoglab.zisee.media.MediaTrack
 import java.nio.ByteOrder
@@ -31,13 +36,16 @@ class ArCoreBackend private constructor(
     val cameraTextureId: Int,
 ) : ArBackend {
     private val owner = Thread.currentThread()
+    private val eglContext = EGL14.eglGetCurrentContext()
     private var closed = false
     private var running = false
     private var lastCapturedTimestampNs = 0L
+    private val currentTexture = CurrentCameraTexture()
     override val depthSupported = session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)
 
     private fun checkOwner() {
         check(Thread.currentThread() === owner && Looper.myLooper() != Looper.getMainLooper())
+        check(eglContext != EGL14.EGL_NO_CONTEXT && EGL14.eglGetCurrentContext() == eglContext)
         check(!closed)
     }
 
@@ -57,12 +65,14 @@ class ArCoreBackend private constructor(
 
     override fun pause() {
         checkOwner()
+        currentTexture.invalidate()
         if (running) { session.pause(); running = false }
     }
 
     override fun capture(): HistoricalFrame? {
         checkOwner()
         check(running)
+        currentTexture.invalidate()
         val frame = session.update()
         if (frame.timestamp <= lastCapturedTimestampNs) return null
         lastCapturedTimestampNs = frame.timestamp
@@ -102,11 +112,31 @@ class ArCoreBackend private constructor(
                     PlaneSnapshot(plane.centerPose.toWorldPose(), vertices)
                 }
             }.take(16).toList() else emptyList()
-        return HistoricalFrame(
+        val snapshot = HistoricalFrame(
             VideoFrameReference(MediaTrack.BACK_CAMERA, frame.timestamp), camera.pose.toWorldPose(),
             CameraIntrinsics(dimensions[0], dimensions[1], focal[0], focal[1], centre[0], centre[1]),
             tracking, depth, planes,
         )
+        // Transform while this is still the current native frame. NaN catches a no-op conversion.
+        val uv = FloatArray(8) { Float.NaN }
+        frame.transformCoordinates2d(Coordinates2d.IMAGE_NORMALIZED,
+            floatArrayOf(0f, 0f, 1f, 0f, 0f, 1f, 1f, 1f), Coordinates2d.TEXTURE_NORMALIZED, uv)
+        currentTexture.publish(CurrentCameraTexture.Frame(snapshot.frame, dimensions[0], dimensions[1],
+            CameraTextureMapping(uv)))
+        return snapshot
+    }
+
+    /** Returns false for historical, invalidated or uncaptured references. The target framebuffer
+     * is owned by the caller; encoding needs a separate retained RGB buffer, not this mutable OES.
+     * Output is raw CPU-image oriented: apply display rotation exactly once downstream.
+     */
+    fun renderCamera(reference: VideoFrameReference, renderer: ArCameraRenderer,
+        outputWidth: Int, outputHeight: Int): Boolean {
+        checkOwner()
+        if (!running) return false
+        val frame = currentTexture.find(reference) ?: return false
+        renderer.draw(cameraTextureId, frame.mapping, frame.width, frame.height, outputWidth, outputHeight)
+        return true
     }
 
     override fun createAnchor(pose: WorldPose): LocalAnchor {
@@ -148,6 +178,7 @@ class ArCoreBackend private constructor(
                         Config.DepthMode.AUTOMATIC else Config.DepthMode.DISABLED
                     updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
                     focusMode = Config.FocusMode.AUTO
+                    imageStabilizationMode = Config.ImageStabilizationMode.OFF
                     // No Cloud Anchors, Geospatial, recording, or persistent world map.
                 })
                 GLES20.glGenTextures(1, textures, 0)

@@ -1,10 +1,10 @@
 ---
 title: AR Assist 框架与接入契约
 document_id: ARCH-AR-001
-version: 1.1.0
+version: 1.2.0
 status: Active
 created: 2026-09-09
-updated: 2026-09-09
+updated: 2026-09-10
 owners:
   - android
 ---
@@ -134,3 +134,20 @@ JVM 覆盖缓存容量/时间边界、精确匹配、重复/倒序帧、历史 p
 2026-09-09 本机结果：126 项 JVM 测试全部通过（AR 相关 30 项，其中新增 29 项）；assembleDebug、lintDebug 通过，lint 为 0 错误、38 警告，AR 源码无 lint 报告。18 个改动文本文件均验证为 UTF-8 无 BOM。
 
 真机仍待通话接入后验收：支持/不支持 ARCore、未安装/拒装、权限拒绝、Depth 有无、相机交接、EGL 重建、前后台/挂断、实际深度图对齐、移动时锚点稳定性、双端历史帧点击与音视频不中断。JVM fake backend 和成功构建不能替代设备结论。
+
+
+## Camera GPU rendering (1.2)
+
+ArCoreBackend.capture now saves CPU-image dimensions and IMAGE_NORMALIZED to TEXTURE_NORMALIZED corner coordinates from the same current native Frame. NaN sentinels reject unwritten output; degenerate or non-affine transforms fail closed. EIS is explicitly OFF because its 3D mapping is not implemented. See the official [Frame](https://developers.google.com/ar/reference/java/com/google/ar/core/Frame) and [Coordinates2d](https://developers.google.com/ar/reference/java/com/google/ar/core/Coordinates2d) contracts.
+
+After controller.capture returns a historical snapshot, the GL owner can pass its frame reference to backend.renderCamera(reference, renderer, width, height). ArCameraRenderer draws OES directly into the caller's bound framebuffer. Output covers the full unrotated CPU image; the GL bottom edge corresponds to the CPU image bottom edge. Apply display rotation/FIT/FILL downstream using actual frame geometry, without adding ARCore VIEW cropping. Preserve the CPU-image aspect ratio in the output dimensions.
+
+The borrowed camera texture is invalidated BEFORE every update, including repeated or failed updates, and on pause/close. A historical pose remains usable for spatial resolution but cannot read a newer texture. Rendering rejects unmatched timestamps/tracks, uncaptured frames and paused frames. The renderer owns only its shader, and must be created/drawn/closed on the same non-main thread and EGL context before EGL teardown. The caller owns camera/session/EGL/output framebuffer and sets blend/depth/scissor/color-mask state. Drawing changes viewport/program/texture/attribute bindings.
+
+This milestone implements camera background rendering primitives, without enabling AR UI or camera switching. Next: exclusive camera lease integration, a bounded reference-counted RGB framebuffer pool and WebRTC delivery. Never give the mutable ARCore OES texture to an asynchronous encoder. Remote displayed-frame identity and spatial overlay rendering remain outstanding; a latest DataChannel timestamp is not a displayed-frame identity.
+
+CameraTextureMappingTest covers all four rotations, reflection, crop, defensive copies, invalid transforms and stale texture references. arCameraRender instrumentation draws a synthetic four-color SurfaceTexture through real EGL/OES shaders and checks corner pixels. Only tests use readPixels. This does not validate physical ARCore camera/depth or end-to-end delay.
+
+```powershell
+adb shell am instrument -w -e arCameraRender true com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
+```

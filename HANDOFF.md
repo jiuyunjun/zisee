@@ -1,84 +1,66 @@
 # HANDOFF
 
 ## Status
-IN_PROGRESS
+READY_FOR_REVIEW
 
 ## Objective
-Fix Show Me orientation; reduce Wi-Fi to 5G freezes (TURN fallback allowed); continue AR implementation.
+Continue AR Assist implementation while preserving existing camera/UI work and handover improvements.
 
 ## Active Task
-Completed camera correction, handover scheduling/native ICE tuning, and AR control-channel integration. Next milestone is AR camera/media/rendering and exact displayed-frame identity integration.
+Exact-frame AR camera texture mapping and GPU background rendering primitives are implemented and verified. Full in-call AR remains incomplete.
 
 ## Last Good Checkpoint
-commit: 6048a1e
-build: PASS
-tests: PASS
+commit: 4440862 (baseline; AR milestone commit pending)
+build: PASS (current combined working tree)
+tests: PASS (current combined working tree)
 
 ## Current Work
-Implementation and validation complete for these checkpoints. Updated debug APK is installed on the attached Android device. No production service deployment or Git push performed.
+ArCoreBackend captures CPU-image-to-OES mapping with the historical frame. renderCamera only accepts the current reference. Every native update, pause and close invalidates old texture access. ArCameraRenderer draws to a caller-owned framebuffer on the owner GL thread/context. EIS disabled explicitly. No new dependencies or AR UI entry.
 
 ## Repository State
-Expected pre-existing unstaged files: AGENTS.md; NativeRtcSession.kt (only the old post-bind targetRotation workaround); ActiveCall.kt (user edits plus an uncommitted VIDEO_PROBE tip line); CallVideoLayout.kt; CallVideoLayoutTest.kt. Preserve these edits; they are excluded from our commits. ActiveCall.kt also changed externally during this run. Builds used the combined working tree, including those pre-existing UI changes. No unexplained task WIP remains.
+Preserve five pre-existing unstaged files: AGENTS.md; NativeRtcSession.kt (post-bind targetRotation workaround); ActiveCall.kt (user UI edits plus VIDEO_PROBE tip); CallVideoLayout.kt; CallVideoLayoutTest.kt. They are excluded from AR commits. Tests/builds include this combined working tree.
+Expected AR changes pending commit: CURRENT_TASK.md, HANDOFF.md, AR_FRAMEWORK.md, ArCoreBackend.kt, new ar/render files, CameraTextureMappingTest.kt, ArCameraRenderSmoke.kt, RtcSmokeInstrumentation.kt.
 
 ## Completed
-- 646e07a: normalize CameraX SurfaceTexture camera rotation/mirror before WebRTC frame metadata; retain texture crop and balanced references.
-- b430cfd: record route time before signaling IO; wake exchange for new candidates; keep restart adoption in fast polling; reduce native receiving/backup path detection waits while retaining ALL/P2P/TURN candidates.
-- 6048a1e: a route change comes back at the smallest step so the first key frame is small; the picture gap is measured from decoded frames.
-- 03318f8: the seed cooldown compared against Long.MIN_VALUE and overflowed, swallowing every seed; fast stats now cover any pair change.
-- a6c233b: seed a quarter of the previous route's rate, capped at 1 Mbps, once per handover; three expected native messages no longer log as errors.
-- 8fdd056: crediting a recovered route moved to the media-stats collector so signaling IO cannot starve it.
-- 29e619e: iceUnwritableTimeMs 1500 -> 750 over two checks (measured: it was the whole selection delay); restart reasons logged; local candidate origins read from stats.
-- f841b62: an estimate that has not warmed up on a new route no longer suspends video.
-- 21e9837: handover measurement, and a route change restores the ceiling the previous route held.
-- 6d2d0a3: video suspension always ends: sustained starvation before pausing, post-route settle window, bounded probe that fails only on measured failure, capped retry backoff, and no probe capture cap once quality changes are rejected.
-- e4499d0: dedicated reliable ordered AR DataChannel id 2, explicit ready/join/joined/leave/ended lifecycle, session/result correlation, bounded ingress/backpressure, GL controller adapter, per-call cleanup and failure isolation.
+- Previous AR framework: history/depth/plane resolution, anchors and versioned protocol.
+- e4499d0: reliable ordered AR DataChannel id 2; ready/join/joined/leave/ended, bounded traffic, endpoint cleanup and RTC failure isolation.
+- Current milestone: affine raw CPU-image texture mapping, exact current-texture gate, GPU draw and thread/EGL checks.
+- Existing camera orientation and handover commits remain in history; latest baseline 4440862. Previous handover measurements and remaining promotion interruption are recorded in commit 2d90d49.
 
 ## Verified
-- 155 JVM tests: zero failures/errors/skips.
-- :app:assembleDebug, :app:assembleDebugAndroidTest, :app:lintDebug PASS.
-- Attached Android cameraTransform instrumentation PASS (real Matrix, no physical camera orientation assertion).
-- Attached Android arChannel instrumentation PASS: two actual PeerConnections/SCTP/DTLS; synthetic field endpoint; create/result/clear/leave/ended; malformed-message AR shutdown releases endpoint and camera-state still sends.
-- Attached Android default RTC smoke PASS: actual camera, ICE, encode/decode, sender ceilings, ICE restart/rollback and resource release. Local loopback only, no TURN.
-- Task diffs reviewed; staged text verified UTF-8 without BOM. No credentials or private media added.
-- Latest debug and AndroidTest APK installed successfully.
+- 159 JVM tests: zero failures/errors/skips (including 3 new mapping/gate tests).
+- :app:assembleDebug, :app:assembleDebugAndroidTest and :app:lintDebug PASS, including rerun after adding backend EGL-context validation.
+- Attached device arCameraRender instrumentation PASS: synthetic four-color OES texture, real EGL/shader drawing and pixel corner orientation. No actual ARCore camera involved. Test ran before the final backend-only EGL guard; render code/test unchanged.
+- Debug and test APKs installed for that device test.
+- Initial sandbox Gradle run failed on network permission; approved outside-sandbox rerun passed.
+- Diff review and UTF-8 validation performed before commit; no sensitive payloads/media added.
 
 ## Not Yet Verified
-- Two-device Show Me front/back upright image and mirror text across all display orientations.
-- Wi-Fi/5G handover interruption duration, weak Wi-Fi, real TURN UDP/TLS fallback, relay-to-P2P migration and probe power cost.
-- Real ARCore capture/anchors/depth/texture mapping, AR video encoding/overlay rendering, remote displayed-frame timestamp mapping and AR UI.
+Actual ARCore texture FOV/alignment, anchors/depth, camera lease handover, EGL recreation and foreground/background behavior. Two-device AR video, displayed-frame identity, spatial clicks and overlays. Physical Show Me rotation and Wi-Fi/cellular/TURN handovers remain separate device acceptance items.
 
 ## Known Issues / Blockers
-- Existing default JAVA_HOME points to Java 8; use Android Studio jbr for builds.
-- Handover changes remove specific waits but do not establish measured seamless recovery. Existing 30-second signaling retry budget remains.
-- AR control integration is callable through NativeRtcSession.arCollaboration, but no AR UI or camera startup is enabled yet. Never supply a latest-time hint as the displayed AR frame identity.
-- AR malformed/over-budget traffic closes AR for the rest of this call, preserving RTC. Outstanding marker requests are bounded to 16; leave/rejoin clears them without automatic command replay.
-- Initial AR test compile used nonexistent FRAME_NOT_FOUND; corrected to FRAME_MISSING and reran all checks successfully.
+No build blocker. Default JAVA_HOME is Java 8; use Android Studio jbr. AR UI/camera startup remains disabled. The OES texture is mutable and must not be handed directly to an asynchronous encoder. Historical frames cannot render a camera texture after its next native update. Output dimensions should preserve CPU-image aspect ratio.
 
 ## Decisions
-- Preserve independent camera tracks and renderer mirror policy; no CPU pixel copies.
-- Keep native ICE ALL rather than forcing relay-only and discarding working direct routes. Short-lived TURN remains configured from call setup.
-- New AR transport owns an explicitly attached field endpoint; failure/hangup closes it on its GL dispatcher before peer/EGL teardown. That dispatcher must stay alive until close completes. Camera-lease close must not block waiting for the RTC dispatcher.
-- AR ready is an offer, not remote permission to start a camera; guide must explicitly join and receive acknowledgement.
+- Map from IMAGE_NORMALIZED, without baking in display VIEW crop/rotation; downstream display geometry remains explicit.
+- Use existing WebRTC GlRectDrawer and zero CPU camera pixel copies; readPixels exists only in instrumentation.
+- Reject stale/missing texture references rather than using a latest timestamp. Remote spatial clicks still require exact displayed-frame identity.
+- Media owner must keep GL/EGL alive until endpoint/controller/renderer cleanup completes. Camera lease close must not wait synchronously for RTC dispatcher.
+- Preserve independent tracks, P2P/TURN fallback and all unrelated edits.
 
 ## Next Action
-1. Measure two-phone handover with the installed APK on both ends and compare actual last/first media frame and audio gaps. Inspect RTC_NETWORK_CHANGED, RTC_ROUTE_RECOVERED and RTC_SELECTED_CANDIDATE; no private addresses/SDP in reports.
-2. Read docs/architecture/AR_FRAMEWORK.md, ArCoreBackend.kt and ArControllerEndpoint before implementing AR camera ownership and GPU frame delivery. Establish exact AR texture-to-displayed-video reference mapping before exposing spatial clicks.
-3. Preserve unstaged user work; create a new CURRENT_TASK.md for the next atomic milestone.
+Implement exclusive camera lease integration and bounded reference-counted RGB framebuffer delivery into WebRTC. Read AR_FRAMEWORK.md, ArCoreBackend.renderCamera, ArCameraRenderer, ArControllerEndpoint and NativeRtcSession camera lifecycle first. ARCore OES must be copied on GPU before next Session.update; retained RGB buffers cannot be recycled until downstream release. Establish source-to-encoded-to-displayed identity before enabling spatial clicks. Add actual ARCore capture/lifecycle device tests when the media owner exists.
 
 ## Done When
-These checkpoints are reviewable with passing available checks; physical handover and complete AR product acceptance remain explicitly outstanding.
+This atomic render milestone is committed with passing available checks. Full AR product acceptance still requires camera/media ownership, frame identity, UI and real two-device annotation verification.
 
 ## Relevant Commands
-From android with JAVA_HOME=C:/Program Files/Android/Android Studio/jbr:
+From android, JAVA_HOME=C:/Program Files/Android/Android Studio/jbr:
 ./gradlew.bat :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug
-adb shell am instrument -w -e cameraTransform true com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
+adb shell am instrument -w -e arCameraRender true com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
 adb shell am instrument -w -e arChannel true com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
-adb shell am instrument -w com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
 
 ## Latest Commits
+4440862 feat: say why a handover seeded nothing
+2d90d49 docs: record the handover measurements and what remains
 e4499d0 feat: connect AR collaboration control channel
-b430cfd fix: reduce ICE handover detection and signaling waits
-646e07a fix: normalize concurrent camera texture orientation
-
-## Active Fix
-User reproduced permanent AUDIO_ONLY after Wi-Fi/5G then back to Wi-Fi. Policy has no recovery probe and samples old RTCP fractionLost repeatedly. Implement bounded primary-video probe plus fresh report handling. Device logs show relay path changes, so TURN presence alone did not prevent the failure. Preserve all existing unstaged changes.

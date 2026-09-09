@@ -1,19 +1,22 @@
 # Current Task
 
 ## Task
-Reduce the Wi-Fi to cellular handover interruption and the time the picture stays degraded after it.
+Render the exact ARCore camera frame on the GPU in CPU-image coordinates.
 
 ## Why
-A handover froze the picture for a perceived four to five seconds and then took tens of seconds to look right again. Measurement showed four separate causes, none of them the ICE switch itself.
+The historical pose pipeline exists, but no camera texture mapping or rendering adapter exists.
 
 ## Scope
-ICE recovery timers and restart decisions, congestion control re-seeding, the video quality ladder after a route change, handover instrumentation, native log hygiene. Preserve existing unstaged UI/AGENTS/camera work.
+AR backend, new AR render classes, related JVM/device tests, AR architecture and handoff documents. Preserve all five pre-existing modified files.
+
+## Planned Changes
+Capture IMAGE_NORMALIZED to TEXTURE_NORMALIZED mapping with each source frame; reject stale texture references; draw OES into a caller-owned framebuffer without CPU readback.
 
 ## Acceptance Criteria
-A handover reports a byte gap and a picture gap of the same order; no ICE restart follows a switch that recovered on its own; the re-seeded estimate does not overshoot into the audio reserve; the picture climbs back to the ceiling the previous route held.
+Only the current successfully captured frame can render. Update/pause/close invalidate it. Crop and vertical orientation are explicit and tested. GPU draw works with a synthetic OES texture. No remote spatial clicks enabled before end-to-end frame identity exists.
 
 ## Validation
-Measured on the attached device across seven real handovers. Byte gap 2172 -> 1638 ms; picture gap, once measured separately, equals the byte gap rather than exceeding it; no spurious restarts or bandwidth-mode oscillation in the last two captures. 155 JVM tests, assembleDebug and lintDebug PASS.
+159 JVM tests PASS; Debug/AndroidTest builds and lint PASS. Attached-device synthetic OES GPU corner test PASS. Actual ARCore and remote frame identity remain unverified. Checkpoint commit pending.
 
 ## State
-DONE for the first switch. A second, smaller interruption remains when ICE promotes the cellular relay pair to a direct pair several seconds later.
+DONE

@@ -26,6 +26,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
     private var orientationPreview = false
     private var cameraTransform = false
     private var arChannel = false
+    private var arCameraRender = false
     private var audio = false
     private var repetitions = 1
     override fun onCreate(arguments: Bundle?) {
@@ -36,6 +37,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
         orientationPreview = arguments?.getString("orientationPreview") == "true"
         cameraTransform = arguments?.getString("cameraTransform") == "true"
         arChannel = arguments?.getString("arChannel") == "true"
+        arCameraRender = arguments?.getString("arCameraRender") == "true"
         audio = arguments?.getString("audio") == "true"
         repetitions = arguments?.getString("repeat")?.toIntOrNull()?.coerceIn(1, 3) ?: 1
         start()
@@ -44,6 +46,12 @@ class RtcSmokeInstrumentation : Instrumentation() {
     override fun onStart() {
         val output = Bundle()
         try {
+            if (arCameraRender) {
+                ArCameraRenderSmoke.run()
+                output.putString("stream", "PASS: synthetic OES camera GPU rendering and CPU-image corner orientation; no ARCore camera validation\n")
+                finish(Activity.RESULT_OK, output)
+                return
+            }
             if (arChannel) {
                 ArChannelSmoke.run(targetContext)
                 output.putString("stream", "PASS: paired native AR data channels, join/create/result/clear/leave/ended and isolated cleanup; synthetic field only\n")
