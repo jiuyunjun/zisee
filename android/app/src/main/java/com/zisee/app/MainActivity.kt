@@ -1,10 +1,16 @@
 package com.zisee.app
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -35,6 +41,20 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         opened.value = InviteLink.token(intent?.dataString)
         setContent {
+            // Android 13+ gates notifications behind a runtime grant; without it a
+            // woken process cannot show the incoming-call notification (CALL_DELIVERY.md §18).
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val notifications = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission()
+                ) { }
+                LaunchedEffect(Unit) {
+                    if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.POST_NOTIFICATIONS)
+                        != PackageManager.PERMISSION_GRANTED
+                    ) {
+                        notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }
+            }
             val identity by viewModel.identity.collectAsStateWithLifecycle()
             val save by viewModel.save.collectAsStateWithLifecycle()
             val connection by viewModel.connection.collectAsStateWithLifecycle()

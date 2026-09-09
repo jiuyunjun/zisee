@@ -23,7 +23,12 @@ func (s *Server) contacts(w http.ResponseWriter, r *http.Request) {
 		contacts, err = store.ListContacts(r.Context(), session.IdentityID)
 		value = map[string]any{"contacts": contacts}
 	case "POST":
-		value, err = store.CallContact(r.Context(), session.IdentityID, r.PathValue("peerId"))
+		var created call.Call
+		created, err = store.CallContact(r.Context(), session.IdentityID, r.PathValue("peerId"))
+		if err == nil {
+			s.wake(created)
+		}
+		value = created
 	case "DELETE":
 		err = store.RemoveContact(r.Context(), session.IdentityID, r.PathValue("peerId"))
 		value = map[string]bool{"removed": true}

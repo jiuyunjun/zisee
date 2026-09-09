@@ -12,6 +12,12 @@ Firestore 没有唯一约束、外键、CHECK 与级联删除，这些不变量�
 
 设置 `CLOUDFLARE_TURN_TOKEN_ID` 与 `CLOUDFLARE_TURN_API_TOKEN` 后，`GET /v1/ice` 按会话签发短期（1 小时）中转凭据。API token 只留在服务端，客户端只拿到会自行过期的 username/credential。两个变量缺一即拒绝启动；都不设时端点只返回 STUN，通话退化为仅直连而不是失败。
 
+## 来电推送（FCM）
+
+设置 `FCM_PROJECT_ID`（生产为 `zisee-app`，与 `FIRESTORE_PROJECT_ID` 同项目，Firebase 已在其上启用）后，通话进入 `ringing` 时服务端向被叫方每台注册了 push token 的设备发一条高优先级 data-only FCM，用于在 App 退后台或进程被回收时唤醒来电处理（见 `docs/architecture/CALL_DELIVERY.md` Phase 1）。凭据走 Application Default Credentials，与 Firestore 一致：本地 `gcloud auth application-default login`，Cloud Run 用默认服务账号（需 `roles/firebasecloudmessaging.admin`）。不设该变量时只通过已有实时连接响铃，不唤醒后台设备。
+
+设备通过 `PUT /v1/devices/{deviceId}/push-token`（`{"provider":"fcm","token":"…"}`）上报 token，`deviceId` 必须等于会话认证的设备。FCM 返回 `UNREGISTERED` 时服务端清除该 token。
+
 ## 运行
 
 需要 Go 1.26.6+。用 PostgreSQL 时设置 DATABASE_URL 并先执行迁移：

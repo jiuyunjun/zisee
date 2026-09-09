@@ -29,7 +29,12 @@ func (s *Server) callRequest(w http.ResponseWriter, r *http.Request) {
 		if !decode(w, r, &req) {
 			return
 		}
-		value, err = store.RedeemInvite(r.Context(), session.IdentityID, req.Token)
+		var redeemed call.Call
+		redeemed, err = store.RedeemInvite(r.Context(), session.IdentityID, req.Token)
+		if err == nil {
+			s.wake(redeemed)
+		}
+		value = redeemed
 	case "GET /v1/calls/current":
 		value, err = store.CurrentCall(r.Context(), session.IdentityID)
 	case "GET /v1/calls/{callId}":

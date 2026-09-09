@@ -16,6 +16,7 @@ import (
 	"zisee/server/internal/httpapi"
 	"zisee/server/internal/identity"
 	"zisee/server/internal/postgres"
+	"zisee/server/internal/push"
 	"zisee/server/internal/turn"
 )
 
@@ -67,6 +68,22 @@ func run(logger *slog.Logger) error {
 		logger.Info("turn_enabled")
 	} else {
 		logger.Info("turn_not_configured")
+	}
+	if cfg.PushConfigured() {
+		registry, ok := store.(push.Registry)
+		if !ok {
+			logger.Error("push_registry_unavailable")
+			return errors.New("push configured but store has no device registry")
+		}
+		sender, err := push.NewFCM(root, cfg.FCMProjectID)
+		if err != nil {
+			logger.Error("push_init_failed")
+			return err
+		}
+		api = api.WithPush(push.NewGateway(sender, registry, logger))
+		logger.Info("push_enabled")
+	} else {
+		logger.Info("push_not_configured")
 	}
 	server := &http.Server{
 		Addr: cfg.Address, Handler: api.Handler(),

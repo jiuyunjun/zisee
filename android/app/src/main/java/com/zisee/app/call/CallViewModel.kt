@@ -93,8 +93,12 @@ class CallViewModel(application: Application, private val container: AppContaine
                 var token: AccessSession? = null
                 var transport: MediaSignaling? = null
                 try {
-                    token = api.login(owner, container.deviceSigner(owner.identityId))
+                    val signer = container.deviceSigner(owner.identityId)
+                    token = api.login(owner, signer)
                     val calls = CallApi(api)
+                    // Keep the backend Device Registry current so a push can reach
+                    // this device after the process is gone (CALL_DELIVERY.md §24).
+                    runCatching { container.pushTokenManager.sync(calls, token, signer.prepare().deviceId) }
                     transport = MediaSignaling(api, container.httpClient, token)
                     transport.ready()
                     var refreshAt = 0L

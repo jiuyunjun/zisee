@@ -15,6 +15,7 @@ import (
 	"github.com/coder/websocket"
 	"zisee/server/internal/call"
 	"zisee/server/internal/identity"
+	"zisee/server/internal/push"
 	"zisee/server/internal/turn"
 )
 
@@ -26,6 +27,7 @@ type Server struct {
 	store    identity.Store
 	log      *slog.Logger
 	turn     *turn.Client
+	push     *push.Gateway
 	sockets  chan struct{}
 	mu       sync.Mutex
 	window   time.Time
@@ -39,6 +41,10 @@ func New(store identity.Store, log *slog.Logger) *Server {
 // WithTurn enables issuing Cloudflare TURN credentials. Without it the ICE
 // endpoint serves STUN only and calls still connect directly.
 func (s *Server) WithTurn(client *turn.Client) *Server { s.turn = client; return s }
+
+// WithPush enables high-priority FCM wake-ups for ringing calls. Without it the
+// server rings only clients that already hold a live connection.
+func (s *Server) WithPush(gateway *push.Gateway) *Server { s.push = gateway; return s }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -68,6 +74,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/identity", s.me)
 	mux.HandleFunc("PATCH /v1/identity", s.rename)
 	mux.HandleFunc("DELETE /v1/auth/session", s.logout)
+	mux.HandleFunc("PUT /v1/devices/{deviceId}/push-token", s.devicePushToken)
 	mux.HandleFunc("GET /v1/signaling", s.signaling)
 	mux.HandleFunc("GET /v1/ice", s.ice)
 	for _, pattern := range []string{"POST /v1/invites", "POST /v1/invites/redeem", "GET /v1/calls/current", "GET /v1/calls/{callId}", "POST /v1/calls/{callId}/actions"} {

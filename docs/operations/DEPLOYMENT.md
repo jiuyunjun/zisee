@@ -56,6 +56,8 @@ gcloud run deploy zisee-api --source=server --region=asia-northeast1 --project=z
 
 运行时服务账户 `1042746204547-compute@developer.gserviceaccount.com` 需要 `roles/secretmanager.secretAccessor`（在两个密钥上）与项目级 `roles/datastore.user`；首次部署因缺前者失败，补授后成功。
 
+来电推送：加 `--set-env-vars=...,FCM_PROJECT_ID=zisee-app`（Firebase 已在 `zisee-app` 上启用，与 Firestore 同项目），并给运行时服务账户 `1042746204547-compute@developer.gserviceaccount.com` 授 `roles/firebasecloudmessaging.admin`、启用 `fcm.googleapis.com`。凭据走 ADC，无需密钥文件。不设 `FCM_PROJECT_ID` 时推送关闭（日志 `push_not_configured`）。Android 端 `android/app/google-services.json` 也指向 `zisee-app`。
+
 复合索引由 `server/firestore.indexes.json` 声明，创建命令：
 
 ```powershell

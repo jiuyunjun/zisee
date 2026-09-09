@@ -15,9 +15,13 @@ type Config struct {
 	// Empty when no TURN key is provisioned: the API then serves STUN only and
 	// calls fall back to direct connections instead of failing to start.
 	TurnKeyID, TurnAPIToken string
+	// Empty when no FCM project is configured: the API then rings only clients
+	// with a live connection and never wakes a backgrounded device.
+	FCMProjectID string
 }
 
 func (c Config) TurnConfigured() bool { return c.TurnKeyID != "" && c.TurnAPIToken != "" }
+func (c Config) PushConfigured() bool { return c.FCMProjectID != "" }
 func (c Config) UsesFirestore() bool  { return c.FirestoreProject != "" }
 
 func Load() (Config, error) {
@@ -43,9 +47,13 @@ func Load() (Config, error) {
 	if (keyID == "") != (token == "") {
 		return Config{}, errors.New("CLOUDFLARE_TURN_TOKEN_ID and CLOUDFLARE_TURN_API_TOKEN must be set together")
 	}
+	fcmProject := strings.TrimSpace(os.Getenv("FCM_PROJECT_ID"))
+	if strings.ContainsAny(fcmProject, "/?#%") {
+		return Config{}, errors.New("FCM_PROJECT_ID must be a plain identifier")
+	}
 	return Config{
 		Address: net.JoinHostPort("", port), DatabaseURL: database,
 		FirestoreProject: project, FirestoreDatabase: strings.TrimSpace(os.Getenv("FIRESTORE_DATABASE_ID")),
-		TurnKeyID: keyID, TurnAPIToken: token,
+		TurnKeyID: keyID, TurnAPIToken: token, FCMProjectID: fcmProject,
 	}, nil
 }

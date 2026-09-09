@@ -51,4 +51,10 @@ class CallApi(private val api: BackendApi) {
         api.request("POST", "v1/invites/redeem", JSONObject().put("token", invite), session.token))
     suspend fun action(session: AccessSession, id: String, action: String): RemoteCall = RemoteCall.parse(
         api.request("POST", "v1/calls/$id/actions", JSONObject().put("action", action), session.token))
+
+    /** Registers this device's wake-up token. 204 No Content on success. */
+    suspend fun registerPushToken(session: AccessSession, deviceId: String, provider: String, token: String) {
+        api.request("PUT", "v1/devices/$deviceId/push-token",
+            JSONObject().put("provider", provider).put("token", token), session.token)
+    }
 }

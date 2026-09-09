@@ -43,4 +43,8 @@
     <string name="loading_identity">正在读取本地身份…</string>
     <string name="identity_read_error">暂时无法读取本地身份。请重试；现有数据不会被自动重置。</string>
     <string name="identity_write_error">未能保存姓名，请重试。</string>
+    <string name="calls_incoming_channel">来电</string>
+    <string name="calls_incoming_channel_desc">有人向你发起咫尺通话时响铃提醒。</string>
+    <string name="calls_incoming_text">邀请你视频通话</string>
+    <string name="calls_incoming_unknown_caller">咫尺来电</string>
 </resources>

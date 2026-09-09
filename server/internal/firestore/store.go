@@ -88,9 +88,12 @@ type identityDoc struct {
 }
 
 type deviceDoc struct {
-	IdentityID string    `firestore:"identityId"`
-	PublicKey  []byte    `firestore:"publicKey"`
-	RevokedAt  time.Time `firestore:"revokedAt"`
+	IdentityID         string    `firestore:"identityId"`
+	PublicKey          []byte    `firestore:"publicKey"`
+	RevokedAt          time.Time `firestore:"revokedAt"`
+	PushProvider       string    `firestore:"pushProvider,omitempty"`
+	PushToken          string    `firestore:"pushToken,omitempty"`
+	PushTokenUpdatedAt time.Time `firestore:"pushTokenUpdatedAt,omitempty"`
 }
 
 type challengeDoc struct {

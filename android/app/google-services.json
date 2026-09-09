@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "1042746204547",
+    "project_id": "zisee-app",
+    "storage_bucket": "zisee-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1042746204547:android:8500f6278322017bca16b6",
+        "android_client_info": {
+          "package_name": "com.zisee.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD38bORGv_57YT-NIaxAcgF718I2huEL40"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1042746204547:android:dea8b1f92a284540ca16b6",
+        "android_client_info": {
+          "package_name": "com.zisee.app.debug"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD38bORGv_57YT-NIaxAcgF718I2huEL40"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

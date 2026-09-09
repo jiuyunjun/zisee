@@ -31,6 +31,9 @@ var restartSchema string
 //go:embed 006_contacts.sql
 var contactsSchema string
 
+//go:embed 007_push.sql
+var pushSchema string
+
 type Store struct{ pool *pgxpool.Pool }
 
 func Open(ctx context.Context, url string) (*Store, error) {
@@ -130,6 +133,17 @@ func (s *Store) Migrate(ctx context.Context) error {
 			return err
 		}
 		if _, err = tx.Exec(ctx, `INSERT INTO schema_migrations(version) VALUES(6)`); err != nil {
+			return err
+		}
+	}
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=7)`).Scan(&applied); err != nil {
+		return err
+	}
+	if !applied {
+		if _, err = tx.Exec(ctx, pushSchema); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO schema_migrations(version) VALUES(7)`); err != nil {
 			return err
 		}
 	}
