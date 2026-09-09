@@ -1571,6 +1571,14 @@ Rebuild Only as Last Resort
 - 当前 ADB 无设备连接，尚未执行两台真机专项验收，不能宣称音频 <500 ms、视频 <1 s 或 >99% 成功率。
 - 全量 Network Snapshot、完整恢复状态机、精确音频包/视频帧间断指标和最终 PeerConnection rebuild 仍待实现；当前默认网络监听及既有通话状态机继续工作。
 - 现有信令恢复仍有 30 秒已建立通话重试预算，超时会终止通话；尚未实现健康媒体下无限保留会话。TURN→P2P 自动回迁尚待当前 SDK 真机验证。
+
+## 2026-09-09 切网等待修正
+
+- 网络回调立即记录恢复窗口起点并唤醒循环；WSS 重连及 call.sync 的耗时计入窗口，避免恢复信令后再等一次 750 ms。
+- 新 ICE 候选到达即唤醒交换，包括蜂窝和晚到的 TURN 候选。媒体 restart 已请求但尚未被服务器代次确认时，不再将旧 SDP 的完成状态视作新协商完成；代次恢复期间保持 100 ms 轮询。
+- 原生 receiving timeout 为 1000 ms，稳定连接和备用候选探测间隔为 500 ms；失去写入响应至少 1500 ms 且达到 3 次检查才标记 unwritable。缩短旧 Wi-Fi 路径阻挡已验证备用路径的时间。参数对应 [当前 WebRTC RTCConfiguration](https://webrtc.googlesource.com/src/+/refs/heads/main/sdk/android/api/org/webrtc/PeerConnection.java)。
+- 仍使用 ALL、持续候选收集与蜂窝待机，TURN 从建立通话起参与 ICE。没有强制 relay-only，避免剔除可用直连或为回迁再做一次 restart；可用 relay 与蜂窝直连由原生 ICE 选择。
+- 上述数值是检测/调度参数，不是已测得的端到端恢复时间。需两台真机分别测试断开 Wi-Fi、弱 Wi-Fi 离开覆盖、无蜂窝、TURN UDP/TLS 和双向切换，记录最后/首个媒体帧、候选对切换、音频缺口和 relay 使用时长。探测更频繁的功耗影响也未实测。
 - 项目已有 `CellularStandby` 主动蜂窝网络请求；本次没有新增双网络保持能力，也没有绑定整个进程到蜂窝网络。
 
 真机按第 30 节场景执行，记录双方 `RTC_NETWORK_CHANGED`、`RTC_SELECTED_CANDIDATE`、`RTC_ROUTE_RECOVERED`、`RTC_ICE_STATE`、`RTC_ICE_RESTART` 日志，并与修改前同设备、同网络的实际音视频中断对比。只有设备数据通过后才勾选第 37 节验收项。

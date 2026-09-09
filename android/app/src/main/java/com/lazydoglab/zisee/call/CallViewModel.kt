@@ -251,6 +251,7 @@ class CallViewModel(application: Application, private val container: AppContaine
             var ended = false
             var mediaObservation: Job? = null
             var cameraObservation: Job? = null
+            var candidateObservation: Job? = null
             var networkWatcher: com.lazydoglab.zisee.rtc.DefaultNetworkWatcher? = null
             var networkObservation: Job? = null
             var machine = CallState()
@@ -277,6 +278,8 @@ class CallViewModel(application: Application, private val container: AppContaine
                 var socketNetworkVersion = network.version.value
                 networkObservation = launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
                     network.version.drop(1).collectLatest {
+                        recovery.networkChanged(it, System.nanoTime() / 1_000_000)
+                        routeWake.trySend(Unit)
                         rtc?.networkChanged()
                         kotlinx.coroutines.delay(com.lazydoglab.zisee.rtc.WebRtcRecoveryConfig().networkDebounceMs)
                         socket?.networkChanged()
@@ -335,6 +338,9 @@ class CallViewModel(application: Application, private val container: AppContaine
                                     val media = NativeRtcSession(getApplication<Application>(), container.logger)
                                     rtc = media // Assign before start so partial initialization is always released.
                                     media.start(ice)
+                                    candidateObservation = launch {
+                                        media.localCandidateRevision.collect { routeWake.trySend(Unit) }
+                                    }
                                     recovery.initialNegotiationStarted(System.nanoTime() / 1_000_000, network.version.value)
                                     mediaObservation = launch {
                                         combine(media.mediaStats, media.iceState, media.audioDeviceState) { stats, iceState, device -> Triple(stats, iceState, device) }
@@ -382,7 +388,8 @@ class CallViewModel(application: Application, private val container: AppContaine
                             }
                         }
                         signalingRetry.recovered()
-                        withTimeoutOrNull(if (recovery.checkingRoute || machine.phase in setOf(CallPhase.CONNECTING, CallPhase.RECONNECTING)) 100L else 1_000L) {
+                        withTimeoutOrNull(if (recovery.checkingRoute || negotiator?.complete == false ||
+                            machine.phase in setOf(CallPhase.CONNECTING, CallPhase.RECONNECTING)) 100L else 1_000L) {
                             routeWake.receive()
                         }
                     } catch (error: IOException) {
@@ -415,6 +422,7 @@ class CallViewModel(application: Application, private val container: AppContaine
                 withContext(NonCancellable) {
                     cameraJob?.cancelAndJoin(); cameraJob = null
                     cameraObservation?.cancelAndJoin()
+                    candidateObservation?.cancelAndJoin()
                     networkObservation?.cancelAndJoin()
                     networkWatcher?.close()
                     mediaObservation?.cancelAndJoin()

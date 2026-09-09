@@ -96,6 +96,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var acceptingCandidates = true
     private var localUfrags = emptySet<String>()
     private var configuration: PeerConnection.RTCConfiguration? = null
+    private val candidateRevision = MutableStateFlow(0L)
+    val localCandidateRevision = candidateRevision.asStateFlow()
     private val networksReady = CompletableDeferred<Unit>()
     private val networkObserver = NetworkMonitor.NetworkObserver { type ->
         if (type != NetworkChangeDetector.ConnectionType.CONNECTION_NONE) {
@@ -201,7 +203,11 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             iceTransportsType = PeerConnection.IceTransportsType.ALL
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
             candidateNetworkPolicy = PeerConnection.CandidateNetworkPolicy.ALL
-            iceBackupCandidatePairPingInterval = 1_000
+            iceBackupCandidatePairPingInterval = recoveryConfig.backupPingIntervalMs
+            iceConnectionReceivingTimeout = recoveryConfig.receivingTimeoutMs
+            stableWritableConnectionPingIntervalMs = recoveryConfig.stablePingIntervalMs
+            iceUnwritableTimeMs = recoveryConfig.unwritableTimeoutMs
+            iceUnwritableMinChecks = recoveryConfig.unwritableMinChecks
         }
         configuration = config
         peer = requireNotNull(factory).createPeerConnection(config, observer) ?: throw IOException("peer_creation_failed")
@@ -594,7 +600,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                     localFeed?.setMirrored(false)
                     presentationMode = CameraMode.BACK_ONLY
                     qualityPolicy = VideoQualityPolicy(false)
-                    showMe.value = ShowMeState(CameraMode.BACK_ONLY, "当前使用单摄展示，可点「看我」切回前摄")
+                    showMe.value = ShowMeState(CameraMode.BACK_ONLY, "当前使用单摄现场，可点「翻转」切回前摄")
                 }
             }
             appliedQuality = null
@@ -766,6 +772,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 // The current protocol is append-only and bounded. Rotate generation instead of
                 // crashing or rewriting an acknowledged prefix when networks keep appearing.
                 if (candidates.size >= 32) candidateOverflow = true else candidates.add(candidate)
+                candidateRevision.value++
             }
         } }
         override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>) = Unit

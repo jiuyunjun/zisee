@@ -7,12 +7,12 @@ IN_PROGRESS
 Finish camera fix; reduce Wi-Fi to cellular handover stalls (temporary TURN allowed); continue AR integration.
 
 ## Active Task
-Normalize concurrent camera textures before WebRTC frame rotation.
+Reduce handover waits; then continue AR control-channel integration.
 
 ## Last Good Checkpoint
-commit: d201cb3
-build: NOT_RUN
-tests: NOT_RUN
+commit: 646e07a
+build: PASS
+tests: PASS
 
 ## Current Work
 Investigated DualCameraCapture: SurfaceTexture camera transform is retained while TransformationInfo.rotationDegrees is applied again. Match WebRTC Camera2Session normalization.
@@ -36,7 +36,7 @@ JAVA_HOME points to Java 8; use Android Studio jbr for Gradle. Prior post-bind t
 Normalize GPU texture coordinates without pixel copies; preserve CameraX per-frame rotation and renderer mirror policy. Respect hasCameraTransform for processed surfaces.
 
 ## Next Action
-Commit camera fix, then investigate handover policy and implement next AR integration milestone.
+Implement handover timing/candidate wake fixes and validate; then implement AR session/control channel wiring.
 
 ## Done When
 Fix committed with passing available checks and explicit device validation limits.
@@ -46,3 +46,9 @@ From android with JAVA_HOME=C:/Program Files/Android/Android Studio/jbr: ./gradl
 
 ## Latest Commits
 d201cb3 feat: add ARCore spatial collaboration framework
+
+## Latest Checkpoint
+646e07a fixes camera texture orientation. Android matrix regression PASS. Existing unrelated UI and NativeRtcSession post-bind workaround still unstaged.
+
+## Handover Checkpoint
+Implemented callback-time recovery timing, candidate wake, pending generation fast polling, and native backup/receiving timeouts. 130 JVM tests, assembleDebug and lintDebug PASS. Real network recovery timing remains unverified. Next: AR control channel with scoped session admission, bounded queues, owner-thread dispatch and lifecycle cleanup.

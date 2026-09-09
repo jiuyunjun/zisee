@@ -21,7 +21,8 @@ class MediaNegotiator(
     private var sentCandidates = 0
     private var receivedCandidates = 0
     private var descriptionSentMs: Long? = null
-    val complete: Boolean get() = sent && cursor > 0
+    private var restartPending = false
+    val complete: Boolean get() = !restartPending && sent && cursor > 0
 
     /** Returns true when adopting a generation, so the recovery owner consumes the triggering route. */
     suspend fun exchange(socket: MediaSignaling, callId: String, restart: Boolean): Boolean {
@@ -35,14 +36,16 @@ class MediaNegotiator(
                 media.prepareIceGeneration(ice)
                 if (caller) media.restartIce()
                 generation = remoteGeneration
+                restartPending = false
                 local = null; sent = false; cursor = 0; sentCandidates = 0; receivedCandidates = 0
                 descriptionSentMs = null
                 messageId = UUID.randomUUID().toString()
                 return true // Poll with a fresh cursor before reading the new offer/answer.
             }
             val candidatesBeforeSend = media.localCandidates()
-            if (restart || CandidateExchangePolicy.needsFreshGeneration(descriptionSentMs,
+            if (restart || restartPending || CandidateExchangePolicy.needsFreshGeneration(descriptionSentMs,
                     System.nanoTime() / 1_000_000, sentCandidates, candidatesBeforeSend.size, media.candidateCapacityExceeded())) {
+                restartPending = true
                 socket.exchange("media.restart", payload())
                 return false // Adoption happens from an authoritative snapshot, including after a lost ACK.
             }

@@ -4,6 +4,30 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class IceRecoveryPolicyTest {
+    @Test fun `signaling reconnect does not start a second route grace window`() {
+        val policy = IceRecoveryPolicy(0)
+        policy.networkChanged(1, 6_000)
+        // The first evaluate can only run after reconnecting WSS and reading call.sync.
+        assertEquals(IceRecoveryPolicy.Action.RESTART,
+            policy.evaluate(IceState.CONNECTED, 1, true, 7_000))
+    }
+
+    @Test fun `duplicate notifications preserve elapsed route grace`() {
+        val policy = IceRecoveryPolicy(0)
+        policy.networkChanged(1, 6_000)
+        policy.networkChanged(1, 6_700)
+        assertEquals(IceRecoveryPolicy.Action.RESTART,
+            policy.evaluate(IceState.CONNECTED, 1, true, 6_750))
+    }
+
+    @Test fun `media received during signaling reconnect proves natural recovery`() {
+        val policy = IceRecoveryPolicy(0)
+        policy.networkChanged(1, 6_000)
+        policy.evaluate(IceState.CONNECTED, 1, true, 6_600, sample(6_400, 100))
+        assertEquals(IceRecoveryPolicy.Action.WAIT,
+            policy.evaluate(IceState.CONNECTED, 1, true, 6_900, sample(6_800, 140)))
+        assertEquals(900L, policy.lastNaturalRecoveryMs)
+    }
     @Test fun `new route bypasses cooldown after debounce`() {
         val policy = IceRecoveryPolicy(0)
         policy.generationStarted(1_000, 0)

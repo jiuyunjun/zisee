@@ -1,26 +1,25 @@
 # Current Task
 
 ## Task
-Fix Show Me front/back rotation at the CameraX-to-WebRTC texture boundary.
+Reduce network handover recovery latency without replacing PeerConnection or forcing permanent relay.
 
 ## Why
-User screenshot shows both local concurrent cameras sideways while the peer is upright.
+User reports several-second Wi-Fi to 5G freeze. Existing detection window starts only after signaling requests return, and candidates/restart adoption can wait for a polling sleep.
 
 ## Scope
-DualCameraCapture, texture transform helper/tests, orientation documentation, task records.
-Existing AGENTS.md, NativeRtcSession and UI/test edits belong to previous work; preserve and do not stage them.
+ICE recovery policy/config, NativeRtcSession, CallViewModel, MediaNegotiator, tests and network design.
 
 ## Planned Changes
-Undo camera SurfaceTexture sensor rotation and front mirror before publishing frame rotation, following WebRTC Camera2Session. Respect hasCameraTransform and wait for transformation metadata.
+Record route time at callback; wake signaling on candidates; fast polling during generation adoption; shorter native receiving/backup checks so healthy TURN or cellular paths can win. Keep ALL candidates and short-lived TURN credentials.
 
 ## Acceptance Criteria
-One sensor rotation application, unmirrored outbound media, unchanged dimensions/timestamps, balanced buffer references; build and relevant tests pass.
+Stalled signaling does not postpone route grace; no cooldown bypass without a new route; completed media state cannot hide a pending restart; candidates wake exchange; tests/build/lint pass.
 
 ## Validation
-Android unit tests, debug APK build, lint, Android matrix regression test if feasible. Real two-peer visual validation remains required.
+JVM policy regressions, native config compilation and existing smoke where feasible. Actual Wi-Fi/5G interruption duration requires two-peer device measurement.
 
 ## State
 DONE
 
 ## Result
-127 JVM tests passed; debug and test APK builds and lint passed. Android Matrix smoke passed on attached device. Updated debug APK installed. Real camera/two-peer visual validation still pending.
+130 JVM tests passed. assembleDebug and lintDebug passed. Device network interruption timing is not yet measured; no claim of seamless handover.

@@ -13,4 +13,10 @@ data class WebRtcRecoveryConfig(
     val maxRestarts: Int = 3,
     val handoverStatsIntervalMs: Long = 200,
     val handoverStatsDurationMs: Long = 5_000,
+    // Detect an unusable selected path early enough for an already checked cellular/TURN pair.
+    val receivingTimeoutMs: Int = 1_000,
+    val backupPingIntervalMs: Int = 500,
+    val stablePingIntervalMs: Int = 500,
+    val unwritableTimeoutMs: Int = 1_500,
+    val unwritableMinChecks: Int = 3,
 )

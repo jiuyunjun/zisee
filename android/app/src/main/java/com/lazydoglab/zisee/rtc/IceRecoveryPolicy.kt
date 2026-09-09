@@ -29,8 +29,8 @@ class IceRecoveryPolicy(startedMs: Long, private val config: WebRtcRecoveryConfi
     }
 
     enum class Action { WAIT, RESTART, FAIL }
-    fun evaluate(state: IceState, networkVersion: Long, negotiationComplete: Boolean, nowMs: Long,
-                 stats: MediaStats = MediaStats()): Action {
+    /** Called when the route changes, before any signaling IO can delay evaluation. */
+    fun networkChanged(networkVersion: Long, nowMs: Long) {
         if (networkVersion != seenNetwork) {
             seenNetwork = networkVersion; networkChangedMs = nowMs
             if (outageMs == null) outageMs = nowMs
@@ -38,6 +38,11 @@ class IceRecoveryPolicy(startedMs: Long, private val config: WebRtcRecoveryConfi
             routeSample = null
             lastNaturalRecoveryMs = null
         }
+    }
+
+    fun evaluate(state: IceState, networkVersion: Long, negotiationComplete: Boolean, nowMs: Long,
+                 stats: MediaStats = MediaStats()): Action {
+        networkChanged(networkVersion, nowMs)
         if (state == IceState.CLOSED) return Action.FAIL
         // Require two samples collected AFTER detection. A stale CONNECTED state or bytes
         // accumulated on the old route must not suppress recovery of a dead path.
