@@ -421,9 +421,11 @@ private fun videoAspect(feed: com.zisee.app.rtc.VideoFeed?): Float {
 
 /** A camera's slot in the layout: its picture when it is live, its dark placeholder when not. */
 @Composable
-private fun VideoTile(feed: com.zisee.app.rtc.VideoFeed?, live: Boolean, modifier: Modifier, overlay: Boolean) {
-    if (live && feed != null) VideoRenderer(feed, modifier, overlay)
-    else Box(if (overlay) modifier.background(CallInk) else modifier)
+private fun VideoTile(feed: com.zisee.app.rtc.VideoFeed?, live: Boolean, modifier: Modifier, thumbnail: Boolean) {
+    if (live && feed != null) VideoRenderer(feed, modifier)
+    // The main tile already sits on the call surface's own background; only a thumbnail needs its
+    // placeholder painted, so the base surface is not redrawn under a live full-screen picture.
+    else Box(if (thumbnail) modifier.background(CallInk) else modifier)
 }
 
 @Composable

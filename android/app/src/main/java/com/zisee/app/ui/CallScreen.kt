@@ -66,9 +66,8 @@ import com.zisee.app.call.CallViewModel
 import com.zisee.app.call.Contact
 import com.zisee.app.call.state.CallPhase
 import com.zisee.app.invite.InviteLink
+import com.zisee.app.rtc.TextureViewRenderer
 import com.zisee.app.rtc.VideoFeed
-import org.webrtc.RendererCommon
-import org.webrtc.SurfaceViewRenderer
 
 /**
  * Main.dc.html / Invite.dc.html / InviteOpen.dc.html: everything the call feature shows before the
@@ -367,22 +366,18 @@ private fun LinkField(value: String, onValueChange: (String) -> Unit, placeholde
 }
 
 @Composable
-internal fun VideoRenderer(feed: VideoFeed, modifier: Modifier, overlay: Boolean = false) {
+internal fun VideoRenderer(feed: VideoFeed, modifier: Modifier) {
     androidx.compose.runtime.key(feed) {
         val geometry by feed.geometry.collectAsState()
-        // The call surface supplies the bars. An opaque full-size background here would paint over
-        // earlier thumbnail SurfaceView holes when the later remote renderer is the main view.
+        // The call surface supplies the bars behind a tile smaller than its box.
         BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
-            // Compose imposes EXACT dimensions. FIT alone cannot shrink a SurfaceView inside those
-            // constraints, so size the surface to the upright frame and leave bars in its parent.
+            // Compose imposes EXACT dimensions, so size the surface to the upright frame itself
+            // and leave bars to its parent, rather than distorting a stretched-to-fit surface.
             val aspect = geometry?.aspectRatio ?: (maxWidth.value / maxHeight.value.coerceAtLeast(1f))
             val width = minOf(maxWidth, maxHeight * aspect)
             val height = minOf(maxHeight, width / aspect.coerceAtLeast(0.001f))
-            AndroidView(factory = { context -> SurfaceViewRenderer(context).also {
-                it.setZOrderMediaOverlay(overlay)
-                feed.attach(it); it.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
-            } }, update = { it.setZOrderMediaOverlay(overlay) }, modifier = Modifier.size(width, height),
-                onRelease = { feed.detach(it) })
+            AndroidView(factory = { context -> TextureViewRenderer(context).also { feed.attach(it) } },
+                modifier = Modifier.size(width, height), onRelease = { feed.detach(it) })
         }
     }
 }

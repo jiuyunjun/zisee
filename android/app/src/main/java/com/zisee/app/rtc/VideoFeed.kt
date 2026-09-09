@@ -1,7 +1,6 @@
 package com.zisee.app.rtc
 
 import org.webrtc.EglBase
-import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoFrame
 import org.webrtc.VideoSink
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -9,7 +8,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /** Serializes frame delivery with detach; renderers are explicitly released before parent EGL. */
 class VideoFeed(val eglContext: EglBase.Context, mirrored: Boolean, private val onFirstFrame: () -> Unit = {}) : VideoSink {
-    private val renderers = mutableSetOf<SurfaceViewRenderer>()
+    private val renderers = mutableSetOf<TextureViewRenderer>()
     private var closed = false
     private var receivedFrame = false
     private var mirror = mirrored
@@ -19,18 +18,13 @@ class VideoFeed(val eglContext: EglBase.Context, mirrored: Boolean, private val 
         mirror = value
         renderers.forEach { it.setMirror(value) }
     }
-    @Synchronized fun attach(renderer: SurfaceViewRenderer) {
+    @Synchronized fun attach(renderer: TextureViewRenderer) {
         if (closed) return
-        renderer.init(eglContext, null)
+        renderer.init(eglContext)
         renderer.setMirror(mirror)
-        // Keep the display surface stable across capture/decoder size changes. Resizing the
-        // SurfaceHolder can discard its displayed buffer and briefly flash on some devices.
-        // The existing EGL buffer holds the last image during capture reconfiguration;
-        // the next frame replaces it without retaining a camera texture or adding latency.
-        renderer.setEnableHardwareScaler(false)
         renderers.add(renderer)
     }
-    @Synchronized fun detach(renderer: SurfaceViewRenderer) {
+    @Synchronized fun detach(renderer: TextureViewRenderer) {
         if (renderers.remove(renderer)) renderer.release()
     }
     @Synchronized override fun onFrame(frame: VideoFrame) {
