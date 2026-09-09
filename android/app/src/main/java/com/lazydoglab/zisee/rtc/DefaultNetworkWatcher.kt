@@ -14,6 +14,9 @@ class DefaultNetworkWatcher(context: Context, private val logger: AppLogger) {
     private val manager = context.getSystemService(ConnectivityManager::class.java)
     private val changes = MutableStateFlow(0L)
     val version = changes.asStateFlow()
+    private val warnings = MutableStateFlow(0L)
+    /** Advances when the system says the current route is about to go, before it does. */
+    val losing = warnings.asStateFlow()
     private var active: Network? = null
     private var initialized = false
     private var registered = false
@@ -21,6 +24,20 @@ class DefaultNetworkWatcher(context: Context, private val logger: AppLogger) {
     private var validated = true
     private val callback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) = changed(network)
+        /**
+         * The system grants a departing network a linger period, and this fires at the start of it.
+         * It is the only warning that arrives while the old path still carries media, which is the
+         * one moment anything can be prepared rather than repaired. It is not guaranteed: switching
+         * Wi-Fi off outright removes the network with no linger at all, so this only ever shortens
+         * a handover, never replaces detecting one.
+         */
+        override fun onLosing(network: Network, maxMsToLive: Int) {
+            synchronized(this@DefaultNetworkWatcher) {
+                if (closed || !initialized || network != active) return
+                warnings.value++
+                logger.info(AppEvent.RTC_NETWORK_LOSING, "ms=$maxMsToLive")
+            }
+        }
         override fun onLost(network: Network) {
             synchronized(this@DefaultNetworkWatcher) { if (active == network) changed(null) }
         }

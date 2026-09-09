@@ -268,6 +268,7 @@ class CallViewModel(application: Application, private val container: AppContaine
             var candidateObservation: Job? = null
             var networkWatcher: com.lazydoglab.zisee.rtc.DefaultNetworkWatcher? = null
             var networkObservation: Job? = null
+            var losingObservation: Job? = null
             var machine = CallState()
             fun event(event: CallEvent) {
                 machine.session?.let { machine = CallReducer.reduce(machine, it.callId, event) }
@@ -290,6 +291,10 @@ class CallViewModel(application: Application, private val container: AppContaine
                 val signalingRetry = com.lazydoglab.zisee.signaling.SignalingRetryPolicy()
                 val routeWake = Channel<Unit>(Channel.CONFLATED)
                 var socketNetworkVersion = network.version.value
+                // Preparing for the break is worth nothing once it has happened, so this does not
+                // share the route collector: that one debounces and performs signaling IO. It
+                // collects forever, so like every other observer here it is cancelled explicitly.
+                losingObservation = launch { network.losing.drop(1).collect { rtc?.routeLosing() } }
                 networkObservation = launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
                     network.version.drop(1).collectLatest {
                         recovery.networkChanged(it, System.nanoTime() / 1_000_000)
@@ -451,6 +456,7 @@ class CallViewModel(application: Application, private val container: AppContaine
                     cameraObservation?.cancelAndJoin()
                     candidateObservation?.cancelAndJoin()
                     networkObservation?.cancelAndJoin()
+                    losingObservation?.cancelAndJoin()
                     networkWatcher?.close()
                     mediaObservation?.cancelAndJoin()
                     val media = rtc; rtc = null

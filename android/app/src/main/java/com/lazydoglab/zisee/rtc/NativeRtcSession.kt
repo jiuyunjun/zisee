@@ -136,6 +136,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var lastSeedMs: Long? = null
     private var lastRouteChangeMs: Long? = null
     private var previousInboundBytes: Long? = null
+    private var backupReady: Boolean? = null
     private var sustainedSendKbps = 0L
     private val videoSending = mutableMapOf<RtpSender, Pair<Boolean, Boolean>>()
     private val powerManager = context.getSystemService(PowerManager::class.java)
@@ -494,6 +495,20 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             val origin = "${entry.members["networkType"] ?: "unknown"}/${entry.members["candidateType"] ?: "unknown"}"
             if (gatheredOrigins.add(origin)) logger.info(AppEvent.RTC_LOCAL_CANDIDATE, origin)
         }
+        // A handover is only ever fast when the other interface already has a candidate that can
+        // reach the peer. A measured switch with one took a second; the same switch with nothing but
+        // that interface's host candidate took ten, because everything had to be gathered after the
+        // break. Report which of the two this call is set up for, and when that changes.
+        if (result.sampledAtMs - connectedSinceMs >= BACKUP_CHECK_MS) {
+            val backup = gatheredOrigins.filter { !it.startsWith("${result.networkType}/") }
+            val ready = backup.any { it.endsWith("/srflx") || it.endsWith("/relay") }
+            if (ready != backupReady) {
+                backupReady = ready
+                val reachable = backup.firstOrNull { it.endsWith("/srflx") || it.endsWith("/relay") }
+                logger.info(AppEvent.RTC_BACKUP_PATH, if (ready) "ready=$reachable"
+                    else "missing on=${result.networkType} origins=${gatheredOrigins.size}")
+            }
+        }
         val stalled = previousInboundBytes?.let { result.inboundBytes <= it } == true
         previousInboundBytes = result.inboundBytes
         val route = "${result.candidateType}/${result.remoteCandidateType} ${result.networkType}/${result.protocol}"
@@ -766,6 +781,22 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             setDescription(SessionDescription(SessionDescription.Type.ROLLBACK, ""), local = true)
         }
     }
+    /**
+     * The current route is about to go. Nothing can be migrated yet, but the picture can be made
+     * cheap to resume before the break rather than after it: the first frame on whatever comes next
+     * has to be a key frame, and this is the last moment it can be shrunk while the old path is
+     * still carrying media.
+     */
+    suspend fun routeLosing() = withContext(dispatcher) {
+        if (released || iceState.value != IceState.CONNECTED) return@withContext
+        val nowMs = System.nanoTime() / 1_000_000
+        handoverStatsUntilMs = nowMs + recoveryConfig.handoverStatsDurationMs
+        qualityPolicy.routeChanged(nowMs)
+        applyQuality(qualityPolicy.current, changeCapture = false)
+        statsWake.trySend(Unit)
+        Unit
+    }
+
     suspend fun networkChanged() = withContext(dispatcher) {
         val nowMs = System.nanoTime() / 1_000_000
         handoverStatsUntilMs = nowMs + recoveryConfig.handoverStatsDurationMs
@@ -917,6 +948,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         private const val SETTLED_MS = 3_000L
         // How long after the network changed a new pair still belongs to that handover.
         private const val HANDOVER_WINDOW_MS = 5_000L
+        // Long enough for reflexive and relay gathering to have finished on every interface.
+        private const val BACKUP_CHECK_MS = 8_000L
         private const val MIN_SEED_BPS = 300_000L
         private const val MAX_SEED_BPS = 1_000_000L
         private const val SEED_COOLDOWN_MS = 10_000L
