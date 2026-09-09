@@ -28,6 +28,7 @@ class AudioBandwidthPolicy {
         healthySince = null; starvedSince = null
         recentLoss = null; lossSeenMs = null
         // The estimate restarts from a low probe rate on the new path; it is not evidence yet.
+        // Only the estimate is discounted here, never measured audio loss.
         ignoreEstimateUntilMs = nowMs + SETTLE_MS
         retryDelayMs = FIRST_RETRY_MS
         retryAtMs = nowMs + 1_000
@@ -99,7 +100,10 @@ class AudioBandwidthPolicy {
         const val RESERVE_KBPS = 96L
         const val PROBE_FLOOR_KBPS = 80L
         const val STARVE_MS = 2_000L
-        const val SETTLE_MS = 2_000L
+        // A measured handover spent nine seconds audio-only while the new path's estimate was
+        // simply cold: it climbed to full HD moments later. Measured audio loss still pauses video
+        // inside this window; an estimate that has not warmed up does not.
+        const val SETTLE_MS = 8_000L
         const val PROBE_MS = 4_000L
         const val FIRST_RETRY_MS = 3_000L
         const val MAX_RETRY_MS = 30_000L

@@ -47,6 +47,16 @@ class HandoverReportTest {
         assertNull(report.qualityRestored(VideoQuality.FULL_HD, 7_000))
     }
 
+    @Test fun `a handover that never cost any quality reports no restoration`() {
+        val report = HandoverReport()
+        report.pairChanged(1_000, VideoQuality.HD)
+        assertNull(report.qualityRestored(VideoQuality.HD, 1_200))
+        assertNull(report.qualityRestored(VideoQuality.HD, 5_000))
+        // Only a real drop arms it.
+        assertNull(report.qualityRestored(VideoQuality.ECONOMY, 6_000))
+        assertEquals(6_000L, report.qualityRestored(VideoQuality.HD, 7_000))
+    }
+
     @Test fun `an unavailable sample neither ends a handover nor moves the gap`() {
         val report = HandoverReport()
         report.sample(sample(800, 900))

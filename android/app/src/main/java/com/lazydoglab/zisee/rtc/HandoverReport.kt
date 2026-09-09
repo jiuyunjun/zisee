@@ -26,6 +26,7 @@ class HandoverReport {
     private var restarted = false
     private var restoreFrom: VideoQuality? = null
     private var restoreStartMs: Long? = null
+    private var restoreDropped = false
 
     /** The operating system replaced the default route. */
     fun routeChanged(nowMs: Long, quality: VideoQuality?) = begin(nowMs, quality)
@@ -39,7 +40,9 @@ class HandoverReport {
     fun restartRequested() { restarted = true }
 
     private fun begin(nowMs: Long, quality: VideoQuality?) {
-        if (restoreStartMs == null && quality != null) { restoreFrom = quality; restoreStartMs = nowMs }
+        if (restoreStartMs == null && quality != null) {
+            restoreFrom = quality; restoreStartMs = nowMs; restoreDropped = false
+        }
         if (startedMs != null) return // One handover at a time; a pair change during it belongs to it.
         startedMs = nowMs
         // The freeze starts at the last frame that arrived, not at the moment anything noticed.
@@ -70,13 +73,18 @@ class HandoverReport {
 
     /**
      * Milliseconds from the handover until the picture is back at the quality the previous route
-     * was holding, reported once. A restore that never happens simply never reports.
+     * was holding, reported once, and only when it actually fell below it first. A restore that
+     * never happens simply never reports.
      */
     fun qualityRestored(quality: VideoQuality?, nowMs: Long): Long? {
         val since = restoreStartMs ?: return null
         val target = restoreFrom ?: return null
-        if (quality == null || quality.ordinal < target.ordinal) return null
-        restoreFrom = null; restoreStartMs = null
+        if (quality == null || quality.ordinal < target.ordinal) {
+            if (quality != null) restoreDropped = true
+            return null
+        }
+        if (!restoreDropped) return null
+        restoreFrom = null; restoreStartMs = null; restoreDropped = false
         return nowMs - since
     }
 }
