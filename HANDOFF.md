@@ -10,7 +10,7 @@ Finish camera fix; reduce Wi-Fi to cellular handover stalls (temporary TURN allo
 Reduce handover waits; then continue AR control-channel integration.
 
 ## Last Good Checkpoint
-commit: 646e07a
+commit: b430cfd
 build: PASS
 tests: PASS
 
@@ -52,3 +52,9 @@ d201cb3 feat: add ARCore spatial collaboration framework
 
 ## Handover Checkpoint
 Implemented callback-time recovery timing, candidate wake, pending generation fast polling, and native backup/receiving timeouts. 130 JVM tests, assembleDebug and lintDebug PASS. Real network recovery timing remains unverified. Next: AR control channel with scoped session admission, bounded queues, owner-thread dispatch and lifecycle cleanup.
+
+## Active AR Work
+Start AR control transport milestone. b430cfd is the handover checkpoint; 130 JVM tests/build/lint PASS. Preserve pre-existing UI/AGENTS/NativeRtcSession workaround edits (ActiveCall also changed externally during this run). No AR capture UI is being enabled without trustworthy frame correspondence.
+
+## AR Validation Checkpoint
+AR collaboration transport/controller dispatch implemented; 139 JVM tests PASS, debug/test builds and lint PASS. Attached Android: paired AR channel smoke (including malformed-message shutdown) PASS; existing camera/ICE/codec/restart/release smoke PASS. Updated APK installed. Initial AR test compile failed for incorrect enum FRAME_NOT_FOUND; corrected to FRAME_MISSING and all checks rerun. Next: review/stage task files only and commit. UI, AR camera handoff, rendering and exact remote frame references remain future work.

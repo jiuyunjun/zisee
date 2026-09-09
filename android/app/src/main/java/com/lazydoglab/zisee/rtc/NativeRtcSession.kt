@@ -87,6 +87,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         scope.launch { if (!released) dualCapture?.setTargetRotation(rotation) }
     }
     private var control: DataChannel? = null
+    var arCollaboration: com.lazydoglab.zisee.ar.collaboration.ArDataChannel? = null; private set
     private var changingCamera = false
     var localFeed: VideoFeed? = null; private set
     var remoteFeed: VideoFeed? = null; private set
@@ -261,6 +262,12 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             backSender = requireNotNull(peer).addTrack(it, listOf("zisee"))
         }
         control = requireNotNull(peer).createDataChannel("camera-state", DataChannel.Init().apply { negotiated = true; id = 0 })
+        arCollaboration = com.lazydoglab.zisee.ar.collaboration.ArDataChannel(
+            requireNotNull(requireNotNull(peer).createDataChannel(
+                com.lazydoglab.zisee.ar.annotation.ArProtocol.CHANNEL_LABEL,
+                DataChannel.Init().apply { negotiated = true; id = 2; ordered = true },
+            )), dispatcher,
+        ) { logger.error(AppEvent.AR_CHANNEL_FAILED) }
         control?.registerObserver(object : DataChannel.Observer {
             override fun onBufferedAmountChange(previousAmount: Long) = Unit
             override fun onStateChange() { scope.launch {
@@ -687,6 +694,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             fun cleanup(block: () -> Unit) { try { block() } catch (error: Exception) { logger.error(AppEvent.RTC_RELEASE_FAILED) } }
             try { dualCapture?.close() } catch (error: Exception) { logger.error(AppEvent.RTC_RELEASE_FAILED) }
             dualCapture = null
+            try { arCollaboration?.close() } catch (error: Exception) { logger.error(AppEvent.AR_CHANNEL_FAILED) }
+            arCollaboration = null
             cleanup { control?.unregisterObserver(); control?.close(); control?.dispose() }; control = null
             cleanup { deviceOrientation.close() }
             cleanup { cellularStandby.close() }

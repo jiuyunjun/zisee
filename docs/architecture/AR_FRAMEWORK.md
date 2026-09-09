@@ -1,7 +1,7 @@
 ---
 title: AR Assist 框架与接入契约
 document_id: ARCH-AR-001
-version: 1.0.0
+version: 1.1.0
 status: Active
 created: 2026-09-09
 updated: 2026-09-09
@@ -15,7 +15,7 @@ owners:
 
 实现 `ARCHITECTURE.md` 第 18–22 节的现场端框架：ARCore 能力/安装检查、独占相机会话、历史帧缓存、历史深度/平面投影、本地锚点及生命周期、Pin/Arrow/Circle 类型、归一化坐标变换和版本化协议。框架通过接口接入媒体层，不在普通通话期间启动 AR。
 
-本次不包含通话 AR 按钮、叠加渲染、AR 视频编码、双端 DataChannel 接线、M3 屏幕共享或完整的 M5 视频时间戳传递。因此 M4/M5 的产品退出条件仍未达到。`design/ARAssist.dc.html` 与 `docs/product/DESIGN.md` 的 scanning/tracking lost/标记工具栏属于后续 UI 接入。
+现已增加双端 DataChannel 接线与 controller 线程适配。不包含通话 AR 按钮、叠加渲染、AR 视频编码、M3 屏幕共享或完整的 M5 视频时间戳传递。因此 M4/M5 的产品退出条件仍未达到。`design/ARAssist.dc.html` 与 `docs/product/DESIGN.md` 的 scanning/tracking lost/标记工具栏属于后续 UI 接入。
 
 ## 模块
 
@@ -29,6 +29,9 @@ owners:
 | ar/spatial/SpatialResolver.kt | 历史深度优先；无深度时求交历史平面多边形 |
 | ar/annotation/VideoPointMapper.kt | 逆变换 FIT/FILL、旋转和显示镜像，拒绝黑边触摸 |
 | ar/annotation/ArProtocol.kt | zisee-ar-v1 消息编解码及输入限制 |
+| ar/collaboration/ArCollaboration.kt | 双端加入/退出、会话隔离、标记请求与结果关联 |
+| ar/collaboration/ArDataChannel.kt | 有界收发、限流、串行处理与通道释放 |
+| ar/collaboration/ArFieldEndpoint.kt | 将命令与最终关闭调度到 controller 的 GL owner |
 
 ## 会话与相机资源
 
@@ -74,11 +77,15 @@ VideoPoint 表示未旋转 CPU 图像的归一化坐标。VideoPointMapper 先�
 
 默认同时最多 32 个 Anchor；每会话最多接受 512 个不同 marker ID，删除后仍记住 ID，阻止重放 create 复活已删除标记。达预算后需退出重新进入 AR。pause 清空标记但不清除这些 ID；旧 sessionId 不得用于新 controller。
 
-计划使用独立、可靠、有序的 `zisee-ar-v1` DataChannel；本次仅 codec，不改变现有 camera-state channel 或服务端 signaling。仅已鉴权的当前通话对端、已协商 AR 的现场 UUID 能收发；ready 不是授权机制。
+使用独立、可靠、有序的 `zisee-ar-v1` DataChannel，双方在原 PeerConnection 上预协商 id=2；camera-state 保留 id=0，不改服务端 signaling。仅当前已鉴权通话对端、已加入 AR 的现场 UUID 能收发；ready 不是授权机制，也不会远程启动摄像头。
 
 | type | 字段（另含 v=1、sessionId） | 含义 |
 | --- | --- | --- |
 | ready | depth: boolean | 现场公布会话和能力 |
+| join | 无 | 指导方显式选择加入已公布的会话 |
+| joined | 无 | 现场确认指导方加入；收到前不允许发标记 |
+| leave | 无 | 指导方退出；现场停止接受该指导方命令 |
+| ended | 无 | 现场退出；指导方清除会话及待处理请求 |
 | create | id, kind, track, timestampNs, x, y | PIN/ARROW/CIRCLE 请求，track 必须 video_back |
 | remove | id | 删除标记 |
 | clear | 无 | 清空会话标记 |
@@ -86,7 +93,26 @@ VideoPoint 表示未旋转 CPU 图像的归一化坐标。VideoPointMapper 先�
 
 UUID 用标准小写字符串；timestampNs 用正整数十进制**字符串**保留 Long 精度；x/y 为有限 [0,1] 数值。上限 4096 字节、严格 UTF-8，拒绝未知字段/类型、非法范围、未来协议版本、嵌套对象和尾随数据。不传世界坐标/深度，不持久化数据。
 
-接入时 create 映射到 controller.createMarker 并返回 result；remove/clear 映射对应操作，可靠有序通道避免重排。DUPLICATE_ID 不能视作新建成功。外部层还需缓冲区背压、命令速率限制、挂断丢弃、AR ready/退出协商与 2D 降级 UI；当前没有把这些网络行为伪装成可用。
+create 经 ArControllerEndpoint 调度到 GL owner 的 controller.createMarker 并返回 result；remove/clear 映射对应操作。DUPLICATE_ID 不能视作新建成功。UI、相机交接、渲染及视频帧引用接入仍待完成。
+
+## 控制通道接入约束（1.1）
+
+1. `NativeRtcSession.arCollaboration` 随通话创建，初始无 AR Session。现场端必须在 GL owner 成功 start controller 后构造 ArControllerEndpoint，并主动 attach。成功后 endpoint 的关闭责任转移给通道；attach 返回 false 时仍由调用方关闭。
+2. UI 可观察只读 state.remote 决定是否展示加入邀请；用户选择后调用 join，只有匹配 joined 才允许 create/remove/clear。换现场 UUID、ended、leave 或挂断清空加入和待处理状态；重复 ready 不覆盖当前会话。每次重新进入 AR 必须新 UUID。
+3. 命令执行和本地 API 通过 mutex 串行，controller 操作及 close 在指定 GL dispatcher 上运行。挂断先取消接收、关闭 endpoint，然后释放 AR DataChannel，再释放 PeerConnection/EGL。未来媒体 owner 必须保持 GL dispatcher 存活到 close 完成，退出后才恢复普通相机；不得在租约 close 中阻塞等待 RTC dispatcher。
+4. 接收队列最多 32 条，每条最多 4096 字节；30 条突发/每秒 30 条令牌预算。出站缓冲最多 64 KiB；create 最多 16 个等待回执，未匹配的 result 不修改状态。发送失败返回 false；已执行 create 的回执无法发送时关闭 AR，避免无期限处于无法确认的状态。指导方遇到长时间无回执可 leave 后重新加入，不自动重放 create。
+5. 非法消息、版本不支持、接收溢出或限流关闭 AR 通道并清理本地 endpoint，记录固定 AR_CHANNEL_FAILED；不调用 RTC fail、不关闭音视频。此时本次通话不能重开该 AR 通道。会话重放记录限制为 64 个 UUID，达到预算也结束 AR。
+6. create 仍要求可信的实际展示帧引用。没有实现帧同步前不得向普通视频点击传入“最新 AR 时间戳”；缺帧必须返回 FRAME_MISSING。此接线不代表双端空间标注产品已可用。
+
+原生通道回归测试（无需相机，使用合成现场 endpoint）：
+
+```powershell
+adb shell am instrument -w -e arChannel true com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
+```
+
+2026-09-09 已连接 Android 设备验证：两个真实 PeerConnection 的 SCTP/DTLS 通道完成 ready/join/joined/create/result/clear/leave/ended；畸形消息关闭 AR 并释放合成 endpoint 后，camera-state 仍能发送消息。另通过原有 native camera/ICE/编解码/restart/释放回环测试。此测试不验证真实 ARCore、空间锚点或两台设备的视频帧同步。
+
+当前 139 项 JVM 测试、Debug/AndroidTest APK 构建和 lint 通过。新增 JVM 用例覆盖握手、旧会话/回执重放、背压、队列预算、资源所有权，以及真实跨线程 dispatcher 的历史帧请求/anchor 清理。开发中曾因测试误用 FRAME_NOT_FOUND 枚举编译失败，已改用现有 FRAME_MISSING 并重跑通过。
 
 ## SDK 与兼容性
 
