@@ -248,6 +248,20 @@ class CallViewModel(application: Application, private val container: AppContaine
             var socket: MediaSignaling? = null
             var remote: RemoteCall? = incoming
             val calls = CallApi(api)
+            // Relay credentials are issued for an hour, but they were re-fetched for every ICE
+            // restart, over the network that had just died. A restart is exactly when that request
+            // cannot succeed and exactly when losing the relay hurts most, so it is fetched once
+            // and reused, and a failed refresh falls back to what is still valid.
+            var iceCache: Pair<List<com.lazydoglab.zisee.call.IceServerConfig>, Long>? = null
+            suspend fun iceServers(current: AccessSession): List<com.lazydoglab.zisee.call.IceServerConfig> {
+                val nowMs = System.nanoTime() / 1_000_000
+                iceCache?.let { (servers, atMs) -> if (nowMs - atMs < ICE_REUSE_MS) return servers }
+                return try {
+                    calls.iceServers(current).also { iceCache = it to nowMs }
+                } catch (error: IOException) {
+                    iceCache?.first ?: throw error
+                }
+            }
             var ended = false
             var mediaObservation: Job? = null
             var cameraObservation: Job? = null
@@ -334,7 +348,7 @@ class CallViewModel(application: Application, private val container: AppContaine
                                     mutable.update { it.copy(status = "正在建立音视频连接…") }
                                     // Relay credentials are short lived, so fetch them per call rather
                                     // than at login. Losing TURN degrades to direct-only, never fatal here.
-                                    val ice = calls.iceServers(session)
+                                    val ice = iceServers(session)
                                     val media = NativeRtcSession(getApplication<Application>(), container.logger)
                                     rtc = media // Assign before start so partial initialization is always released.
                                     media.start(ice)
@@ -371,7 +385,7 @@ class CallViewModel(application: Application, private val container: AppContaine
                                     }
                                     mutable.update { it.copy(local = media.localFeed, remote = media.remoteFeed, localBack = media.localBackFeed, remoteBack = media.remoteBackFeed) }
                                     negotiator = com.lazydoglab.zisee.signaling.MediaNegotiator(media, current.caller == identity.identityId) {
-                                        calls.iceServers(requireNotNull(session))
+                                        iceServers(requireNotNull(session))
                                     }
                                 }
                                 val negotiation = requireNotNull(negotiator)
@@ -463,6 +477,8 @@ class CallViewModel(application: Application, private val container: AppContaine
     }
 
     companion object {
+        // The server issues these for an hour; half of that leaves room for a slow call to renew.
+        private const val ICE_REUSE_MS = 30 * 60 * 1000L
         fun factory(context: Context, container: AppContainer) = object : ViewModelProvider.Factory {
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
                 require(modelClass.isAssignableFrom(CallViewModel::class.java))
