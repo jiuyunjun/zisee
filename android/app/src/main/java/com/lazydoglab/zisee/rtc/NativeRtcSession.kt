@@ -129,6 +129,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private val handover = HandoverReport()
     private val gatheredOrigins = mutableSetOf<String>()
     private var connectedSinceMs = Long.MAX_VALUE
+    private var lastSeedMs = Long.MIN_VALUE
     private var sustainedSendKbps = 0L
     private val videoSending = mutableMapOf<RtpSender, Pair<Boolean, Boolean>>()
     private val powerManager = context.getSystemService(PowerManager::class.java)
@@ -494,7 +495,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 audioBandwidth.routeChanged(result.sampledAtMs)
                 qualityPolicy.routeChanged(result.sampledAtMs)
                 handover.pairChanged(result.sampledAtMs, appliedQuality)
-                seedBitrate()
+                seedBitrate(result.sampledAtMs)
             }
             lastCandidate = route; lastSelectedPairId = result.selectedPairId
             // Log pair transitions even when both paths have the same candidate types. Never log IPs or SDP.
@@ -523,13 +524,20 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
 
     /**
      * Congestion control starts over on a new route, and climbing back from its opening estimate
-     * takes far longer than the link needs. Re-seed it with half of what the previous route was
-     * actually carrying, bounded on both sides; everything after that is still libwebrtc's call.
+     * takes far longer than the link needs. Re-seed it, but only just past the slowest part of that
+     * ramp: seeding at half of what Wi-Fi was carrying overshot a fresh cellular uplink, and the
+     * loss that followed cost the audio reserve, the picture and thirty seconds of recovery. A
+     * quarter, capped at one megabit, keeps video alive while libwebrtc measures the new path.
+     *
+     * Once per handover. The pair can change several times while a route settles, and re-seeding on
+     * each of those restarts the estimator underneath a link it was already measuring.
      */
-    private fun seedBitrate() {
+    private fun seedBitrate(nowMs: Long) {
         if (sustainedSendKbps <= 0) return
         if (audioBandwidth.mode == com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.AUDIO_ONLY) return
-        val seed = (sustainedSendKbps * 1_000 / 2).coerceIn(MIN_SEED_BPS, MAX_SEED_BPS).toInt()
+        if (nowMs - lastSeedMs < SEED_COOLDOWN_MS) return
+        val seed = (sustainedSendKbps * 1_000 / 4).coerceIn(MIN_SEED_BPS, MAX_SEED_BPS).toInt()
+        lastSeedMs = nowMs
         if (peer?.setBitrate(null, seed, null) == false) logger.error(AppEvent.RTC_QUALITY_REJECTED)
         else logger.info(AppEvent.RTC_BITRATE_SEEDED, "kbps=${seed / 1_000}")
     }
@@ -881,15 +889,45 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         // ICE promotes its way to the best pair over the first seconds of a call.
         private const val SETTLED_MS = 3_000L
         private const val MIN_SEED_BPS = 300_000L
-        private const val MAX_SEED_BPS = 2_500_000L
+        private const val MAX_SEED_BPS = 1_000_000L
+        private const val SEED_COOLDOWN_MS = 10_000L
         @Volatile private var networksSeen = false
         private var initialized = false
+        private val throttledAt = java.util.concurrent.ConcurrentHashMap<AppEvent, Long>()
+        /** One line per event per five seconds: a burst of these says nothing a single line does not. */
+        private fun throttled(event: AppEvent, logger: AppLogger) {
+            val now = System.nanoTime() / 1_000_000
+            val previous = throttledAt[event]
+            if (previous != null && now - previous < 5_000) return
+            throttledAt[event] = now
+            logger.info(event)
+        }
         @Synchronized private fun initialize(context: Context, logger: AppLogger) {
             if (initialized) return
             PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(context)
                 .setEnableInternalTracer(false)
                 .setInjectableLogger({ message, severity, _ ->
                     if (severity == Logging.Severity.LS_ERROR) {
+                        // Three of these are normal operation reported at error level, and left
+                        // alone they bury the ones that are not. A relay refuses to open a
+                        // permission toward a peer's private address, which is what it should do
+                        // and what every same-LAN peer produces; sending on an interface that has
+                        // just gone away is the handover itself; and the data channel back
+                        // compatibility notice is not a failure at all. They stay visible as
+                        // bounded, throttled facts rather than as errors.
+                        val expected = message.contains("CreatePermission") ||
+                            message.contains("failed with error 101") ||
+                            message.contains("for backwards compatibility")
+                        if (expected) {
+                            when {
+                                message.contains("CreatePermission") ->
+                                    throttled(AppEvent.RTC_TURN_PERMISSION_PRUNED, logger)
+                                message.contains("failed with error 101") ->
+                                    throttled(AppEvent.RTC_ROUTE_UNREACHABLE, logger)
+                            }
+                            if (BuildConfig.DEBUG) Log.e("ZiseeNative", message.take(400))
+                            return@setInjectableLogger
+                        }
                         logger.error(when {
                             message.contains("bind", ignoreCase = true) -> AppEvent.RTC_BIND_FAILED
                             message.contains("socket", ignoreCase = true) -> AppEvent.RTC_SOCKET_FAILED
