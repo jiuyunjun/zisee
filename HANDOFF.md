@@ -1,7 +1,7 @@
 # HANDOFF
 
 ## Status
-READY_FOR_REVIEW
+IN_PROGRESS
 
 ## Objective
 Fix Show Me orientation; reduce Wi-Fi to 5G freezes (TURN fallback allowed); continue AR implementation.
@@ -10,7 +10,7 @@ Fix Show Me orientation; reduce Wi-Fi to 5G freezes (TURN fallback allowed); con
 Completed camera correction, handover scheduling/native ICE tuning, and AR control-channel integration. Next milestone is AR camera/media/rendering and exact displayed-frame identity integration.
 
 ## Last Good Checkpoint
-commit: e4499d0
+commit: 6d2d0a3
 build: PASS
 tests: PASS
 
@@ -18,15 +18,16 @@ tests: PASS
 Implementation and validation complete for these checkpoints. Updated debug APK is installed on the attached Android device. No production service deployment or Git push performed.
 
 ## Repository State
-Expected pre-existing unstaged files: AGENTS.md; NativeRtcSession.kt (only the old post-bind targetRotation workaround); ActiveCall.kt; CallVideoLayout.kt; CallVideoLayoutTest.kt. Preserve these edits; they are excluded from our commits. ActiveCall.kt also changed externally during this run. Builds used the combined working tree, including those pre-existing UI changes. No unexplained task WIP remains.
+Expected pre-existing unstaged files: AGENTS.md; NativeRtcSession.kt (only the old post-bind targetRotation workaround); ActiveCall.kt (user edits plus an uncommitted VIDEO_PROBE tip line); CallVideoLayout.kt; CallVideoLayoutTest.kt. Preserve these edits; they are excluded from our commits. ActiveCall.kt also changed externally during this run. Builds used the combined working tree, including those pre-existing UI changes. No unexplained task WIP remains.
 
 ## Completed
 - 646e07a: normalize CameraX SurfaceTexture camera rotation/mirror before WebRTC frame metadata; retain texture crop and balanced references.
 - b430cfd: record route time before signaling IO; wake exchange for new candidates; keep restart adoption in fast polling; reduce native receiving/backup path detection waits while retaining ALL/P2P/TURN candidates.
+- 6d2d0a3: video suspension always ends: sustained starvation before pausing, post-route settle window, bounded probe that fails only on measured failure, capped retry backoff, and no probe capture cap once quality changes are rejected.
 - e4499d0: dedicated reliable ordered AR DataChannel id 2, explicit ready/join/joined/leave/ended lifecycle, session/result correlation, bounded ingress/backpressure, GL controller adapter, per-call cleanup and failure isolation.
 
 ## Verified
-- 139 JVM tests: zero failures/errors/skips.
+- 143 JVM tests: zero failures/errors/skips.
 - :app:assembleDebug, :app:assembleDebugAndroidTest, :app:lintDebug PASS.
 - Attached Android cameraTransform instrumentation PASS (real Matrix, no physical camera orientation assertion).
 - Attached Android arChannel instrumentation PASS: two actual PeerConnections/SCTP/DTLS; synthetic field endpoint; create/result/clear/leave/ended; malformed-message AR shutdown releases endpoint and camera-state still sends.
@@ -71,3 +72,6 @@ adb shell am instrument -w com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rt
 e4499d0 feat: connect AR collaboration control channel
 b430cfd fix: reduce ICE handover detection and signaling waits
 646e07a fix: normalize concurrent camera texture orientation
+
+## Active Fix
+User reproduced permanent AUDIO_ONLY after Wi-Fi/5G then back to Wi-Fi. Policy has no recovery probe and samples old RTCP fractionLost repeatedly. Implement bounded primary-video probe plus fresh report handling. Device logs show relay path changes, so TURN presence alone did not prevent the failure. Preserve all existing unstaged changes.

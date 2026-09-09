@@ -1,25 +1,19 @@
 # Current Task
 
 ## Task
-Connect AR protocol to a real per-call reliable ordered DataChannel and owner-thread controller adapter.
+Fix video remaining suspended after Wi-Fi/cellular handover.
 
 ## Why
-AR framework currently has only a codec; no transport, session admission, bounded command handling or RTC cleanup integration.
+AudioBandwidthPolicy paused all video on a single collapsed send estimate and could only resume when both a >=250 kbps estimate and a fresh remote report were present. A handover removes exactly that evidence, so the pause outlived the bad network and survived returning to Wi-Fi.
 
 ## Scope
-ar/collaboration, ArProtocol, NativeRtcSession, regression tests, AR architecture and checkpoint records.
-
-## Planned Changes
-Negotiated channel id 2 (camera-state retains id 0); ready/join/joined/leave/ended handshake; explicit local controller attachment and remote opt-in; result correlation; bounded receive queue/rate and send backpressure; GL-dispatched marker commands; cleanup on channel close/hangup.
+Audio bandwidth policy, RTP sender restoration, report freshness, tests and handoff/network docs. Preserve existing unstaged UI/AGENTS/camera workaround.
 
 ## Acceptance Criteria
-Unknown/stale sessions cannot mutate AR; remote ready never starts a camera; commands remain ordered/bounded; send failure never reports success; RTC media survives AR failure. Real paired data channels pass smoke test if feasible.
+Pausing needs sustained measured starvation; a new route ignores the stale estimate and retries quickly; a bounded probe fails only on measured failure and backs off to at most 30 s without ever stopping; a rejected setParameters cannot strand the camera at the probe format; user-disabled camera stays off.
 
 ## Validation
-JVM collaboration/protocol tests, native data-channel smoke, build/lint. Actual AR camera/rendering/frame synchronization remains future integration and must not be advertised as complete.
+143 JVM tests PASS (new: missing evidence, stale reports, route change, probe backoff). :app:assembleDebug and :app:lintDebug PASS. Debug APK installed on the attached device. Two-device handover measurement still outstanding.
 
 ## State
-DONE
-
-## Result
-139 JVM tests, debug/test APK builds and lint PASS. Paired native AR SCTP/DTLS smoke PASS including malformed-payload isolation. Existing native camera/ICE/encode/decode/restart/release smoke PASS. Latest debug APK installed. Real AR capture/rendering/video frame synchronization and Wi-Fi/5G interruption measurement remain unverified.
+DONE (6d2d0a3); pending real two-device handover measurement.
