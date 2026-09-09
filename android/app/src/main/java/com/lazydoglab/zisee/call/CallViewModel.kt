@@ -56,6 +56,8 @@ data class CallUiState(
     val localBack: VideoFeed? = null, val remoteBack: VideoFeed? = null,
     val showMe: com.lazydoglab.zisee.rtc.ShowMeState = com.lazydoglab.zisee.rtc.ShowMeState(),
     val speakerOn: Boolean = true, val showMeHint: Boolean = false,
+    val arState: com.lazydoglab.zisee.ar.session.ArSessionState = com.lazydoglab.zisee.ar.session.ArSessionState.IDLE,
+    val arNotice: String = "",
     val remotePresentation: com.lazydoglab.zisee.rtc.CameraPresentation = com.lazydoglab.zisee.rtc.CameraPresentation(com.lazydoglab.zisee.rtc.CameraMode.FACE, true),
 )
 
@@ -70,6 +72,7 @@ class CallViewModel(application: Application, private val container: AppContaine
     private var foreground = false
     private var idleJob: Job? = null
     private var cameraJob: Job? = null
+    private val arActivation = com.lazydoglab.zisee.ar.session.ArActivationGate()
     private val removals = Channel<String>(4)
     private var showMeHintSeen = true
 
@@ -143,7 +146,7 @@ class CallViewModel(application: Application, private val container: AppContaine
 
     fun setForeground(value: Boolean) { foreground = value; if (!value) { idleJob?.cancel(); stop() } else startIdle() }
     fun close() { stop(); mutable.update { it.copy(visible = false) } }
-    fun stop() { job?.cancel() }
+    fun stop() { arActivation.invalidate(); job?.cancel() }
     fun accept() { commands.trySend("accept") }
     fun reject() { commands.trySend("reject") }
     fun permissionsDenied() { mutable.update { it.copy(notice = "视频通话需要摄像头和麦克风权限，请允许后重试。") } }
@@ -168,6 +171,51 @@ class CallViewModel(application: Application, private val container: AppContaine
         val media = rtc ?: return
         if (cameraJob?.isActive == true) return
         cameraJob = viewModelScope.launch { media.toggleShowMe(preferDual) }
+    }
+
+    fun setArResumed(resumed: Boolean) {
+        arActivation.setResumed(resumed)
+        if (!resumed) stopAr()
+    }
+
+    fun beginArRequest(): Long? {
+        if (!foreground || rtc == null || !state.value.cameraEnabled || cameraJob?.isActive == true) return null
+        return arActivation.begin()
+    }
+
+    fun arNotice(message: String) { mutable.update { it.copy(arNotice = message) } }
+
+    fun startAr(request: Long, rotation: Int, width: Int, height: Int) {
+        val media = rtc ?: return
+        if (!arActivation.consume(request) || !foreground || cameraJob?.isActive == true) return
+        arNotice("")
+        cameraJob = viewModelScope.launch {
+            val started = media.startAr(com.lazydoglab.zisee.ar.session.ArPreparation.READY, rotation, width, height)
+            if (!started && rtc === media) arNotice("AR 未能启动，正在恢复普通摄像头。可稍后重试。")
+        }
+    }
+
+    fun stopAr() {
+        arActivation.invalidate()
+        val media = rtc ?: return
+        viewModelScope.launch {
+            try { media.stopAr() }
+            catch (_: Exception) {
+                container.logger.error(AppEvent.AR_CHANNEL_FAILED)
+                if (rtc === media) arNotice("AR 退出失败，请结束通话后重试。")
+            }
+        }
+    }
+
+    fun updateArGeometry(rotation: Int, width: Int, height: Int) {
+        val media = rtc ?: return
+        viewModelScope.launch {
+            try { media.updateArGeometry(rotation, width, height) }
+            catch (_: Exception) {
+                container.logger.error(AppEvent.AR_CHANNEL_FAILED)
+                if (rtc === media) { arNotice("AR 显示方向更新失败，已退出 AR。"); stopAr() }
+            }
+        }
     }
     fun toggleSpeaker() {
         val current = rtc ?: return
@@ -381,11 +429,11 @@ class CallViewModel(application: Application, private val container: AppContaine
                                             }
                                     }
                                     cameraObservation = launch {
-                                        combine(media.showMe, media.remotePresentation) { local, remote -> local to remote }.collect { (local, remote) ->
+                                        combine(media.showMe, media.remotePresentation, media.arState) { local, remote, ar -> Triple(local, remote, ar) }.collect { (local, remote, ar) ->
                                             // The hint explains swapping the main view, so it waits for a
                                             // second remote view to actually exist.
                                             val hint = !showMeHintSeen && remote.mode == com.lazydoglab.zisee.rtc.CameraMode.DUAL
-                                            mutable.update { it.copy(showMe = local, remotePresentation = remote, showMeHint = it.showMeHint || hint) }
+                                            mutable.update { it.copy(showMe = local, remotePresentation = remote, showMeHint = it.showMeHint || hint, arState = ar) }
                                         }
                                     }
                                     mutable.update { it.copy(local = media.localFeed, remote = media.remoteFeed, localBack = media.localBackFeed, remoteBack = media.remoteBackFeed) }
@@ -459,8 +507,10 @@ class CallViewModel(application: Application, private val container: AppContaine
                     losingObservation?.cancelAndJoin()
                     networkWatcher?.close()
                     mediaObservation?.cancelAndJoin()
+                    arActivation.invalidate()
                     val media = rtc; rtc = null
-                    mutable.update { it.copy(local = null, remote = null, localBack = null, remoteBack = null, invite = "") }
+                    mutable.update { it.copy(local = null, remote = null, localBack = null, remoteBack = null, invite = "",
+                        arState = com.lazydoglab.zisee.ar.session.ArSessionState.IDLE, arNotice = "") }
                     try { media?.release() } catch (error: Exception) { container.logger.error(AppEvent.RTC_RELEASE_FAILED) }
                     val token = session
                     if (token != null) {

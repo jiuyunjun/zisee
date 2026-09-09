@@ -91,6 +91,7 @@ class ArVideoCapture private constructor(
         /** Caller has prepared ARCore and acquired an exclusive camera lease. Consumes the lease. */
         suspend fun start(context: Context, shared: EglBase.Context, source: VideoSource,
             lease: ArCameraLease, rotation: Int, width: Int, height: Int,
+            onState: (ArSessionState) -> Unit = {},
             onFailure: () -> Unit): ArVideoCapture = withContext(NonCancellable) {
             val helper = try { requireNotNull(SurfaceTextureHelper.create("ZiseeAr", shared)) }
                 catch (error: Exception) { lease.close(); throw error }
@@ -100,7 +101,8 @@ class ArVideoCapture private constructor(
                     capture.backend = ArCoreBackend.create(context, lease)
                     capture.renderer = ArCameraRenderer()
                     capture.pool = ArFramePool(helper.handler) { helper.dispose() }
-                    capture.controller = ArSessionController(capture.sessionId, { capture.backend })
+                    capture.controller = ArSessionController(capture.sessionId, { capture.backend },
+                        onEvent = { onState(capture.controller.state.value) })
                     capture.backend.setDisplayGeometry(rotation, width, height)
                     check(capture.controller.start())
                     capture.rotationDegrees = capture.backend.imageRotationDegrees()

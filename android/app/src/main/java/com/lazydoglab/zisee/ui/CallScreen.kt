@@ -86,9 +86,10 @@ fun CallScreen(state: CallUiState, model: CallViewModel) {
     }
     BackHandler { model.close() }
     if (state.local != null && state.busy) {
+        ArCallGeometry(state, model)
         ActiveCall(state, model::toggleMute, model::toggleCamera, { model.toggleShowMe() },
             { model.toggleShowMe(false) }, model::toggleSpeaker, model::stop, model::dismissShowMeHint,
-            model::reportViewLayout, model::setNoiseSuppression)
+            model::reportViewLayout, model::setNoiseSuppression, arControls = { ArCallControls(state, model) })
         return
     }
     Surface(color = MaterialTheme.colorScheme.background,

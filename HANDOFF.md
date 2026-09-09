@@ -1,7 +1,7 @@
 # HANDOFF
 
 ## Status
-READY_FOR_REVIEW
+IN_PROGRESS
 
 ## Objective
 Implement the next AR media milestone: camera takeover, WebRTC delivery and remote displayed-frame identity.
@@ -59,3 +59,7 @@ e4fb2ee feat: synchronize AR source identity through H264 and display latching
 fe4ecc4 feat: deliver AR camera frames through retained WebRTC textures
 c34f0f6 docs: record AR camera rendering checkpoint
 431a7a3 feat: render exact AR camera textures on the GPU
+## AR controls integration in progress
+Baseline fcb1132 verified; five pre-existing changes unchanged. Current task is AR menu/preparation/lifecycle. Existing setForeground(false) hangs up the call; preserve it. WIP belongs to this task and must be retained. Next: guarded coordinator, native status flow, UI and tests.
+
+AR controls implementation checkpoint: 165 JVM tests, Debug/AndroidTest and lint PASS. Phone reconnected by user; next verify surface identity, then add/run native camera takeover checks. Current UI does not expose spatial clicks.

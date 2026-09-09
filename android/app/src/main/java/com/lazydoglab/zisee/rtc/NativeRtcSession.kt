@@ -93,6 +93,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var arLeaseId: java.util.UUID? = null
     private var arStopRequested = false
     private var arStarting: CompletableDeferred<Unit>? = null
+    private val mutableArState = MutableStateFlow(com.lazydoglab.zisee.ar.session.ArSessionState.IDLE)
+    val arState = mutableArState.asStateFlow()
     var localFeed: VideoFeed? = null; private set
     var remoteFeed: VideoFeed? = null; private set
     private val candidates = mutableListOf<IceCandidate>()
@@ -722,6 +724,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         changingCamera = true
         arLeaseId = id
         arStopRequested = false
+        mutableArState.value = com.lazydoglab.zisee.ar.session.ArSessionState.STARTING
         val starting = CompletableDeferred<Unit>()
         arStarting = starting
         val lease = com.lazydoglab.zisee.ar.session.ArCameraLease {
@@ -737,7 +740,13 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             videoTrack?.setEnabled(false)
             val capture = com.lazydoglab.zisee.ar.session.ArVideoCapture.start(context,
                 requireNotNull(egl).eglBaseContext, requireNotNull(backSource), lease,
-                rotation, width, height) { scope.launch { stopAr() } }
+                rotation, width, height, onState = { state -> scope.launch {
+                    if (arLeaseId == id && !released &&
+                        mutableArState.value != com.lazydoglab.zisee.ar.session.ArSessionState.FAILED) mutableArState.value = state
+                } }) { scope.launch {
+                    mutableArState.value = com.lazydoglab.zisee.ar.session.ArSessionState.FAILED
+                    stopAr()
+                } }
             arCapture = capture
             if (released || arStopRequested || !collaboration.attach(capture)) {
                 capture.close()
@@ -750,6 +759,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             true
         } catch (_: Exception) {
             logger.error(AppEvent.AR_CHANNEL_FAILED)
+            mutableArState.value = com.lazydoglab.zisee.ar.session.ArSessionState.FAILED
             try { arCapture?.close() } catch (_: Exception) { logger.error(AppEvent.AR_CHANNEL_FAILED) }
             lease.close()
             false
@@ -768,7 +778,11 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         arStopRequested = true
         arStarting?.await()
         try { arCollaboration?.detach() }
-        finally { arCapture?.close(); arCapture = null }
+        finally {
+            arCapture?.close(); arCapture = null
+            if (mutableArState.value != com.lazydoglab.zisee.ar.session.ArSessionState.FAILED)
+                mutableArState.value = com.lazydoglab.zisee.ar.session.ArSessionState.CLOSED
+        }
     }
 
     private suspend fun restoreAfterAr(id: java.util.UUID, previous: CameraMode) {

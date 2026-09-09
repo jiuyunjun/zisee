@@ -99,7 +99,8 @@ private val HandleRightShape = RoundedCornerShape(topStart = 7.dp, bottomStart =
 internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> Unit,
     onShowMe: () -> Unit, onSwitch: () -> Unit, onSpeaker: () -> Unit, onEnd: () -> Unit,
     onHintSeen: () -> Unit = {}, onViewLayout: (Boolean, Boolean) -> Unit = { _, _ -> },
-    onNoiseMode: (com.lazydoglab.zisee.rtc.audio.processing.NoiseSuppressionMode) -> Unit = {}) {
+    onNoiseMode: (com.lazydoglab.zisee.rtc.audio.processing.NoiseSuppressionMode) -> Unit = {},
+    arControls: @Composable () -> Unit = {}) {
     var controls by remember { mutableStateOf(true) }
     var interaction by remember { mutableLongStateOf(0L) }
     var more by remember { mutableStateOf(false) }
@@ -123,6 +124,9 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
     val tip = when {
         state.stats.audioDevice.state == com.lazydoglab.zisee.rtc.audio.AudioState.INTERRUPTED -> "音频被其他应用中断；可点击扬声器按钮恢复"
         state.stats.audioBandwidth == com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.AUDIO_ONLY -> "网络较弱，已暂停发送画面以优先保持语音"
+        state.arNotice.isNotBlank() -> state.arNotice
+        state.arState == com.lazydoglab.zisee.ar.session.ArSessionState.STARTING -> "正在开启 AR…"
+        state.arState == com.lazydoglab.zisee.ar.session.ArSessionState.TRACKING_LOST -> "AR 暂时失去跟踪，请缓慢移动手机"
         starting -> "正在开启摄像头…"
         state.showMe.message.isNotEmpty() -> state.showMe.message
         hint -> "点击小窗即可切换主视角"
@@ -373,19 +377,21 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                 }
             }
         }
-        if (more) CallOptions(state, onDismiss = { more = false; interaction++ }, onSwitch = onSwitch, onNoiseMode = onNoiseMode)
+        if (more) CallOptions(state, onDismiss = { more = false; interaction++ }, onSwitch = onSwitch, onNoiseMode = onNoiseMode, arControls = arControls)
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CallOptions(state: CallUiState, onDismiss: () -> Unit, onSwitch: () -> Unit,
-    onNoiseMode: (com.lazydoglab.zisee.rtc.audio.processing.NoiseSuppressionMode) -> Unit) {
+    onNoiseMode: (com.lazydoglab.zisee.rtc.audio.processing.NoiseSuppressionMode) -> Unit,
+    arControls: @Composable () -> Unit) {
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Color(0xFF12181D), contentColor = CallText) {
         Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp).padding(bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("通话选项", style = MaterialTheme.typography.titleMedium)
+            arControls()
             TextButton(onClick = { onDismiss(); onSwitch() },
                 enabled = state.cameraEnabled && state.showMe.mode != CameraMode.STARTING,
                 colors = ButtonDefaults.textButtonColors(contentColor = CallAccent)) { Text("切换前后摄像头") }

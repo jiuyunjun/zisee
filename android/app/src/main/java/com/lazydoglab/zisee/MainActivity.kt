@@ -114,4 +114,14 @@ class MainActivity : ComponentActivity() {
         viewModel.setForeground(false)
         super.onStop()
     }
+
+    override fun onResume() {
+        super.onResume()
+        callModel.setArResumed(true)
+    }
+
+    override fun onPause() {
+        callModel.setArResumed(false)
+        super.onPause()
+    }
 }

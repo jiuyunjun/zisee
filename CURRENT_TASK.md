@@ -1,28 +1,22 @@
 # Current Task
 
 ## Task
-Carry AR source identity inside H264 access units and resolve the identity of the SurfaceTexture-latched frame.
+Expose user-triggered AR camera controls and bind them to call and Activity lifecycle.
 
 ## Why
-Capture/decoder clocks and a latest DataChannel timestamp cannot identify the displayed historical AR image.
+The media APIs exist but no in-call path invokes preparation, capture or foreground cleanup.
 
 ## Scope
-AR identity protocol, codec adapters, GPU frame tags, VideoFeed/TextureViewRenderer, tests and architecture documents.
+Call AR coordinator, call view model, AR menu composables, minimal ActiveCall slot, native AR state/cleanup, targeted tests and docs. Preserve existing five modified files.
 
 ## Planned Changes
-Versioned unregistered-user-data SEI (session UUID + source timestamp), bounded codec correlation, texture tags surviving full-frame scaling, exact surface timestamp lookup. Preserve default codec availability and fail closed when identity cannot survive the selected codec/path.
+Capability check; explicit camera/privacy explanation; permission/install prepare; guarded start/stop; rotation geometry; onPause stop; state/error feedback. Preserve existing background-hangup policy. Do not expose remote spatial clicks.
 
 ## Acceptance Criteria
-Reordering, drops, invalid/duplicate metadata and unknown frame timestamps never guess a reference. UI receives only a source reference matched to the actual latched texture with that frame geometry. No pixel readback for synchronization.
+No automatic camera activation after lifecycle loss or stale permission/install callback. Exit stays available during startup. Ordinary camera modes restore on exit. Unsupported devices retain video calling. AR status and failure are visible. Build/tests pass; real device checks recorded honestly.
 
 ## Validation
-JVM parser/state tests, builds/lint, native encode/decode/renderer smoke where available.
+JVM intent/lifecycle tests, Debug/AndroidTest build and lint, available device display/camera verification.
 
 ## State
-DONE
-
-## Notes
-Previous checkpoint fe4ecc4: 159 JVM tests, builds/lint and connected-device arFramePool PASS. Pre-existing five-file edits remain unstaged.
-Identity implementation verified by 162 JVM tests, builds/lint and real H264 codec loopback. Surface display verification remains blocked by MIUI background Activity launch denial; see HANDOFF.md.
-
-Implementation committed in e4fb2ee. Final repository state retains only the five pre-existing modified files after this checkpoint documentation commit.
+IMPLEMENTING
