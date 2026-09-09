@@ -128,6 +128,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private val audioBandwidth = com.lazydoglab.zisee.rtc.audio.AudioBandwidthPolicy()
     private val handover = HandoverReport()
     private val gatheredOrigins = mutableSetOf<String>()
+    private var connectedSinceMs = Long.MAX_VALUE
     private var sustainedSendKbps = 0L
     private val videoSending = mutableMapOf<RtpSender, Pair<Boolean, Boolean>>()
     private val powerManager = context.getSystemService(PowerManager::class.java)
@@ -477,11 +478,19 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         val result = sampler.sample(report.statsMap.values.map { StatsEntry(it.id, it.type, it.members, it.timestampUs) },
             System.nanoTime() / 1_000_000, localBack = dualCapture != null,
             remoteTrackId = (if (remotePresentation.value.mode == CameraMode.DUAL) remoteBackTrack else remoteTrack)?.id())
+        // Which interfaces this call has actually gathered on, and when. A handover can only be
+        // fast if the other interface was already gathered and checked before it happened; the
+        // trickled candidate's adapter type is reported as UNKNOWN, so read it from the stats.
+        for (entry in report.statsMap.values) {
+            if (entry.type != "local-candidate") continue
+            val origin = "${entry.members["networkType"] ?: "unknown"}/${entry.members["candidateType"] ?: "unknown"}"
+            if (gatheredOrigins.add(origin)) logger.info(AppEvent.RTC_LOCAL_CANDIDATE, origin)
+        }
         val route = "${result.candidateType}/${result.remoteCandidateType} ${result.networkType}/${result.protocol}"
         if (route != lastCandidate || result.selectedPairId != lastSelectedPairId) {
             // The first pair a call selects is not a handover away from anything, and neither is
-            // the placeholder sample taken before any pair exists.
-            if (lastSelectedPairId != null) {
+            // the peer-reflexive to host promotion that normally follows it a second later.
+            if (lastSelectedPairId != null && result.sampledAtMs - connectedSinceMs >= SETTLED_MS) {
                 audioBandwidth.routeChanged(result.sampledAtMs)
                 qualityPolicy.routeChanged(result.sampledAtMs)
                 handover.pairChanged(result.sampledAtMs, appliedQuality)
@@ -806,6 +815,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             // reconnects are visible as their own state transitions.
             val connected = state == PeerConnection.IceConnectionState.CONNECTED ||
                 state == PeerConnection.IceConnectionState.COMPLETED
+            if (connected && connectedSinceMs == Long.MAX_VALUE) connectedSinceMs = System.nanoTime() / 1_000_000
             if (connected && !setupReported && startedNanos != 0L) {
                 setupReported = true
                 logger.info(AppEvent.RTC_SETUP_MS, ((System.nanoTime() - startedNanos) / 1_000_000).toString())
@@ -841,11 +851,6 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         override fun onSignalingChange(state: PeerConnection.SignalingState) = Unit
         override fun onIceConnectionReceivingChange(receiving: Boolean) = Unit
         override fun onIceCandidate(candidate: IceCandidate) { scope.launch {
-            // Which interfaces this call actually gathered on, and when. A handover can only be
-            // instant if the other interface was already gathered and checked before it happened.
-            val kind = Regex(" typ ([a-z]+)").find(candidate.sdp)?.groupValues?.get(1) ?: "unknown"
-            val origin = "$kind/${candidate.adapterType.name}"
-            if (gatheredOrigins.add(origin)) logger.info(AppEvent.RTC_LOCAL_CANDIDATE, origin)
             val ufrag = Regex("(?:^| )ufrag ([^ ]+)").find(candidate.sdp)?.groupValues?.get(1)
             if (!released && acceptingCandidates && (ufrag == null || ufrag in localUfrags) && candidates.none { it.sdp == candidate.sdp && it.sdpMid == candidate.sdpMid }) {
                 // The current protocol is append-only and bounded. Rotate generation instead of
@@ -873,6 +878,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         private const val LOOPBACK_ADAPTER = 1 shl 4
         // Low enough that a genuinely slower route sheds it in a second, high enough to skip the
         // slow opening ramp; the per-sender ceilings still bound what the encoder does with it.
+        // ICE promotes its way to the best pair over the first seconds of a call.
+        private const val SETTLED_MS = 3_000L
         private const val MIN_SEED_BPS = 300_000L
         private const val MAX_SEED_BPS = 2_500_000L
         @Volatile private var networksSeen = false

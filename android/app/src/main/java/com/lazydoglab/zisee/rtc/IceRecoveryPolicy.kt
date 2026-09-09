@@ -29,6 +29,9 @@ class IceRecoveryPolicy(startedMs: Long, private val config: WebRtcRecoveryConfi
     }
 
     enum class Action { WAIT, RESTART, FAIL }
+    /** Why the last evaluation asked for a restart, so a self-inflicted outage can be traced. */
+    enum class Reason { NONE, ROUTE, DISCONNECTED, FAILED, NEGOTIATION }
+    var lastReason = Reason.NONE; private set
     /** Called when the route changes, before any signaling IO can delay evaluation. */
     fun networkChanged(networkVersion: Long, nowMs: Long) {
         if (networkVersion != seenNetwork) {
@@ -49,8 +52,11 @@ class IceRecoveryPolicy(startedMs: Long, private val config: WebRtcRecoveryConfi
         val changedAt = networkChangedMs
         if (changedAt != null && stats.sampleAvailable && stats.sampledAtMs >= changedAt) {
             val baseline = routeSample
+            // Media arriving on the new route is stronger evidence than the negotiation bookkeeping:
+            // the peer can only be reaching us here. Requiring the flag as well restarted ICE on a
+            // route that had already recovered, and that restart cost two more seconds of video.
             if (baseline != null && stats.sampledAtMs > baseline.sampledAtMs &&
-                stats.inboundBytes > baseline.inboundBytes && state == IceState.CONNECTED && negotiationComplete) {
+                stats.inboundBytes > baseline.inboundBytes && state == IceState.CONNECTED) {
                 networkChangedMs = null
                 routeSample = null
                 lastNaturalRecoveryMs = nowMs - changedAt
@@ -68,9 +74,16 @@ class IceRecoveryPolicy(startedMs: Long, private val config: WebRtcRecoveryConfi
         if (outageMs?.let { nowMs - it >= config.outageTimeoutMs } == true) return Action.FAIL
         val routeWait = if (state == IceState.CONNECTED && negotiationComplete) config.naturalRecoveryMs else config.routeDebounceMs
         val routeReady = networkChangedMs?.let { nowMs - it >= routeWait } == true
-        val requested = routeReady ||
-            (state == IceState.DISCONNECTED && nowMs - requireNotNull(disconnectedMs) >= config.disconnectedGraceMs) ||
-            state == IceState.FAILED || (networkChangedMs == null && nowMs - generationMs >= config.negotiationTimeoutMs)
+        val disconnectedTooLong = state == IceState.DISCONNECTED &&
+            nowMs - requireNotNull(disconnectedMs) >= config.disconnectedGraceMs
+        val negotiationStalled = networkChangedMs == null && nowMs - generationMs >= config.negotiationTimeoutMs
+        val requested = routeReady || disconnectedTooLong || state == IceState.FAILED || negotiationStalled
+        if (requested) lastReason = when {
+            routeReady -> Reason.ROUTE
+            state == IceState.FAILED -> Reason.FAILED
+            disconnectedTooLong -> Reason.DISCONNECTED
+            else -> Reason.NEGOTIATION
+        }
         // A new route invalidates the previous attempt's cooldown, but not the outage budget.
         if (!requested || (!routeReady && nowMs - generationMs < config.restartCooldownMs)) return Action.WAIT
         // Give the final attempt its full negotiation window.

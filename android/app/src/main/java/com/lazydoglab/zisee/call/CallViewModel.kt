@@ -375,6 +375,11 @@ class CallViewModel(application: Application, private val container: AppContaine
                                 }
                                 if (action == com.lazydoglab.zisee.rtc.IceRecoveryPolicy.Action.FAIL) throw IOException("ice_timeout")
                                 if (action == com.lazydoglab.zisee.rtc.IceRecoveryPolicy.Action.RESTART) {
+                                    // A restart costs an outage of its own, so the reason it was
+                                    // asked for has to be readable after the fact.
+                                    container.logger.info(AppEvent.RTC_ICE_RESTART,
+                                        "decided=${recovery.lastReason.name} negotiated=${negotiation.complete} " +
+                                            "state=${requireNotNull(rtc).iceState.value.name}")
                                     event(CallEvent.CONNECTION_LOST)
                                     mutable.update { it.copy(status = "网络已变化，正在恢复通话…") }
                                 }

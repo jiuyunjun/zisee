@@ -17,6 +17,10 @@ data class WebRtcRecoveryConfig(
     val receivingTimeoutMs: Int = 1_000,
     val backupPingIntervalMs: Int = 500,
     val stablePingIntervalMs: Int = 500,
-    val unwritableTimeoutMs: Int = 1_500,
-    val unwritableMinChecks: Int = 3,
+    // A measured Wi-Fi to cellular switch took 1502 ms to select the already checked cellular pair,
+    // which is this timeout: ICE will not leave a selected connection until it is declared
+    // unwritable. Halving it halves that gap; the backup pair is pinged throughout, and a Wi-Fi
+    // hiccup that outlives it is switched back the same way.
+    val unwritableTimeoutMs: Int = 750,
+    val unwritableMinChecks: Int = 2,
 )

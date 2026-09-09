@@ -109,4 +109,30 @@ class IceRecoveryPolicyTest {
         }
         assertEquals(IceRecoveryPolicy.Action.FAIL, policy.evaluate(IceState.FAILED, 0, false, 48_000))
     }
+
+    @Test fun `media on the new route proves recovery while renegotiation is still in flight`() {
+        val policy = IceRecoveryPolicy(0)
+        policy.networkChanged(1, 6_000)
+        policy.evaluate(IceState.CONNECTED, 1, false, 6_600, sample(6_400, 100))
+        // A measured handover switched pairs locally and had media back, but the negotiation flag
+        // was still false; restarting from there cost a second outage.
+        assertEquals(IceRecoveryPolicy.Action.WAIT,
+            policy.evaluate(IceState.CONNECTED, 1, false, 6_900, sample(6_800, 140)))
+        assertEquals(900L, policy.lastNaturalRecoveryMs)
+        assertEquals(false, policy.checkingRoute)
+    }
+
+    @Test fun `a restart says which condition asked for it`() {
+        val policy = IceRecoveryPolicy(0)
+        policy.networkChanged(1, 6_000)
+        assertEquals(IceRecoveryPolicy.Action.RESTART,
+            policy.evaluate(IceState.CONNECTED, 1, true, 7_000, sample(6_900, 0)))
+        assertEquals(IceRecoveryPolicy.Reason.ROUTE, policy.lastReason)
+        val failed = IceRecoveryPolicy(0)
+        assertEquals(IceRecoveryPolicy.Action.RESTART, failed.evaluate(IceState.FAILED, 0, true, 6_000))
+        assertEquals(IceRecoveryPolicy.Reason.FAILED, failed.lastReason)
+        val stalled = IceRecoveryPolicy(0)
+        assertEquals(IceRecoveryPolicy.Action.RESTART, stalled.evaluate(IceState.CONNECTED, 0, false, 13_000))
+        assertEquals(IceRecoveryPolicy.Reason.NEGOTIATION, stalled.lastReason)
+    }
 }
