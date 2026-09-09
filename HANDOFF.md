@@ -10,7 +10,7 @@ Implement the next AR media milestone: camera takeover, WebRTC delivery and remo
 Implementation complete for media APIs and H264 source identity; device acceptance remains incomplete. No AR UI entry or spatial-click tool enabled.
 
 ## Last Good Checkpoint
-commit: fe4ecc4 (camera media checkpoint; identity commit follows)
+commit: e4fb2ee
 build: PASS (current combined working tree)
 tests: PASS (162 JVM tests)
 
@@ -18,7 +18,7 @@ tests: PASS (162 JVM tests)
 ArVideoCapture owns ARCore on its GL worker. Three retained RGB slots feed video_back. NativeRtcSession startAr/stopAr/updateArGeometry manage camera lease and restore previous capture, with startup/restoration barriers against hangup. H264 SEI carries frame identity; decoded texture tags reach VideoFeed. TextureViewRenderer publishes identity only after exact SurfaceTexture timestamp lookup.
 
 ## Repository State
-Preserve the five pre-existing modified files: AGENTS.md; NativeRtcSession.kt concurrent post-bind targetRotation hunk; ActiveCall.kt user UI/probe tip; CallVideoLayout.kt thumbnail sizing; CallVideoLayoutTest.kt corresponding sizing test. They remain excluded from AR commits. All other current changes belong to this task and must be retained until committed. No debug diagnostic logging remains.
+Preserve the five pre-existing modified files: AGENTS.md; NativeRtcSession.kt concurrent post-bind targetRotation hunk; ActiveCall.kt user UI/probe tip; CallVideoLayout.kt thumbnail sizing; CallVideoLayoutTest.kt corresponding sizing test. They remain excluded from AR commits. Camera and identity implementations are committed; only the five pre-existing files remain modified. No debug diagnostic logging remains.
 
 ## Completed
 - fe4ecc4: exclusive camera lease, retained GPU video delivery, AR rear-track presentation and previous-mode restoration.
@@ -55,6 +55,7 @@ adb shell am instrument -w -e arVideoIdentity true com.lazydoglab.zisee.dev.test
 adb shell am instrument -w -e arDisplayedIdentity true com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
 
 ## Latest Commits
+e4fb2ee feat: synchronize AR source identity through H264 and display latching
 fe4ecc4 feat: deliver AR camera frames through retained WebRTC textures
 c34f0f6 docs: record AR camera rendering checkpoint
 431a7a3 feat: render exact AR camera textures on the GPU
