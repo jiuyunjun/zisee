@@ -26,7 +26,7 @@ data class MediaStats(
 )
 
 /** Framework-free input makes direction, missing values and counter resets testable on the JVM. */
-data class StatsEntry(val id: String, val type: String, val members: Map<String, Any>) {
+data class StatsEntry(val id: String, val type: String, val members: Map<String, Any>, val timestampUs: Double? = null) {
     fun number(key: String): Double? = (members[key] as? Number)?.toDouble()?.takeIf { it.isFinite() }
     val kind: Any? get() = members["kind"] ?: members["mediaType"]
 }
@@ -92,6 +92,7 @@ class MediaStatsSampler {
                 sendKbps = delta(sentAudio, "bytesSent")?.let { it * 8 / requireNotNull(elapsed) },
                 receiveKbps = delta(audio, "bytesReceived")?.let { it * 8 / requireNotNull(elapsed) },
                 outboundLoss = remoteAudio?.number("fractionLost")?.takeIf { it in 0.0..1.0 },
+                outboundReportTimestampUs = remoteAudio?.timestampUs,
                 inboundLoss = ratio(lost, if (lost != null && received != null) lost + received else null),
                 jitterMs = audio?.number("jitter")?.takeIf { it >= 0 }?.times(1000),
                 rttMs = remoteAudio?.number("roundTripTime")?.takeIf { it >= 0 }?.times(1000),

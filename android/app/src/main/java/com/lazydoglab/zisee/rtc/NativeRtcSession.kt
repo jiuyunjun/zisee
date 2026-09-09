@@ -126,7 +126,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var desiredView = ViewRequest.Default
     private var adaptationEnabled = true
     private val audioBandwidth = com.lazydoglab.zisee.rtc.audio.AudioBandwidthPolicy()
-    private val videoSending = mutableMapOf<RtpSender, Boolean>()
+    private val videoSending = mutableMapOf<RtpSender, Pair<Boolean, Boolean>>()
     private val powerManager = context.getSystemService(PowerManager::class.java)
     @Volatile private var startedNanos = 0L
     private var setupReported = false
@@ -322,7 +322,9 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                     val result = stats()
                     val observed = result.copy(thermalStatus = thermal)
                     // Never use idle/muted encoder statistics to make quality decisions.
-                    if (iceState.value == IceState.CONNECTED && videoTrack?.enabled() == true && adaptationEnabled && !changingCamera) {
+                    if (iceState.value == IceState.CONNECTED && videoTrack?.enabled() == true && adaptationEnabled && !changingCamera &&
+                        audioBandwidth.mode != com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.AUDIO_ONLY &&
+                        audioBandwidth.mode != com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.VIDEO_PROBE) {
                         applyQuality(qualityPolicy.update(observed, System.nanoTime() / 1_000_000))
                     }
                     if (iceState.value == IceState.CONNECTED && !changingCamera) applyAudioBandwidth(observed)
@@ -386,17 +388,35 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
 
     private fun applyAudioBandwidth(stats: MediaStats) {
         videoSending.keys.retainAll(listOfNotNull(videoSender, backSender).toSet())
-        val mode = audioBandwidth.update(stats.availableOutgoingKbps, stats.audio.outboundLoss, stats.sampledAtMs)
+        val previous = audioBandwidth.mode
+        val mode = audioBandwidth.update(stats.availableOutgoingKbps, stats.audio.outboundLoss, stats.sampledAtMs,
+            stats.audio.outboundReportTimestampUs)
+        if (mode != previous) {
+            logger.info(AppEvent.RTC_VIDEO_BANDWIDTH_MODE, "${previous.name}->${mode.name}")
+            appliedQuality = null
+            applyQuality(qualityPolicy.current, changeCapture = false)
+        }
         val frontMain = dualCapture == null || (remoteView.front == ViewSize.LARGE && remoteView.back == ViewSize.SMALL)
         for ((sender, primary) in listOf(videoSender to frontMain, backSender to !frontMain)) {
             if (sender == null) continue
             val enabled = mode == com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.ALL_VIDEO ||
-                (mode == com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.PRIMARY_ONLY && primary)
-            if (videoSending[sender] == enabled) continue
+                (mode in setOf(com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.PRIMARY_ONLY,
+                    com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.VIDEO_PROBE) && primary)
+            // Only cap the probe when quality changes can still be undone; an OEM that rejected
+            // setParameters would otherwise leave the camera stuck at the probe format.
+            val probing = mode == com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.VIDEO_PROBE && primary && adaptationEnabled
+            val plan = enabled to probing
+            if (videoSending[sender] == plan) continue
             val parameters = sender.parameters
             if (parameters.encodings.isEmpty()) continue
-            parameters.encodings.forEach { it.active = enabled }
-            if (sender.setParameters(parameters)) videoSending[sender] = enabled
+            parameters.encodings.forEach {
+                it.active = enabled
+                if (probing) { it.maxBitrateBps = 150_000; it.maxFramerate = 10; it.minBitrateBps = null }
+            }
+            if (sender.setParameters(parameters)) {
+                videoSending[sender] = plan
+                if (probing) (if (sender === videoSender) videoSource else backSource)?.adaptOutputFormat(320, 180, 10)
+            }
             else logger.error(AppEvent.RTC_QUALITY_REJECTED)
         }
     }
@@ -445,11 +465,12 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             requireNotNull(peer).getStats { value -> if (continuation.isActive) continuation.resume(value) }
         }
         // Native callback only delivers a report. Mutable sampling state stays on the RTC executor.
-        val result = sampler.sample(report.statsMap.values.map { StatsEntry(it.id, it.type, it.members) },
+        val result = sampler.sample(report.statsMap.values.map { StatsEntry(it.id, it.type, it.members, it.timestampUs) },
             System.nanoTime() / 1_000_000, localBack = dualCapture != null,
             remoteTrackId = (if (remotePresentation.value.mode == CameraMode.DUAL) remoteBackTrack else remoteTrack)?.id())
         val route = "${result.candidateType}/${result.remoteCandidateType} ${result.networkType}/${result.protocol}"
         if (route != lastCandidate || result.selectedPairId != lastSelectedPairId) {
+            audioBandwidth.routeChanged(result.sampledAtMs)
             lastCandidate = route; lastSelectedPairId = result.selectedPairId
             // Log pair transitions even when both paths have the same candidate types. Never log IPs or SDP.
             logger.info(AppEvent.RTC_SELECTED_CANDIDATE, "$route atMs=${result.sampledAtMs}")
@@ -469,6 +490,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     }
 
     private fun applyQuality(decision: QualityDecision, changeCapture: Boolean = true) {
+        if (audioBandwidth.mode == com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.VIDEO_PROBE) return
         if (appliedQuality == decision.quality && appliedView == remoteView) return
         if (!adaptationEnabled) return
         // With both cameras live the viewer chooses which one is its main view, and may swap at any
@@ -666,7 +688,11 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         }
     }
     suspend fun networkChanged() = withContext(dispatcher) {
-        handoverStatsUntilMs = System.nanoTime() / 1_000_000 + recoveryConfig.handoverStatsDurationMs
+        val nowMs = System.nanoTime() / 1_000_000
+        handoverStatsUntilMs = nowMs + recoveryConfig.handoverStatsDurationMs
+        // The old path's estimate and loss say nothing about the new one, and a suspension entered
+        // on the old path must not outlive it.
+        audioBandwidth.routeChanged(nowMs)
         statsWake.trySend(Unit)
         Unit
     }

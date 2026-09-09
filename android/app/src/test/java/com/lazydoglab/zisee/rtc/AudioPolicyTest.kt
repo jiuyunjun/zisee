@@ -1,5 +1,7 @@
 package com.lazydoglab.zisee.rtc
 
+import com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode
+import com.lazydoglab.zisee.rtc.audio.AudioBandwidthPolicy
 import com.lazydoglab.zisee.rtc.audio.AudioRoute
 import com.lazydoglab.zisee.rtc.audio.AudioRoutePolicy
 import com.lazydoglab.zisee.rtc.audio.OpusPolicy
@@ -8,14 +10,79 @@ import org.junit.Test
 
 class AudioPolicyTest {
     @Test fun audioReserveSuspendsVideoAndNeedsSustainedRecovery() {
-        val policy = com.lazydoglab.zisee.rtc.audio.AudioBandwidthPolicy()
-        assertEquals(com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.PRIMARY_ONLY, policy.update(200, null, 1000))
-        assertEquals(com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.AUDIO_ONLY, policy.update(80, null, 2000))
-        assertEquals(com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.AUDIO_ONLY, policy.update(null, null, 3000))
-        for (time in 4000L..8000L step 1000) assertEquals(com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.AUDIO_ONLY, policy.update(500, 0.0, time))
-        assertEquals(com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.ALL_VIDEO, policy.update(500, 0.0, 9000))
-        assertEquals(com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.AUDIO_ONLY, policy.update(1000, 0.2, 10000))
+        val policy = AudioBandwidthPolicy()
+        assertEquals(AudioBandwidthMode.PRIMARY_ONLY, policy.update(200, null, 1000))
+        // One collapsed sample is a handover, not a weak link.
+        assertEquals(AudioBandwidthMode.PRIMARY_ONLY, policy.update(80, null, 2000))
+        assertEquals(AudioBandwidthMode.PRIMARY_ONLY, policy.update(80, null, 3000))
+        assertEquals(AudioBandwidthMode.AUDIO_ONLY, policy.update(80, null, 4000))
+        for (time in 5000L..9000L step 1000) assertEquals(AudioBandwidthMode.AUDIO_ONLY, policy.update(80, null, time))
+        // Recovering evidence restores the primary camera through a bounded probe, never directly.
+        assertEquals(AudioBandwidthMode.VIDEO_PROBE, policy.update(500, 0.0, 10000))
+        assertEquals(AudioBandwidthMode.VIDEO_PROBE, policy.update(500, 0.0, 12000))
+        assertEquals(AudioBandwidthMode.PRIMARY_ONLY, policy.update(500, 0.0, 14000))
+        for (time in 15000L..18000L step 1000) assertEquals(AudioBandwidthMode.PRIMARY_ONLY, policy.update(500, 0.0, time))
+        assertEquals(AudioBandwidthMode.ALL_VIDEO, policy.update(500, 0.0, 19000))
+        assertEquals(AudioBandwidthMode.PRIMARY_ONLY, policy.update(1000, 0.2, 20000))
+        assertEquals(AudioBandwidthMode.AUDIO_ONLY, policy.update(1000, 0.2, 22000))
     }
+
+    /** The handover case: no send estimate and no remote report must never hold video off. */
+    @Test fun missingEvidenceEndsSuspensionInsteadOfExtendingIt() {
+        val policy = AudioBandwidthPolicy()
+        assertEquals(AudioBandwidthMode.PRIMARY_ONLY, policy.update(40, 0.3, 1000))
+        assertEquals(AudioBandwidthMode.AUDIO_ONLY, policy.update(40, 0.3, 3000))
+        assertEquals(AudioBandwidthMode.AUDIO_ONLY, policy.update(null, null, 4000))
+        assertEquals(AudioBandwidthMode.VIDEO_PROBE, policy.update(null, null, 6000))
+        assertEquals(AudioBandwidthMode.VIDEO_PROBE, policy.update(null, null, 8000))
+        assertEquals(AudioBandwidthMode.PRIMARY_ONLY, policy.update(null, null, 10000))
+    }
+
+    /** Stale remote reports repeated by the sampler must not keep re-arming the pause. */
+    @Test fun staleLossReportsDoNotSustainSuspension() {
+        val policy = AudioBandwidthPolicy()
+        assertEquals(AudioBandwidthMode.PRIMARY_ONLY, policy.update(40, 0.4, 1000, 1_000.0))
+        assertEquals(AudioBandwidthMode.AUDIO_ONLY, policy.update(300, 0.4, 3000, 1_000.0))
+        assertEquals(AudioBandwidthMode.AUDIO_ONLY, policy.update(300, 0.4, 5000, 1_000.0))
+        assertEquals(AudioBandwidthMode.VIDEO_PROBE, policy.update(300, 0.4, 6000, 1_000.0))
+        assertEquals(AudioBandwidthMode.PRIMARY_ONLY, policy.update(300, 0.4, 10000, 1_000.0))
+    }
+
+    @Test fun newRouteRetriesQuicklyAndIgnoresTheOldPathEstimate() {
+        val policy = AudioBandwidthPolicy()
+        assertEquals(AudioBandwidthMode.PRIMARY_ONLY, policy.update(40, 0.5, 1000))
+        assertEquals(AudioBandwidthMode.AUDIO_ONLY, policy.update(40, 0.5, 3000))
+        policy.routeChanged(4000)
+        // A collapsed estimate on a freshly selected pair is the pair warming up, not a weak link.
+        assertEquals(AudioBandwidthMode.AUDIO_ONLY, policy.update(10, null, 4500))
+        assertEquals(AudioBandwidthMode.VIDEO_PROBE, policy.update(10, null, 5500))
+        // A route change during a probe invalidates it and starts the retry window over.
+        policy.routeChanged(6000)
+        assertEquals(AudioBandwidthMode.AUDIO_ONLY, policy.update(600, null, 6500))
+        assertEquals(AudioBandwidthMode.VIDEO_PROBE, policy.update(600, null, 7500))
+        assertEquals(AudioBandwidthMode.PRIMARY_ONLY, policy.update(600, null, 12000))
+    }
+
+    @Test fun repeatedProbeFailuresBackOffButKeepRetrying() {
+        val policy = AudioBandwidthPolicy()
+        assertEquals(AudioBandwidthMode.PRIMARY_ONLY, policy.update(20, 0.5, 1000))
+        assertEquals(AudioBandwidthMode.AUDIO_ONLY, policy.update(20, 0.5, 3000))
+        var now = 3000L
+        var probes = 0
+        var lastProbeStart = 0L
+        var gap = 0L
+        var probing = false
+        while (now < 300_000L) {
+            now += 500
+            // Audio-only looks fine, but every probe measures a link that cannot carry video.
+            val mode = policy.update(if (probing) 20 else null, null, now)
+            if (mode == AudioBandwidthMode.VIDEO_PROBE && !probing) { probes++; gap = now - lastProbeStart; lastProbeStart = now }
+            probing = mode == AudioBandwidthMode.VIDEO_PROBE
+        }
+        assertTrue("probe stopped retrying: $probes", probes > 5)
+        assertTrue("retry backoff unbounded: $gap", gap <= 35_000)
+    }
+
     @Test fun externalRouteAndDisconnectFallback() {
         val devices = setOf(AudioRoute.SPEAKER, AudioRoute.EARPIECE, AudioRoute.BLUETOOTH)
         assertEquals(AudioRoute.BLUETOOTH, AudioRoutePolicy.select(devices, false))
