@@ -1,19 +1,19 @@
 # Current Task
 
 ## Task
-Fix video remaining suspended after Wi-Fi/cellular handover.
+Reduce the Wi-Fi to cellular handover interruption and the time the picture stays degraded after it.
 
 ## Why
-AudioBandwidthPolicy paused all video on a single collapsed send estimate and could only resume when both a >=250 kbps estimate and a fresh remote report were present. A handover removes exactly that evidence, so the pause outlived the bad network and survived returning to Wi-Fi.
+A handover froze the picture for a perceived four to five seconds and then took tens of seconds to look right again. Measurement showed four separate causes, none of them the ICE switch itself.
 
 ## Scope
-Audio bandwidth policy, RTP sender restoration, report freshness, tests and handoff/network docs. Preserve existing unstaged UI/AGENTS/camera workaround.
+ICE recovery timers and restart decisions, congestion control re-seeding, the video quality ladder after a route change, handover instrumentation, native log hygiene. Preserve existing unstaged UI/AGENTS/camera work.
 
 ## Acceptance Criteria
-Pausing needs sustained measured starvation; a new route ignores the stale estimate and retries quickly; a bounded probe fails only on measured failure and backs off to at most 30 s without ever stopping; a rejected setParameters cannot strand the camera at the probe format; user-disabled camera stays off.
+A handover reports a byte gap and a picture gap of the same order; no ICE restart follows a switch that recovered on its own; the re-seeded estimate does not overshoot into the audio reserve; the picture climbs back to the ceiling the previous route held.
 
 ## Validation
-143 JVM tests PASS (new: missing evidence, stale reports, route change, probe backoff). :app:assembleDebug and :app:lintDebug PASS. Debug APK installed on the attached device. Two-device handover measurement still outstanding.
+Measured on the attached device across seven real handovers. Byte gap 2172 -> 1638 ms; picture gap, once measured separately, equals the byte gap rather than exceeding it; no spurious restarts or bandwidth-mode oscillation in the last two captures. 155 JVM tests, assembleDebug and lintDebug PASS.
 
 ## State
-DONE (6d2d0a3); pending real two-device handover measurement.
+DONE for the first switch. A second, smaller interruption remains when ICE promotes the cellular relay pair to a direct pair several seconds later.

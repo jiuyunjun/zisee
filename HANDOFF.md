@@ -10,7 +10,7 @@ Fix Show Me orientation; reduce Wi-Fi to 5G freezes (TURN fallback allowed); con
 Completed camera correction, handover scheduling/native ICE tuning, and AR control-channel integration. Next milestone is AR camera/media/rendering and exact displayed-frame identity integration.
 
 ## Last Good Checkpoint
-commit: 6d2d0a3
+commit: 6048a1e
 build: PASS
 tests: PASS
 
@@ -23,11 +23,18 @@ Expected pre-existing unstaged files: AGENTS.md; NativeRtcSession.kt (only the o
 ## Completed
 - 646e07a: normalize CameraX SurfaceTexture camera rotation/mirror before WebRTC frame metadata; retain texture crop and balanced references.
 - b430cfd: record route time before signaling IO; wake exchange for new candidates; keep restart adoption in fast polling; reduce native receiving/backup path detection waits while retaining ALL/P2P/TURN candidates.
+- 6048a1e: a route change comes back at the smallest step so the first key frame is small; the picture gap is measured from decoded frames.
+- 03318f8: the seed cooldown compared against Long.MIN_VALUE and overflowed, swallowing every seed; fast stats now cover any pair change.
+- a6c233b: seed a quarter of the previous route's rate, capped at 1 Mbps, once per handover; three expected native messages no longer log as errors.
+- 8fdd056: crediting a recovered route moved to the media-stats collector so signaling IO cannot starve it.
+- 29e619e: iceUnwritableTimeMs 1500 -> 750 over two checks (measured: it was the whole selection delay); restart reasons logged; local candidate origins read from stats.
+- f841b62: an estimate that has not warmed up on a new route no longer suspends video.
+- 21e9837: handover measurement, and a route change restores the ceiling the previous route held.
 - 6d2d0a3: video suspension always ends: sustained starvation before pausing, post-route settle window, bounded probe that fails only on measured failure, capped retry backoff, and no probe capture cap once quality changes are rejected.
 - e4499d0: dedicated reliable ordered AR DataChannel id 2, explicit ready/join/joined/leave/ended lifecycle, session/result correlation, bounded ingress/backpressure, GL controller adapter, per-call cleanup and failure isolation.
 
 ## Verified
-- 143 JVM tests: zero failures/errors/skips.
+- 155 JVM tests: zero failures/errors/skips.
 - :app:assembleDebug, :app:assembleDebugAndroidTest, :app:lintDebug PASS.
 - Attached Android cameraTransform instrumentation PASS (real Matrix, no physical camera orientation assertion).
 - Attached Android arChannel instrumentation PASS: two actual PeerConnections/SCTP/DTLS; synthetic field endpoint; create/result/clear/leave/ended; malformed-message AR shutdown releases endpoint and camera-state still sends.
