@@ -16,19 +16,12 @@ import android.view.Surface
  */
 class DeviceOrientation(private val context: Context, private val onChanged: (Int) -> Unit = {}) {
     private val displays = context.getSystemService(DisplayManager::class.java)
-    @Volatile var rotation = Surface.ROTATION_0; private set
+    @Volatile var rotation = displayRotation(); private set
+    private val quantizer = OrientationQuantizer(rotation)
 
     private val listener = object : OrientationEventListener(context) {
         override fun onOrientationChanged(degrees: Int) {
-            if (degrees == ORIENTATION_UNKNOWN) return
-            // 45 degree bands, matching how the platform itself rounds an orientation to a surface
-            // rotation. A phone held flat reports UNKNOWN and simply keeps the last value.
-            val value = when (((degrees + 45) / 90) % 4) {
-                1 -> Surface.ROTATION_270
-                2 -> Surface.ROTATION_180
-                3 -> Surface.ROTATION_90
-                else -> Surface.ROTATION_0
-            }
+            val value = quantizer.update(degrees)
             if (value != rotation) { rotation = value; onChanged(value) }
         }
     }
@@ -46,7 +39,9 @@ class DeviceOrientation(private val context: Context, private val onChanged: (In
      * rear camera turns the opposite way from a front one.
      */
     fun correction(frontFacing: Boolean): Int =
-        orientationCorrection(degrees(rotation), degrees(displayRotation()), frontFacing)
+        if (listener.canDetectOrientation())
+            orientationCorrection(degrees(rotation), degrees(displayRotation()), frontFacing)
+        else 0 // No sensor: keep the capturer's display-based rotation rather than a frozen guess.
 
     private fun degrees(surfaceRotation: Int) = when (surfaceRotation) {
         Surface.ROTATION_90 -> 90

@@ -23,17 +23,55 @@ class RtcSmokeInstrumentation : Instrumentation() {
     private var expectedQuality: String? = null
     private var preview = false
     private var capabilities = false
+    private var orientationPreview = false
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         expectedQuality = arguments?.getString("expectedQuality")
         preview = arguments?.getString("preview") == "true"
         capabilities = arguments?.getString("capabilities") == "true"
+        orientationPreview = arguments?.getString("orientationPreview") == "true"
         start()
     }
 
     override fun onStart() {
         val output = Bundle()
         try {
+            if (orientationPreview) {
+                try {
+                    for (mode in listOf("face", "mine", "both")) {
+                        for (viewer in 0..1) for (remoteRotation in listOf(90, 0)) {
+                            check(uiAutomation.setRotation(viewer))
+                            val activity = startActivitySync(android.content.Intent().setClassName(targetContext.packageName,
+                                "com.zisee.app.ui.CallPreviewActivity")
+                                .putExtra("scene", mode == "both").putExtra("mine", mode == "mine")
+                                .putExtra("localRotation", if (viewer == 0) 90 else 0)
+                                .putExtra("remoteRotation", remoteRotation)
+                                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+                            try {
+                                waitForIdleSync()
+                                // ActiveCall requests FULL_SENSOR on entry. Override only in this
+                                // synthetic fixture after composition so the requested matrix is real.
+                                runOnMainSync {
+                                    activity.requestedOrientation = if (viewer == 0)
+                                        android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                                    else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                                }
+                                waitForIdleSync()
+                                android.os.SystemClock.sleep(1_000)
+                                val screenshot = requireNotNull(uiAutomation.takeScreenshot())
+                                try {
+                                    check(if (viewer == 0) screenshot.height > screenshot.width else screenshot.width > screenshot.height)
+                                    java.io.File(targetContext.getExternalFilesDir(null), "orientation-$mode-$viewer-$remoteRotation.png")
+                                        .outputStream().use { check(screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)) }
+                                } finally { screenshot.recycle() }
+                            } finally { runOnMainSync { activity.finish() } }
+                        }
+                    }
+                } finally { uiAutomation.setRotation(android.app.UiAutomation.ROTATION_UNFREEZE) }
+                output.putString("stream", "PASS: 12 synthetic orientation layout captures; not a camera orientation test\n")
+                finish(Activity.RESULT_OK, output)
+                return
+            }
             if (preview) {
                 for (scene in listOf(false, true)) {
                     val activity = startActivitySync(android.content.Intent().setClassName(targetContext.packageName,

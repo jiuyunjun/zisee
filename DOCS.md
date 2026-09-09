@@ -1591,3 +1591,7 @@ Zisee 的文档遵循：
 ## 网络切换专项（2026-09-09）
 
 [NETWORK_HANDOVER.md](docs/architecture/NETWORK_HANDOVER.md)：网络切换低卡顿设计；第 39 节记录当前实施范围与待验收项。
+
+## 视频方向专项（2026-09-09）
+
+[VIDEO_ORIENTATION.md](docs/architecture/VIDEO_ORIENTATION.md)：ARCH-VIDEO-ORIENTATION-001，Active；双方横竖屏矩阵、Show Me 主辅视角、镜像、逐 Track 帧方向、布局适配和设备验收。

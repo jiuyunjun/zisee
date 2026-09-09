@@ -64,10 +64,10 @@ private val DockInk = Color(0xFF0D1317)
 private val BadgeInk = Color(0xFF090E11)
 
 // The four possible cameras in a call. Which of them exist depends on each end's Show Me mode.
-private const val MeFace = "me.face"
-private const val MeScene = "me.scene"
-private const val PeerFace = "peer.face"
-private const val PeerScene = "peer.scene"
+private const val MeFace = CallVideoLayout.MeFace
+private const val MeScene = CallVideoLayout.MeScene
+private const val PeerFace = CallVideoLayout.PeerFace
+private const val PeerScene = CallVideoLayout.PeerScene
 
 private fun label(tile: String) = when (tile) {
     MeFace -> "我"
@@ -92,7 +92,10 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
     var controls by remember { mutableStateOf(true) }
     var interaction by remember { mutableLongStateOf(0L) }
     var more by remember { mutableStateOf(false) }
-    var chosen by remember { mutableStateOf<String?>(null) }
+    var stableLocalMode by remember { mutableStateOf(CameraMode.FACE) }
+    val localMode = if (state.showMe.mode == CameraMode.STARTING) stableLocalMode else state.showMe.mode
+    SideEffect { stableLocalMode = localMode }
+    var chosen by remember(localMode, state.remotePresentation.mode) { mutableStateOf<String?>(null) }
     // Where the viewer has dragged each thumbnail, as an offset from its stacked position.
     var moved by remember { mutableStateOf(mapOf<String, Offset>()) }
     // Thumbnails parked off an edge, and which edge each went to.
@@ -102,7 +105,7 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
     val density = LocalDensity.current
     val remoteDual = state.remotePresentation.mode == CameraMode.DUAL
     val scene = state.remotePresentation.mode in setOf(CameraMode.DUAL, CameraMode.BACK_ONLY)
-    val localScene = state.showMe.mode in setOf(CameraMode.DUAL, CameraMode.BACK_ONLY)
+    val localScene = localMode in setOf(CameraMode.DUAL, CameraMode.BACK_ONLY)
     val starting = state.showMe.mode == CameraMode.STARTING
     val hint = state.showMeHint && remoteDual
     // Priority: what is happening now, then what failed, then the one-time teaching hint.
@@ -148,105 +151,95 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
     }
     // The hint has taught its gesture once it has been read, whether or not it was used.
     LaunchedEffect(hint) { if (hint) { delay(8_000); onHintSeen() } }
-    // A tile that no longer exists cannot stay selected; the default rule then takes over.
-    // Whichever remote camera is in the PiP is a thumbnail here, so tell the sender to stop paying
-    // full price for it. Swapping the main view swaps which one that is.
-    LaunchedEffect(chosen, state.remotePresentation.mode, state.showMe.mode) {
-        onViewLayout(chosen == PeerFace, chosen == PeerScene)
-    }
     LaunchedEffect(tip) { if (tip == null) tipInset = 0.dp }
     Surface(color = CallInk, contentColor = CallText, modifier = Modifier.fillMaxSize()) {
-        BoxWithConstraints(Modifier.fillMaxSize().clickable { controls = !controls; interaction++ }) {
-            // Every camera in the call is one tile: two of mine when Show Me is on, two of the
-            // peer's when theirs is, one each otherwise. Exactly one is the main view and the rest
-            // are thumbnails, which is what makes "one big, two small" and "one big, three small"
-            // the same rule rather than separate cases.
-            val order = buildList {
-                when (state.showMe.mode) {
-                    CameraMode.DUAL -> { add(MeScene); add(MeFace) }
-                    CameraMode.BACK_ONLY -> add(MeScene)
-                    else -> add(MeFace)
-                }
-                when (state.remotePresentation.mode) {
-                    CameraMode.DUAL -> { add(PeerScene); add(PeerFace) }
-                    CameraMode.BACK_ONLY -> add(PeerScene)
-                    else -> add(PeerFace)
-                }
-            }
-            // Opening Show Me makes my own scene the main view: framing it is the task at hand.
-            // Otherwise the peer leads, preferring the scene they chose to show.
-            val fallbackMain = when {
-                localScene -> MeScene
-                PeerScene in order -> PeerScene
-                else -> PeerFace
-            }
-            val main = chosen.takeIf { it in order } ?: fallbackMain
+        BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().clickable { controls = !controls; interaction++ }) {
+            val order = CallVideoLayout.sources(localMode, state.remotePresentation.mode)
+            val main = CallVideoLayout.main(order, chosen)
             val thumbs = order.filter { it != main }
-            val thumbWidth = minOf(when (thumbs.size) { 1 -> 104.dp; 2 -> 96.dp; else -> 88.dp }, maxWidth * 0.28f)
-            val thumbHeight = minOf(when (thumbs.size) { 1 -> 148.dp; 2 -> 136.dp; else -> 124.dp },
-                (maxHeight - 220.dp) / thumbs.size.coerceAtLeast(1))
-            val edge = with(density) { 16.dp.toPx() }
-            val travel = with(density) { (maxWidth - thumbWidth - 32.dp).toPx() }
-            fun footing(tile: String) = 132.dp + tipInset + (thumbHeight + 8.dp) * thumbs.indexOf(tile)
-            // A thumbnail may be dragged anywhere on screen, so it is held inside the edges rather
-            // than allowed off them.
-            // Dragging past an edge is allowed, by half a thumbnail, so that pushing one off the
-            // side is a way to park it rather than something the clamp refuses.
-            val overshoot = with(density) { thumbWidth.toPx() } / 2
-            fun inside(tile: String, raw: Offset): Offset {
-                val base = with(density) { footing(tile).toPx() }
-                val above = with(density) { (maxHeight - thumbHeight).toPx() } - base - edge * 3
-                return Offset(raw.x.coerceIn(-travel - overshoot, overshoot), raw.y.coerceIn(-above, base - edge))
+            // Report the resolved main view, including the automatic Show Me choice.
+            LaunchedEffect(main, state.remotePresentation.mode) {
+                val request = CallVideoLayout.remoteView(main, state.remotePresentation.mode)
+                onViewLayout(request.front == com.zisee.app.rtc.ViewSize.LARGE,
+                    request.back == com.zisee.app.rtc.ViewSize.LARGE)
             }
-            // Released near an edge it settles against it, so thumbnails stay off the middle of the
-            // picture without the viewer having to place them precisely. Released past one it parks
-            // there instead, leaving only a handle.
+            val aspects = mapOf(
+                MeFace to videoAspect(state.local),
+                MeScene to videoAspect(if (localMode == CameraMode.DUAL) state.localBack else state.local),
+                PeerFace to videoAspect(state.remote),
+                PeerScene to videoAspect(if (remoteDual) state.remoteBack else state.remote),
+            )
+            val positions = CallVideoLayout.thumbnails(maxWidth.value.coerceAtLeast(1f),
+                maxHeight.value.coerceAtLeast(1f), thumbs.map { aspects.getValue(it) }, 140f + tipInset.value)
+            val tiles = thumbs.zip(positions).toMap()
+            // Pixel drag offsets belong to one geometry. Rotation/stream changes reset them before
+            // they can strand a thumbnail outside the resized window.
+            LaunchedEffect(maxWidth, maxHeight, main, positions) {
+                moved = emptyMap(); parked = emptyMap()
+            }
+            val edge = with(density) { 8.dp.toPx() }
+            fun inside(tile: String, raw: Offset): Offset {
+                val rect = tiles.getValue(tile)
+                val x = with(density) { rect.x.dp.toPx() }
+                val y = with(density) { rect.y.dp.toPx() }
+                val w = with(density) { rect.width.dp.toPx() }
+                val h = with(density) { rect.height.dp.toPx() }
+                val width = with(density) { maxWidth.toPx() }
+                val height = with(density) { maxHeight.toPx() }
+                return Offset(raw.x.coerceIn(-x - w / 2, width - x - w / 2),
+                    raw.y.coerceIn(-y, (height - y - h).coerceAtLeast(-y)))
+            }
             fun settled(tile: String, raw: Offset): Offset {
                 val held = inside(tile, raw)
-                val park = overshoot / 2
+                val rect = tiles.getValue(tile)
+                val x = with(density) { rect.x.dp.toPx() } + held.x
+                val w = with(density) { rect.width.dp.toPx() }
+                val width = with(density) { maxWidth.toPx() }
                 parked = when {
-                    held.x > park -> parked + (tile to false)
-                    held.x < -travel - park -> parked + (tile to true)
+                    x < -w / 4 -> parked + (tile to true)
+                    x + w > width + w / 4 -> parked + (tile to false)
                     else -> parked - tile
                 }
-                return Offset(if (held.x < -travel / 2) -travel else 0f, held.y)
+                val snapped = if (x + w / 2 < width / 2) edge else (width - w - edge).coerceAtLeast(0f)
+                return Offset(snapped - with(density) { rect.x.dp.toPx() }, held.y)
             }
             fun slot(tile: String): Modifier {
                 if (tile == main) return Modifier.fillMaxSize()
+                val rect = tiles.getValue(tile)
+                // Clamp during composition as well: layout changes precede the reset effect.
+                val drag = inside(tile, moved[tile] ?: Offset.Zero)
+                val y = with(density) { rect.y.dp.toPx() } + drag.y
                 parked[tile]?.let { left ->
-                    val drag = moved[tile] ?: Offset.Zero
-                    return Modifier.align(if (left) Alignment.BottomStart else Alignment.BottomEnd)
-                        .safeDrawingPadding().padding(bottom = footing(tile))
-                        .offset { IntOffset(0, drag.y.roundToInt()) }
-                        .size(14.dp, 56.dp)
+                    val handleHeight = minOf(56.dp, maxHeight)
+                    return Modifier.align(Alignment.TopStart)
+                        .offset { IntOffset(if (left) 0 else with(density) { (maxWidth - 14.dp).toPx().roundToInt() },
+                            y.coerceIn(0f, with(density) { (maxHeight - handleHeight).toPx() }).roundToInt()) }
+                        .size(14.dp, handleHeight)
                         .clip(if (left) HandleLeftShape else HandleRightShape)
                         .background(DockInk.copy(alpha = 0.82f))
                         .border(1.dp, CallText.copy(alpha = 0.16f),
                             if (left) HandleLeftShape else HandleRightShape)
                 }
-                val drag = moved[tile] ?: Offset.Zero
-                // Stacked upward from the dock, so the tip and controls keep their designed footing.
-                return Modifier.align(Alignment.BottomEnd).safeDrawingPadding()
-                    .padding(end = 16.dp, bottom = footing(tile))
-                    .offset { IntOffset(drag.x.roundToInt(), drag.y.roundToInt()) }
-                    .size(thumbWidth, thumbHeight).clip(PipShape)
+                return Modifier.align(Alignment.TopStart)
+                    .offset { IntOffset((with(density) { rect.x.dp.toPx() } + drag.x).roundToInt(), y.roundToInt()) }
+                    .size(rect.width.dp, rect.height.dp).clip(PipShape)
                     .border(1.dp, CallText.copy(alpha = 0.16f), PipShape)
             }
             // Fixed call sites keep each renderer's node identity across a swap. Moving a renderer
             // between parents would recreate its surface and flash black.
             if (MeFace in order) {
-                VideoTile(state.local, state.cameraEnabled && MeFace !in parked, slot(MeFace), MeFace != main)
+                VideoTile(state.local, state.cameraEnabled && (MeFace == main || MeFace !in parked), slot(MeFace), MeFace != main)
             }
             if (MeScene in order) {
-                VideoTile(if (state.showMe.mode == CameraMode.DUAL) state.localBack else state.local,
-                    state.cameraEnabled && MeScene !in parked, slot(MeScene), MeScene != main)
+                VideoTile(if (localMode == CameraMode.DUAL) state.localBack else state.local,
+                    state.cameraEnabled && (MeScene == main || MeScene !in parked), slot(MeScene), MeScene != main)
             }
             if (PeerFace in order) {
-                VideoTile(state.remote, state.remotePresentation.enabled && PeerFace !in parked, slot(PeerFace), PeerFace != main)
+                VideoTile(state.remote, state.remotePresentation.enabled && (PeerFace == main || PeerFace !in parked), slot(PeerFace), PeerFace != main)
             }
             if (PeerScene in order) {
                 VideoTile(if (state.remotePresentation.mode == CameraMode.DUAL) state.remoteBack else state.remote,
-                    state.remotePresentation.enabled && PeerScene !in parked, slot(PeerScene), PeerScene != main)
+                    state.remotePresentation.enabled && (PeerScene == main || PeerScene !in parked), slot(PeerScene), PeerScene != main)
             }
             val mainIsPeer = main == PeerFace || main == PeerScene
             if (mainIsPeer && !state.remotePresentation.enabled) {
@@ -260,7 +253,7 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
             // Tapping a thumbnail promotes it; the previous main view takes its place.
             thumbs.forEach { tile ->
                 Box(slot(tile)
-                    .pointerInput(tile, main, thumbs.size, tipInset) {
+                    .pointerInput(tile, main, positions, maxWidth, maxHeight) {
                         detectDragGestures(
                             onDrag = { change, delta ->
                                 change.consume()
@@ -281,8 +274,11 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                     }) {
                     // A parked handle is too narrow for a label or a badge; it is just the edge.
                     if (tile !in parked) {
-                        PipLabel(if (tile == MeFace && !state.cameraEnabled) "画面已关闭" else label(tile))
-                        Box(Modifier.align(Alignment.TopEnd).padding(6.dp).size(24.dp).clip(CircleShape)
+                        val compact = tiles.getValue(tile).width < 72f
+                        PipLabel(if (compact) when (tile) {
+                            MeFace -> "我"; PeerFace -> "对"; else -> "景"
+                        } else if (tile == MeFace && !state.cameraEnabled) "已关闭" else label(tile), compact)
+                        if (!compact) Box(Modifier.align(Alignment.TopEnd).padding(6.dp).size(24.dp).clip(CircleShape)
                             .background(BadgeInk.copy(alpha = 0.66f)), contentAlignment = Alignment.Center) {
                             Canvas(Modifier.size(13.dp)) { scale(size.width / 24f, size.width / 24f, Offset.Zero) { callIcon("swap", CallText) } }
                         }
@@ -341,7 +337,7 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                 }
                 Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().safeDrawingPadding()
                     .padding(bottom = 10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp).clip(DockShape)
+                    Row(Modifier.widthIn(max = 440.dp).fillMaxWidth().padding(horizontal = 12.dp).clip(DockShape)
                         .background(DockInk.copy(alpha = 0.66f))
                         .border(1.dp, CallText.copy(alpha = 0.08f), DockShape).padding(10.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -389,16 +385,25 @@ private fun CallOptions(state: CallUiState, onDismiss: () -> Unit, onSwitch: () 
     }
 }
 
+/** Read each track's upright frame dimensions, never infer the peer's direction from our window. */
+@Composable
+private fun videoAspect(feed: com.zisee.app.rtc.VideoFeed?): Float {
+    if (feed == null) return 9f / 16f
+    val geometry by feed.geometry.collectAsState()
+    return geometry?.aspectRatio ?: (9f / 16f)
+}
+
 /** A camera's slot in the layout: its picture when it is live, its dark placeholder when not. */
 @Composable
 private fun VideoTile(feed: com.zisee.app.rtc.VideoFeed?, live: Boolean, modifier: Modifier, overlay: Boolean) {
-    if (live && feed != null) VideoRenderer(feed, modifier, overlay) else Box(modifier.background(CallInk))
+    if (live && feed != null) VideoRenderer(feed, modifier, overlay)
+    else Box(if (overlay) modifier.background(CallInk) else modifier)
 }
 
 @Composable
-private fun BoxScope.PipLabel(text: String) {
-    Box(Modifier.align(Alignment.BottomStart).padding(8.dp).height(20.dp).clip(RoundedCornerShape(10.dp))
-        .background(BadgeInk.copy(alpha = 0.66f)).padding(horizontal = 8.dp),
+private fun BoxScope.PipLabel(text: String, compact: Boolean = false) {
+    Box(Modifier.align(Alignment.BottomStart).padding(if (compact) 2.dp else 8.dp).height(20.dp).clip(RoundedCornerShape(10.dp))
+        .background(BadgeInk.copy(alpha = 0.66f)).padding(horizontal = if (compact) 3.dp else 8.dp),
         contentAlignment = Alignment.Center) {
         Text(text, fontSize = 11.sp, color = PipInk)
     }

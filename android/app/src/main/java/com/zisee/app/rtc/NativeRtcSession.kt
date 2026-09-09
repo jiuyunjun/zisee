@@ -109,6 +109,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var remoteView = ViewRequest.Default
     private var appliedView: ViewRequest? = null
     private var sentView: ViewRequest? = null
+    private var desiredView = ViewRequest.Default
     private var adaptationEnabled = true
     private val powerManager = context.getSystemService(PowerManager::class.java)
     @Volatile private var startedNanos = 0L
@@ -234,7 +235,9 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         control = requireNotNull(peer).createDataChannel("camera-state", DataChannel.Init().apply { negotiated = true; id = 0 })
         control?.registerObserver(object : DataChannel.Observer {
             override fun onBufferedAmountChange(previousAmount: Long) = Unit
-            override fun onStateChange() { scope.launch { if (!released) sendPresentation() } }
+            override fun onStateChange() { scope.launch {
+                if (!released) { sendPresentation(); sendViewLayout() }
+            } }
             override fun onMessage(buffer: DataChannel.Buffer) {
                 if (buffer.binary || buffer.data.remaining() > 32) return
                 val bytes = ByteArray(buffer.data.remaining()); buffer.data.get(bytes)
@@ -470,12 +473,16 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
      * a stream this device is showing in a thumbnail. Only changes are sent.
      */
     suspend fun reportViewLayout(front: ViewSize, back: ViewSize) = withContext(dispatcher) {
-        val request = ViewRequest(front, back)
-        if (released || sentView == request) return@withContext
-        val channel = control ?: return@withContext
-        if (channel.state() != DataChannel.State.OPEN) return@withContext
-        val data = request.encode().toByteArray(Charsets.UTF_8)
-        if (channel.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(data), false))) sentView = request
+        desiredView = ViewRequest(front, back)
+        sendViewLayout()
+    }
+
+    private fun sendViewLayout() {
+        if (released || sentView == desiredView) return
+        val channel = control ?: return
+        if (channel.state() != DataChannel.State.OPEN) return
+        val data = desiredView.encode().toByteArray(Charsets.UTF_8)
+        if (channel.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(data), false))) sentView = desiredView
     }
 
     suspend fun toggleShowMe(preferDual: Boolean = true) = withContext(dispatcher) {

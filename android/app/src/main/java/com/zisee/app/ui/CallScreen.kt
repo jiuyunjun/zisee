@@ -34,6 +34,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -138,11 +139,20 @@ fun CallScreen(state: CallUiState, model: CallViewModel) {
 @Composable
 internal fun VideoRenderer(feed: VideoFeed, modifier: Modifier, overlay: Boolean = false) {
     androidx.compose.runtime.key(feed) {
-        AndroidView(factory = { context -> SurfaceViewRenderer(context).also {
-            it.setZOrderMediaOverlay(overlay)
-            feed.attach(it); it.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
-        } }, update = { it.setZOrderMediaOverlay(overlay) }, modifier = modifier, onRelease = { feed.detach(it) })
+        val geometry by feed.geometry.collectAsState()
+        // The call surface supplies the bars. An opaque full-size background here would paint over
+        // earlier thumbnail SurfaceView holes when the later remote renderer is the main view.
+        BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
+            // Compose imposes EXACT dimensions. FIT alone cannot shrink a SurfaceView inside those
+            // constraints, so size the surface to the upright frame and leave bars in its parent.
+            val aspect = geometry?.aspectRatio ?: (maxWidth.value / maxHeight.value.coerceAtLeast(1f))
+            val width = minOf(maxWidth, maxHeight * aspect)
+            val height = minOf(maxHeight, width / aspect.coerceAtLeast(0.001f))
+            AndroidView(factory = { context -> SurfaceViewRenderer(context).also {
+                it.setZOrderMediaOverlay(overlay)
+                feed.attach(it); it.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
+            } }, update = { it.setZOrderMediaOverlay(overlay) }, modifier = Modifier.size(width, height),
+                onRelease = { feed.detach(it) })
+        }
     }
 }
-
-
