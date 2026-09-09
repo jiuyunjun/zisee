@@ -591,11 +591,22 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
      * each of those restarts the estimator underneath a link it was already measuring.
      */
     private fun seedBitrate(nowMs: Long) {
-        if (sustainedSendKbps <= 0) return
-        if (audioBandwidth.mode == com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.AUDIO_ONLY) return
+        // A handover that seeds nothing leaves the new path to climb from the opening estimate, and
+        // a measured one did exactly that with no trace of why. Say which precondition refused.
+        if (sustainedSendKbps <= 0) {
+            logger.info(AppEvent.RTC_BITRATE_SEEDED, "skipped=no_measured_rate")
+            return
+        }
+        if (audioBandwidth.mode == com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.AUDIO_ONLY) {
+            logger.info(AppEvent.RTC_BITRATE_SEEDED, "skipped=video_paused")
+            return
+        }
         // Never subtract from a sentinel: nowMs - Long.MIN_VALUE overflows negative and this
         // guard then swallowed every seed the feature exists to apply.
-        if (lastSeedMs?.let { nowMs - it < SEED_COOLDOWN_MS } == true) return
+        if (lastSeedMs?.let { nowMs - it < SEED_COOLDOWN_MS } == true) {
+            logger.info(AppEvent.RTC_BITRATE_SEEDED, "skipped=cooldown")
+            return
+        }
         val seed = (sustainedSendKbps * 1_000 / 4).coerceIn(MIN_SEED_BPS, MAX_SEED_BPS).toInt()
         lastSeedMs = nowMs
         if (peer?.setBitrate(null, seed, null) == false) logger.error(AppEvent.RTC_QUALITY_REJECTED)
