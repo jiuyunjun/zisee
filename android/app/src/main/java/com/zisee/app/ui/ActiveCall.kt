@@ -50,18 +50,22 @@ import com.zisee.app.rtc.CameraMode
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
-// Foundations.dc.html tokens. Every call surface draws from this palette only.
-private val CallInk = Color(0xFF0B0F12)
+// Foundations.dc.html tokens. Every call surface draws from this palette only, in-call and out.
+internal val CallInk = Color(0xFF0B0F12)
+internal val CallPanel = Color(0xFF12181D)
 private val CallScrim = Color(0xFF070B0E)
-private val CallAccent = Color(0xFF5FD4D6)
-private val CallAccentInk = Color(0xFF071518)
-private val CallText = Color(0xFFE8EDF0)
-private val CallMuted = Color(0xFFA9B6BD)
-private val CallCaption = Color(0xFF4E5C65)
-private val PipInk = Color(0xFFC4D0D6)
-private val CallDanger = Color(0xFFE5484D)
-private val DockInk = Color(0xFF0D1317)
-private val BadgeInk = Color(0xFF090E11)
+internal val CallAccent = Color(0xFF5FD4D6)
+internal val CallAccentSoft = Color(0x295FD4D6)
+internal val CallAccentInk = Color(0xFF071518)
+internal val CallText = Color(0xFFE8EDF0)
+internal val CallMuted = Color(0xFFA9B6BD)
+internal val CallFaint = Color(0xFF67757E)
+internal val CallCaption = Color(0xFF4E5C65)
+internal val PipInk = Color(0xFFC4D0D6)
+internal val CallDanger = Color(0xFFE5484D)
+internal val DockInk = Color(0xFF0D1317)
+internal val BadgeInk = Color(0xFF090E11)
+internal val Elevated = Color(0xFF1E2A31)
 
 // The four possible cameras in a call. Which of them exist depends on each end's Show Me mode.
 private const val MeFace = CallVideoLayout.MeFace
@@ -78,7 +82,10 @@ private fun label(tile: String) = when (tile) {
 }
 
 private val DockShape = RoundedCornerShape(32.dp)
-private val ButtonShape = RoundedCornerShape(28.dp)
+internal val ButtonShape = RoundedCornerShape(28.dp)
+// Foundations.dc.html: primary/secondary actions round to 26, cards/panels to 20-28.
+internal val PillShape = RoundedCornerShape(26.dp)
+internal val CardShape = RoundedCornerShape(28.dp)
 private val PipShape = RoundedCornerShape(20.dp)
 // A parked thumbnail keeps only the rounded edge that faces the picture.
 private val HandleLeftShape = RoundedCornerShape(topEnd = 7.dp, bottomEnd = 7.dp)
@@ -433,7 +440,7 @@ private fun BoxScope.PipLabel(text: String, compact: Boolean = false) {
  * camera-off stay legible without colour vision and read correctly to TalkBack.
  */
 @Composable
-private fun DockButton(label: String, kind: String, off: Boolean = false, active: Boolean = false,
+internal fun DockButton(label: String, kind: String, off: Boolean = false, active: Boolean = false,
     available: Boolean = false, danger: Boolean = false, enabled: Boolean = true,
     width: Dp = 56.dp, action: () -> Unit) {
     val background = when {
@@ -468,7 +475,7 @@ private fun DockButton(label: String, kind: String, off: Boolean = false, active
 }
 
 /** Design glyphs drawn in the shared 24-unit viewBox used across the canvases. */
-private fun DrawScope.callIcon(kind: String, ink: Color, knockout: Color = Color.Transparent, off: Boolean = false) {
+internal fun DrawScope.callIcon(kind: String, ink: Color, knockout: Color = Color.Transparent, off: Boolean = false) {
     val stroke = Stroke(1.8f, cap = StrokeCap.Round, join = StrokeJoin.Round)
     fun path(data: String, color: Color = ink) = drawPath(PathParser().parsePathString(data).toPath(), color, style = stroke)
     when (kind) {
@@ -499,6 +506,14 @@ private fun DrawScope.callIcon(kind: String, ink: Color, knockout: Color = Color
         }
         "swap" -> path("M4 8h13l-3.5-3.5M20 16H7l3.5 3.5")
         "end" -> path("M3.2 13.6c5-4.6 12.6-4.6 17.6 0l-2.5 2.6a2 2 0 0 1-2.5.3l-1.7-1.1a1.6 1.6 0 0 1-.7-1.3v-1.4a12 12 0 0 0-6.8 0v1.4c0 .5-.3 1-.7 1.3l-1.7 1.1a2 2 0 0 1-2.5-.3z")
+        "close" -> path("M6 6l12 12M18 6L6 18")
+        "code" -> { drawRoundRect(ink, Offset(3f, 5f), Size(18f, 14f), CornerRadius(3f), style = stroke); path("M8 12h8M12 9v6") }
+        "copy" -> {
+            drawRoundRect(ink, Offset(8.5f, 8.5f), Size(12f, 12f), CornerRadius(2.6f), style = stroke)
+            path("M15.5 5.5A2.5 2.5 0 0 0 13 3H6a3 3 0 0 0-3 3v7a2.5 2.5 0 0 0 2.5 2.5")
+        }
+        "share" -> { path("M12 16V4"); path("M7.5 8.5 12 4l4.5 4.5"); path("M4.5 14v4.5a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V14") }
+        "contact" -> { drawCircle(ink, 4f, Offset(10f, 8.5f), style = stroke); path("M3 20c0-3.6 3.1-6 7-6 1.5 0 2.9.35 4 .96"); path("M18 14v6M15 17h6") }
     }
     if (off) path("M4 4 20 20")
 }
