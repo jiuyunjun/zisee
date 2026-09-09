@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Size
 import android.view.Surface
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.CameraInfo
 import androidx.camera.core.ConcurrentCamera
 import androidx.camera.core.Preview
 import androidx.camera.core.UseCaseGroup
@@ -21,6 +22,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.webrtc.EglBase
 import org.webrtc.SurfaceTextureHelper
+import org.webrtc.TextureBufferImpl
 import org.webrtc.VideoFrame
 import org.webrtc.VideoSource
 import kotlin.coroutines.resume
@@ -30,6 +32,7 @@ import kotlin.coroutines.resumeWithException
 class DualCameraCapture(private val context: Context, private val egl: EglBase.Context) {
     private var provider: ProcessCameraProvider? = null
     private var selectors: List<CameraSelector>? = null
+    private var cameraInfos: List<CameraInfo>? = null
     private var owner: LifecycleOwner? = null
     private val bridges = mutableListOf<Bridge>()
     private val previews = mutableListOf<Preview>()
@@ -57,9 +60,10 @@ class DualCameraCapture(private val context: Context, private val egl: EglBase.C
             infos.any { it.lensFacing == CameraSelector.LENS_FACING_FRONT } &&
                 infos.any { it.lensFacing == CameraSelector.LENS_FACING_BACK }
         } ?: return@withContext false
-        selectors = listOf(CameraSelector.LENS_FACING_FRONT, CameraSelector.LENS_FACING_BACK).map { facing ->
-            pair.first { it.lensFacing == facing }.cameraSelector
+        cameraInfos = listOf(CameraSelector.LENS_FACING_FRONT, CameraSelector.LENS_FACING_BACK).map { facing ->
+            pair.first { it.lensFacing == facing }
         }
+        selectors = cameraInfos!!.map { it.cameraSelector }
         true
     }
 
@@ -74,6 +78,7 @@ class DualCameraCapture(private val context: Context, private val egl: EglBase.C
             val sources = listOf(front, back)
             val configs = requireNotNull(selectors).mapIndexed { index, selector ->
                 val bridge = Bridge(sources[index], "ZiseeDual$index")
+                val cameraInfo = requireNotNull(cameraInfos)[index]
                 bridges.add(bridge)
                 // Conservative concurrent format; the primary may be upgraded after device validation.
                 val preview = Preview.Builder().setResolutionSelector(ResolutionSelector.Builder()
@@ -82,7 +87,14 @@ class DualCameraCapture(private val context: Context, private val egl: EglBase.C
                 previews.add(preview)
                 preview.setSurfaceProvider(ContextCompat.getMainExecutor(context)) { request ->
                     bridge.helper.setTextureSize(request.resolution.width, request.resolution.height)
-                    request.setTransformationInfoListener(ContextCompat.getMainExecutor(context)) { bridge.rotation = it.rotationDegrees }
+                    request.setTransformationInfoListener(ContextCompat.getMainExecutor(context)) { info ->
+                        bridge.transform = CameraTextureTransform(
+                            info.rotationDegrees,
+                            info.hasCameraTransform(),
+                            cameraInfo.getSensorRotationDegrees(Surface.ROTATION_0),
+                            cameraInfo.lensFacing == CameraSelector.LENS_FACING_FRONT,
+                        )
+                    }
                     val surface = Surface(bridge.helper.surfaceTexture)
                     request.provideSurface(surface, ContextCompat.getMainExecutor(context)) { surface.release() }
                 }
@@ -108,12 +120,22 @@ class DualCameraCapture(private val context: Context, private val egl: EglBase.C
     private inner class Bridge(private val source: VideoSource, name: String) {
         val helper = requireNotNull(SurfaceTextureHelper.create(name, egl))
         val firstFrame = CompletableDeferred<Unit>()
-        @Volatile var rotation = 0
+        @Volatile var transform: CameraTextureTransform? = null
         init {
             source.capturerObserver.onCapturerStarted(true)
             helper.startListening { frame ->
-                source.capturerObserver.onFrameCaptured(VideoFrame(frame.buffer, rotation, frame.timestampNs))
-                firstFrame.complete(Unit)
+                // Metadata and its correction must belong to the same update. Do not send the
+                // first frames sideways while waiting for CameraX's transformation callback.
+                val current = transform ?: return@startListening
+                val buffer = frame.buffer as TextureBufferImpl
+                val corrected = buffer.applyTransformMatrix(current.textureCorrection(), buffer.width, buffer.height)
+                val output = VideoFrame(corrected, current.rotationDegrees, frame.timestampNs)
+                try {
+                    source.capturerObserver.onFrameCaptured(output)
+                    firstFrame.complete(Unit)
+                } finally {
+                    output.release()
+                }
             }
         }
         fun close() {

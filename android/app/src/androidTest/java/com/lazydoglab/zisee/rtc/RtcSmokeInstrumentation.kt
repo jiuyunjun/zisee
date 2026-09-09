@@ -24,6 +24,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
     private var preview = false
     private var capabilities = false
     private var orientationPreview = false
+    private var cameraTransform = false
     private var audio = false
     private var repetitions = 1
     override fun onCreate(arguments: Bundle?) {
@@ -32,6 +33,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
         preview = arguments?.getString("preview") == "true"
         capabilities = arguments?.getString("capabilities") == "true"
         orientationPreview = arguments?.getString("orientationPreview") == "true"
+        cameraTransform = arguments?.getString("cameraTransform") == "true"
         audio = arguments?.getString("audio") == "true"
         repetitions = arguments?.getString("repeat")?.toIntOrNull()?.coerceIn(1, 3) ?: 1
         start()
@@ -40,6 +42,12 @@ class RtcSmokeInstrumentation : Instrumentation() {
     override fun onStart() {
         val output = Bundle()
         try {
+            if (cameraTransform) {
+                CameraTextureTransformSmoke.run()
+                output.putString("stream", "PASS: camera texture corner mappings, sensor/display rotations and processed surface bypass; no physical camera validation\n")
+                finish(Activity.RESULT_OK, output)
+                return
+            }
             if (audio) {
                 AudioSmoke.run(targetContext, output)
                 output.putString("stream", "PASS: native model, finite output, repeated lifecycle; synthetic input only\n")

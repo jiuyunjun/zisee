@@ -1,7 +1,7 @@
 ---
 title: 视频方向与双方横竖屏专项设计
 document_id: ARCH-VIDEO-ORIENTATION-001
-version: 1.1.0
+version: 1.1.1
 status: Active
 created: 2026-09-09
 updated: 2026-09-09
@@ -82,6 +82,7 @@ CameraX targetRotation 使用有效 display rotation，不直接使用重力角�
 1. `DeviceOrientation` 读取实际 display rotation，通过 DisplayManager.DisplayListener 监听变化；重复通知不重复更新双摄，释放时注销监听。
 2. 单摄保留 libwebrtc capturer 的逐帧旋转，删除物理方向补偿 processor，避免侧躺时绕过旋转锁。
 3. CameraX 双摄以同一有效 display rotation 更新各 Preview 的 targetRotation，由各自 TransformationInfo 提供 frame rotation；启动时直接读取最新 display rotation。
+   SurfaceTexture 已携带 camera transform 时，桥接层先撤销纹理中的 sensor rotation 和前摄镜像，再通过 VideoFrame.rotation 表达目标方向，避免重复旋转。处理方式与 [WebRTC Camera2Session](https://webrtc.googlesource.com/src/+/refs/heads/main/sdk/android/src/java/org/webrtc/Camera2Session.java) 一致；无 camera transform 的 Surface 保留原矩阵。只拼接纹理矩阵，保留尺寸、时间戳和裁切，新 buffer 在回调后释放。首次收到变换信息前不发送帧。
 4. `VideoFeed.geometry` 发布各路实际尺寸与 rotation；renderer 只应用一次帧旋转，90°/270° 时布局交换宽高。
 
 通话窗口使用 `FULL_USER`：系统自动旋转开启时允许四向旋转，锁定时遵守用户偏好；离开通话恢复原 Activity 设置。参考 [Android 官方方向说明](https://developer.android.com/guide/topics/manifest/activity-element.html)。不修改系统旋转设置、不新增权限。大屏/多窗口可能忽略 requestedOrientation，以实际 display 和窗口工作，不通过重力猜测用户意图。
@@ -162,3 +163,14 @@ adb -s <emulator> shell am instrument -w -e orientationPreview true com.lazydogl
 替代 1.0 的物理方向优先和 FULL_SENSOR 行为。删除不再适用的传感器量化/补偿测试，改为有效屏幕方向状态测试；保留布局和主辅 Track 测试。需两台真机补测：A 锁定竖屏后侧躺，B 横/竖持；通话中切换系统自动旋转；前摄、单后摄、双摄各验证一次。旧合成截图不能证明方向锁或真实摄像头通过。
 
 本次 82 个 JVM 测试通过，Debug APK、AndroidTest APK 构建和 lint 通过；尚未执行上述两台真机侧躺验证。
+
+
+## 1.1.1 双摄纹理重复旋转修复
+
+增加 Android Matrix 回归测试，覆盖前后摄、四种 sensor/display 方向、非对称坐标、裁切/GL 翻转保留及无 camera transform 的直通分支。运行：
+
+```powershell
+adb shell am instrument -w -e cameraTransform true com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
+```
+
+该测试不采集相机，不能替代两台真机 Show Me 正立、镜像文字和方向锁验收。
