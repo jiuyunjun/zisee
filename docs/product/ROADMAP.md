@@ -1,10 +1,10 @@
 ---
 title: Zisee 开发路线图
 document_id: PROD-ROADMAP-001
-version: 1.0.0
+version: 1.1.0
 status: Active
 created: 2026-09-08
-updated: 2026-09-08
+updated: 2026-09-09
 applies_to: ">=0.1.0"
 owners:
   - core
@@ -56,6 +56,35 @@ M8  后续扩展
 ↓
 智能化
 ```
+
+---
+
+# 2.1 当前进度速览（2026-09-09）
+
+```text
+M0  项目基础              完成
+M1  1v1 P2P 通话          完成
+M1.1 连接可靠性           完成（网络切换/ICE restart/回声退避已验证）
+M2  双摄与 Show Me        完成（含方向适配、悬浮小窗、多画面）
+M3  屏幕共享与 2D 标注    未开始（Annotation2D 数据模型已占位，无 UI/传输）
+M4  基础 AR Assist        未开始
+M5  高精度 AR 同步        未开始
+M6  弱网与媒体智能        部分完成，提前于计划
+M7  产品化与发布          未开始
+M8  后续扩展              未开始
+```
+
+M6 提前推进的原因：AGENTS.md 明确音频优先级高于视频，AUDIO.md 定义的音频链路（AEC/DeepFilterNet AI 降噪/Opus/NetEq/弱网带宽保护）被判定为核心通话体验的一部分，因此在 M3 之前就已实现，而不是机械按 M2 → M3 → M6 顺序推进。这符合第 30 条“路线图调整规则”。
+
+已完成能力清单：
+
+- P2P WebRTC 通话，STUN/Cloudflare TURN fallback，WebSocket signaling，Firestore + Cloud Run 后端。
+- ICE restart、Wi-Fi/蜂窝切换、trickle ICE、通话状态机、来电推送与联系人/邀请。
+- 双摄同时采集（Show Me）、悬浮小窗拖拽吸边、多画面 tile、方向感知与屏幕旋转锁适配。
+- 视频质量阶梯（含 1080p60 上限）、热状态降载、RTC stats 监控。
+- 音频子系统：WebRTC AEC/AGC、DeepFilterNet AI 降噪（原生 Rust/JNI，带实时 deadline 与安全回退）、CallAudioManager 统一路由（含蓝牙 SCO 恢复）、弱网音频优先带宽策略（暂停辅摄→暂停全部视频保语音）。
+
+已知未验收项（详见 [AUDIO.md](../architecture/AUDIO.md) 第 56 节）：设备矩阵（低/中/高端）、蓝牙/有线/USB 路由矩阵、真实弱网、双讲回声、风噪、长通话功耗/温度、AI 降噪主观 A/B、Debug 分级音频录制（§38，A/B 测试前提）。这些应在进入 M7.1 稳定性矩阵前补齐，不阻塞 M3 功能开发。
 
 ---
 
@@ -1530,27 +1559,30 @@ Zisee 0.8.0
 当前项目处于：
 
 ```text
-M0
+M2 完成，M6 音频/视频弱网智能部分提前完成
 ```
 
 下一目标：
 
 ```text
-M1
+M3：屏幕共享与 2D 标注
 ```
+
+详见 [2.1 当前进度速览](#21-当前进度速览2026-09-09)。
 
 因此当前不要优先投入：
 
-- AV1
-- AI
-- Cloud Anchor
-- SFU
-- 多人
+- AV1 硬编解码矩阵
+- RNNoise 二级 AI 降噪、Music Profile（AUDIO.md §44/§23，已明确标为后续）
+- Cloud Anchor / Geospatial Anchor
+- SFU / 多人
 - Remote Control
 
 当前最重要的是：
 
-> 在两台真实 Android 手机上，把 1v1 P2P 音视频稳定打通。
+> 在已经稳定的 1v1 通话之上做出 M3（MediaProjection 屏幕共享 + DataChannel 2D 标注），这是排在 AR（M4/M5）之前、风险更低、又能验证“不只是普通视频电话”的下一块产品价值。`Annotation2D` / `VideoFrameReference` 数据模型已经占位（`ar/annotation/Annotation.kt`），可以直接复用其坐标语义，不需要重新设计。
+
+同时应在不阻塞 M3 的前提下，安排一次真机测试窗口补齐 AUDIO.md §56 遗留的验收项（设备矩阵、弱网、蓝牙路由、A/B），避免拖到 M7.1 才发现降噪效果或功耗不达标。
 
 ---
 
@@ -1625,6 +1657,12 @@ M7
 ---
 
 # Changelog
+
+## 1.1.0 - 2026-09-09
+
+- 补充「2.1 当前进度速览」：标记 M0/M1/M1.1/M2 完成，M6 音频与弱网带宽策略提前完成，M3 起未开始。
+- 更新第 29 条当前最高优先事项：从 M0→M1 更新为 M2 完成后进入 M3（屏幕共享 + 2D 标注），并指出可复用已占位的 `Annotation2D` 数据模型。
+- 记录 AUDIO.md §56 遗留验收项（设备矩阵、弱网、蓝牙路由、AI 降噪 A/B、Debug 分级录音）应在 M7.1 前补齐。
 
 ## 1.0.0 - 2026-09-08
 
