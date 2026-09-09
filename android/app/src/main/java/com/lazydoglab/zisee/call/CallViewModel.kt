@@ -345,6 +345,14 @@ class CallViewModel(application: Application, private val container: AppContaine
                                     mediaObservation = launch {
                                         combine(media.mediaStats, media.iceState, media.audioDeviceState) { stats, iceState, device -> Triple(stats, iceState, device) }
                                             .collect { (stats, iceState, device) ->
+                                                // Crediting the new route here, where samples land,
+                                                // keeps signaling IO in the recovery loop from
+                                                // outlasting a switch that already worked.
+                                                if (recovery.observeMedia(iceState, stats, System.nanoTime() / 1_000_000)) {
+                                                    container.logger.info(AppEvent.RTC_ROUTE_RECOVERED,
+                                                        "durationMs=${recovery.lastNaturalRecoveryMs}")
+                                                    routeWake.trySend(Unit)
+                                                }
                                                 when (iceState) {
                                                     IceState.CONNECTED -> if (negotiator?.complete == true) event(CallEvent.MEDIA_CONNECTED)
                                                     IceState.DISCONNECTED -> event(CallEvent.CONNECTION_LOST)

@@ -43,25 +43,38 @@ class IceRecoveryPolicy(startedMs: Long, private val config: WebRtcRecoveryConfi
         }
     }
 
+    /**
+     * Credits a route as recovered on the evidence of media arriving on it, and returns whether it
+     * just did. Kept separate from [evaluate] because the loop that evaluates also performs
+     * signaling IO: a measured handover had media back after 1.5 s and was restarted anyway,
+     * because the next evaluation was almost five seconds later. Samples arrive every 200 ms during
+     * a handover, so crediting recovery where they arrive cannot be starved that way.
+     *
+     * Two samples are required after detection. A stale CONNECTED state or bytes accumulated on the
+     * old route must not suppress recovery of a dead path.
+     */
+    fun observeMedia(state: IceState, stats: MediaStats, nowMs: Long): Boolean {
+        val changedAt = networkChangedMs ?: return false
+        if (!stats.sampleAvailable || stats.sampledAtMs < changedAt) return false
+        val baseline = routeSample
+        // Media arriving on the new route is stronger evidence than the negotiation bookkeeping:
+        // the peer can only be reaching us here.
+        if (baseline != null && stats.sampledAtMs > baseline.sampledAtMs &&
+            stats.inboundBytes > baseline.inboundBytes && state == IceState.CONNECTED) {
+            networkChangedMs = null
+            routeSample = null
+            lastNaturalRecoveryMs = nowMs - changedAt
+            return true
+        }
+        if (baseline == null || stats.inboundBytes < baseline.inboundBytes) routeSample = stats
+        return false
+    }
+
     fun evaluate(state: IceState, networkVersion: Long, negotiationComplete: Boolean, nowMs: Long,
                  stats: MediaStats = MediaStats()): Action {
         networkChanged(networkVersion, nowMs)
         if (state == IceState.CLOSED) return Action.FAIL
-        // Require two samples collected AFTER detection. A stale CONNECTED state or bytes
-        // accumulated on the old route must not suppress recovery of a dead path.
-        val changedAt = networkChangedMs
-        if (changedAt != null && stats.sampleAvailable && stats.sampledAtMs >= changedAt) {
-            val baseline = routeSample
-            // Media arriving on the new route is stronger evidence than the negotiation bookkeeping:
-            // the peer can only be reaching us here. Requiring the flag as well restarted ICE on a
-            // route that had already recovered, and that restart cost two more seconds of video.
-            if (baseline != null && stats.sampledAtMs > baseline.sampledAtMs &&
-                stats.inboundBytes > baseline.inboundBytes && state == IceState.CONNECTED) {
-                networkChangedMs = null
-                routeSample = null
-                lastNaturalRecoveryMs = nowMs - changedAt
-            } else if (baseline == null || stats.inboundBytes < baseline.inboundBytes) routeSample = stats
-        }
+        observeMedia(state, stats, nowMs)
         if (state == IceState.CONNECTED && negotiationComplete && networkChangedMs == null) {
             disconnectedMs = null
             if (healthyMs == null) healthyMs = nowMs

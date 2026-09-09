@@ -135,4 +135,15 @@ class IceRecoveryPolicyTest {
         assertEquals(IceRecoveryPolicy.Action.RESTART, stalled.evaluate(IceState.CONNECTED, 0, false, 13_000))
         assertEquals(IceRecoveryPolicy.Reason.NEGOTIATION, stalled.lastReason)
     }
+
+    @Test fun `media credits the route even when evaluation is starved by signaling`() {
+        val policy = IceRecoveryPolicy(0)
+        policy.networkChanged(1, 6_000)
+        assertEquals(false, policy.observeMedia(IceState.CONNECTED, sample(6_400, 100), 6_600))
+        assertEquals(true, policy.observeMedia(IceState.CONNECTED, sample(6_800, 140), 6_900))
+        assertEquals(900L, policy.lastNaturalRecoveryMs)
+        // The next evaluation runs five seconds later, once the exchange it was blocked on returns.
+        assertEquals(IceRecoveryPolicy.Action.WAIT,
+            policy.evaluate(IceState.CONNECTED, 1, true, 11_900, sample(11_800, 400)))
+    }
 }
