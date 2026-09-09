@@ -63,3 +63,29 @@ c34f0f6 docs: record AR camera rendering checkpoint
 Baseline fcb1132 verified; five pre-existing changes unchanged. Current task is AR menu/preparation/lifecycle. Existing setForeground(false) hangs up the call; preserve it. WIP belongs to this task and must be retained. Next: guarded coordinator, native status flow, UI and tests.
 
 AR controls implementation checkpoint: 165 JVM tests, Debug/AndroidTest and lint PASS. Phone reconnected by user; next verify surface identity, then add/run native camera takeover checks. Current UI does not expose spatial clicks.
+
+Checkpoint e754915: AR controls committed. Device arDisplayedIdentity PASS after adding a wait-for-foreground test launcher; normal MainActivity launch satisfies OEM foreground requirement without permission changes. Next: physical camera takeover/restore smoke.
+
+Physical camera takeover VERIFIED on device (nezha/25128PNA1C, Android 16). arCameraTakeover PASS
+twice consecutively, all three entry modes: arFromFACE, arFromBACK_ONLY and arFromDUAL each covered
+ARCore capture, rotation geometry update, decoded AR source identity and restored ordinary decoded
+video with ICE still connected. Camera service showed the expected same-package eviction of device 0
+at takeover and both cameras held again during the DUAL leg. arFramePool and arDisplayedIdentity
+re-run PASS after the SDK change. 165 JVM tests, Debug/AndroidTest and lint PASS.
+
+ARCore SDK pinned back to 1.54.0. SDK 1.56 declares min_apk_version 261960000 while Play only
+distributes Play Services for AR 1.54 (260890493), so every check returned INSTALL_REQUIRED and no
+device could run AR; real users would have been told to update to a version they cannot obtain.
+1.54.0 needs 260760000 and compiles with no API changes. Revisit once 1.56 is actually distributed.
+
+Test reporting fix: am instrument prints only the stream, and failures reported nothing but an
+exception class name, which could not locate a failed check. Failures now name the stage, our own
+topmost stack frame and the ar* diagnostic keys (IllegalStateException message only, so no library
+message can carry SDP or addresses); a PASS now lists the per-mode results.
+
+Product fix: a failed post-AR restore left presentationMode on AR with the local track disabled, so
+neither the retry notice nor the flip button could recover an ordinary camera; restoreAfterAr now
+restores the mode and re-enables the track on that path, and the smoke asserts showMe.message is
+empty so a filled-in mode cannot pass as a real restore.
+
+Still unverified: two-device spatial clicks and overlays, EGL recreation, glFinish power/perf.

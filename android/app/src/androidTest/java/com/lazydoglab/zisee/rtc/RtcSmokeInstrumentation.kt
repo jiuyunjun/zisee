@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.NonCancellable
@@ -30,6 +31,8 @@ class RtcSmokeInstrumentation : Instrumentation() {
     private var arFramePool = false
     private var arVideoIdentity = false
     private var arDisplayedIdentity = false
+    private var waitForForeground = false
+    private var arCameraTakeover = false
     private var audio = false
     private var repetitions = 1
     override fun onCreate(arguments: Bundle?) {
@@ -44,6 +47,8 @@ class RtcSmokeInstrumentation : Instrumentation() {
         arFramePool = arguments?.getString("arFramePool") == "true"
         arVideoIdentity = arguments?.getString("arVideoIdentity") == "true"
         arDisplayedIdentity = arguments?.getString("arDisplayedIdentity") == "true"
+        waitForForeground = arguments?.getString("waitForForeground") == "true"
+        arCameraTakeover = arguments?.getString("arCameraTakeover") == "true"
         audio = arguments?.getString("audio") == "true"
         repetitions = arguments?.getString("repeat")?.toIntOrNull()?.coerceIn(1, 3) ?: 1
         start()
@@ -52,8 +57,32 @@ class RtcSmokeInstrumentation : Instrumentation() {
     override fun onStart() {
         val output = Bundle()
         try {
+            if (arCameraTakeover) {
+                runBlocking {
+                    val activity = ArTestActivityLauncher.open(this@RtcSmokeInstrumentation, waitForForeground)
+                    try {
+                        val availability = CompletableDeferred<com.lazydoglab.zisee.ar.session.ArAvailability>()
+                        runOnMainSync { com.lazydoglab.zisee.ar.session.ArCoreAvailability.check(activity) { availability.complete(it) } }
+                        val supported = withTimeout(5_000) { availability.await() }
+                        output.putString("arAvailability", supported.name)
+                        check(supported == com.lazydoglab.zisee.ar.session.ArAvailability.READY)
+                        var preparation = com.lazydoglab.zisee.ar.session.ArPreparation.RETRY
+                        runOnMainSync { preparation = com.lazydoglab.zisee.ar.session.ArCoreAvailability.prepare(activity, false) }
+                        output.putString("arPreparation", preparation.name)
+                        check(preparation == com.lazydoglab.zisee.ar.session.ArPreparation.READY)
+                        withTimeout(120_000) { smoke(output) }
+                    } finally { runOnMainSync { activity.finish() } }
+                }
+                // am instrument prints only the stream, so a bare PASS hid which modes actually ran.
+                val modes = output.keySet().filter { it.startsWith("arFrom") }.sorted()
+                    .joinToString("\n") { "  $it: ${output.getString(it)}" }
+                output.putString("stream",
+                    "PASS: physical ARCore camera takeover and decoded AR identities\n$modes\n")
+                finish(Activity.RESULT_OK, output)
+                return
+            }
             if (arVideoIdentity || arDisplayedIdentity) {
-                ArVideoIdentitySmoke.run(targetContext, this, arDisplayedIdentity)
+                ArVideoIdentitySmoke.run(targetContext, this, arDisplayedIdentity, waitForForeground)
                 output.putString("stream", "PASS: synthetic AR RGB source through native H264 RTP and decoder with exact source identity; surface assertion=$arDisplayedIdentity\n")
                 finish(Activity.RESULT_OK, output)
                 return
@@ -167,8 +196,13 @@ class RtcSmokeInstrumentation : Instrumentation() {
             output.putString("stream", "PASS: native camera, ICE, encode/decode, sender ceilings and release\n")
             finish(Activity.RESULT_OK, output)
         } catch (error: Exception) {
-            // No SDP, addresses, media or device identity in reports.
-            output.putString("stream", "FAIL: ${error.javaClass.simpleName}\n")
+            // No SDP, addresses, media or device identity in reports. The class name alone could
+            // not locate a failed check, so name the stage and our own topmost frame as well.
+            val origin = error.stackTrace.firstOrNull { it.className.startsWith("com.lazydoglab.zisee") }
+            val detail = output.keySet().filter { it.startsWith("ar") }.joinToString { "$it=${output.get(it)}" }
+            output.putString("stream", "FAIL: ${error.javaClass.simpleName} at ${origin ?: "unknown"}" +
+                // Only our own precondition text; a library message could carry SDP or addresses.
+                (error.takeIf { it is IllegalStateException }?.message?.let { " ($it)" } ?: "") + "\n$detail\n")
             finish(Activity.RESULT_CANCELED, output)
         }
     }
@@ -185,11 +219,16 @@ class RtcSmokeInstrumentation : Instrumentation() {
         var egl: EglBase? = null
         val receivedFrames = AtomicInteger()
         val firstFrameNanos = AtomicLong()
+        val arFrames = AtomicInteger()
+        val ordinaryFrames = AtomicInteger()
+        val peerControls = mutableListOf<DataChannel>()
         val candidates = ConcurrentLinkedQueue<IceCandidate>()
         try {
             session.start(emptyList()) // Loopback host candidates only; this does not validate TURN.
             egl = EglBase.create()
-            factory = PeerConnectionFactory.builder().setVideoDecoderFactory(DefaultVideoDecoderFactory(egl.eglBaseContext))
+            factory = PeerConnectionFactory.builder().setVideoDecoderFactory(
+                if (arCameraTakeover) com.lazydoglab.zisee.ar.render.ArDecoderFactory(egl.eglBaseContext)
+                else DefaultVideoDecoderFactory(egl.eglBaseContext))
                 .createPeerConnectionFactory()
             receiver = requireNotNull(factory.createPeerConnection(PeerConnection.RTCConfiguration(emptyList()).apply {
                 sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
@@ -198,6 +237,8 @@ class RtcSmokeInstrumentation : Instrumentation() {
                     (transceiver.receiver.track() as? VideoTrack)?.addSink {
                         firstFrameNanos.compareAndSet(0, System.nanoTime())
                         receivedFrames.incrementAndGet()
+                        if ((it.buffer as? com.lazydoglab.zisee.ar.render.ArTextureBuffer)?.identity != null)
+                            arFrames.incrementAndGet() else ordinaryFrames.incrementAndGet()
                     }
                 }
                 override fun onIceCandidate(candidate: IceCandidate) { candidates.add(candidate) }
@@ -211,6 +252,10 @@ class RtcSmokeInstrumentation : Instrumentation() {
                 override fun onDataChannel(channel: DataChannel) { channel.dispose() }
                 override fun onRenegotiationNeeded() = Unit
             }))
+            if (arCameraTakeover) {
+                peerControls.add(receiver.createDataChannel("camera-state", DataChannel.Init().apply { negotiated = true; id = 0 }))
+                peerControls.add(receiver.createDataChannel("zisee-ar-v1", DataChannel.Init().apply { negotiated = true; id = 2 }))
+            }
             val started = System.nanoTime()
             val offer = session.localDescription(true)
             output.putLong("offerMs", (System.nanoTime() - started) / 1_000_000)
@@ -247,6 +292,40 @@ class RtcSmokeInstrumentation : Instrumentation() {
             output.putString("qualityCeiling", session.mediaStats.value.quality.name)
             output.putInt("sentWidth", session.mediaStats.value.sentWidth)
             output.putInt("sentHeight", session.mediaStats.value.sentHeight)
+            if (arCameraTakeover) {
+                suspend fun takeover(mode: CameraMode) {
+                    output.putString("arStage", "start_${mode.name}")
+                    val before = arFrames.get()
+                    check(session.startAr(com.lazydoglab.zisee.ar.session.ArPreparation.READY, 0, 320, 240))
+                    output.putString("arStage", "frames_${mode.name}")
+                    withTimeout(12_000) { while (arFrames.get() < before + 5) delay(50) }
+                    check(session.showMe.value.mode == CameraMode.AR)
+                    session.updateArGeometry(1, 240, 320)
+                    val rotated = arFrames.get()
+                    withTimeout(6_000) { while (arFrames.get() < rotated + 5) delay(50) }
+                    session.stopAr()
+                    output.putString("arStage", "restore_${mode.name}")
+                    withTimeout(8_000) { while (session.showMe.value.mode != mode) delay(50) }
+                    // A failed restore reports the previous mode too; only the notice separates them.
+                    check(session.showMe.value.message.isEmpty()) { session.showMe.value.message }
+                    delay(500) // Do not count frames already in the receiver queue before restoration.
+                    val restored = ordinaryFrames.get()
+                    withTimeout(6_000) { while (ordinaryFrames.get() < restored + 10) delay(50) }
+                    check(session.iceState.value == IceState.CONNECTED)
+                    output.putString("arFrom${mode.name}", "PASS: capture, rotation update, source identity and restored decoded video")
+                }
+                takeover(session.showMe.value.mode)
+                if (session.hasFrontCamera) {
+                    session.toggleShowMe(false)
+                    check(session.showMe.value.mode == CameraMode.BACK_ONLY)
+                    takeover(CameraMode.BACK_ONLY)
+                    session.toggleShowMe(false)
+                    session.toggleShowMe(true)
+                    if (session.showMe.value.mode == CameraMode.DUAL) takeover(CameraMode.DUAL)
+                    else output.putString("arFromDUAL", "SKIP: concurrent capture unavailable; single rear fallback")
+                }
+                return
+            }
             val beforeRestart = receivedFrames.get()
             session.prepareIceGeneration(emptyList())
             session.restartIce()
@@ -297,6 +376,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
 
         } finally {
             withContext(NonCancellable) {
+                peerControls.forEach { it.close(); it.dispose() }
                 try { receiver?.dispose() }
                 finally {
                     try { factory?.dispose() }

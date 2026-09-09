@@ -63,10 +63,13 @@ class ArVideoCapture private constructor(
         }
     }
 
-    suspend fun setGeometry(rotation: Int, width: Int, height: Int) = withContext(dispatcher) {
-        if (!closed) {
-            backend.setDisplayGeometry(rotation, width, height)
-            rotationDegrees = backend.imageRotationDegrees()
+    suspend fun setGeometry(rotation: Int, width: Int, height: Int) {
+        if (closed) return
+        withContext(dispatcher) {
+            if (!closed) {
+                backend.setDisplayGeometry(rotation, width, height)
+                rotationDegrees = backend.imageRotationDegrees()
+            }
         }
     }
 

@@ -13,20 +13,9 @@ import java.util.concurrent.ConcurrentLinkedQueue
 
 /** Real PeerConnection, H264 packetization and MediaCodec; synthetic RGB camera pixels. */
 internal object ArVideoIdentitySmoke {
-    fun run(context: Context, instrumentation: android.app.Instrumentation, display: Boolean) = runBlocking {
+    fun run(context: Context, instrumentation: android.app.Instrumentation, display: Boolean, waitForForeground: Boolean) = runBlocking {
         PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(context).createInitializationOptions())
-        val activity = if (display) {
-            val monitor = instrumentation.addMonitor(com.lazydoglab.zisee.ui.ArVideoTestActivity::class.java.name, null, false)
-            try {
-                instrumentation.runOnMainSync {
-                    context.startActivity(android.content.Intent(context, com.lazydoglab.zisee.ui.ArVideoTestActivity::class.java)
-                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
-                }
-                requireNotNull(instrumentation.waitForMonitorWithTimeout(monitor, 5_000)) {
-                    "Test activity did not launch; foreground app and retry"
-                } as com.lazydoglab.zisee.ui.ArVideoTestActivity
-            } finally { instrumentation.removeMonitor(monitor) }
-        } else null
+        val activity = if (display) ArTestActivityLauncher.open(instrumentation, waitForForeground) else null
         val egl = EglBase.create()
         val renderer = activity?.renderer
         instrumentation.runOnMainSync { renderer?.init(egl.eglBaseContext) }

@@ -200,6 +200,7 @@ class CallViewModel(application: Application, private val container: AppContaine
         val media = rtc ?: return
         viewModelScope.launch {
             try { media.stopAr() }
+            catch (error: CancellationException) { throw error }
             catch (_: Exception) {
                 container.logger.error(AppEvent.AR_CHANNEL_FAILED)
                 if (rtc === media) arNotice("AR 退出失败，请结束通话后重试。")
@@ -211,6 +212,7 @@ class CallViewModel(application: Application, private val container: AppContaine
         val media = rtc ?: return
         viewModelScope.launch {
             try { media.updateArGeometry(rotation, width, height) }
+            catch (error: CancellationException) { throw error }
             catch (_: Exception) {
                 container.logger.error(AppEvent.AR_CHANNEL_FAILED)
                 if (rtc === media) { arNotice("AR 显示方向更新失败，已退出 AR。"); stopAr() }

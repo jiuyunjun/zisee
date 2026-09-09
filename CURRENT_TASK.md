@@ -1,7 +1,7 @@
 # Current Task
 
 ## Task
-Expose user-triggered AR camera controls and bind them to call and Activity lifecycle.
+Verify actual displayed-frame identity and physical ARCore takeover/restoration; fix device-discovered issues.
 
 ## Why
 The media APIs exist but no in-call path invokes preparation, capture or foreground cleanup.
@@ -19,4 +19,7 @@ No automatic camera activation after lifecycle loss or stale permission/install 
 JVM intent/lifecycle tests, Debug/AndroidTest build and lint, available device display/camera verification.
 
 ## State
-IMPLEMENTING
+VERIFIED on device. arCameraTakeover PASS twice for FACE, BACK_ONLY and DUAL entry modes;
+arFramePool and arDisplayedIdentity re-run PASS; 165 JVM tests, Debug/AndroidTest and lint PASS.
+Required pinning ARCore back to 1.54.0 because SDK 1.56 demands an APK Play does not distribute.
+Two-device spatial clicks and overlays remain out of scope and unverified.

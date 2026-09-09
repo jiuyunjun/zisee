@@ -1,5 +1,7 @@
 [versions]
-arcore = "1.56.0"
+# 1.56 demands Play Services for AR 1.56 (min_apk_version 261960000), which the store does not
+# distribute yet; devices on 1.54 would be told to update to a version they cannot obtain.
+arcore = "1.54.0"
 camerax = "1.5.1"
 agp = "8.9.1"
 kotlin = "2.0.21"

@@ -813,6 +813,10 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             sendPresentation()
         } catch (_: Exception) {
             logger.error(AppEvent.RTC_MEDIA_FAILED)
+            // A failed restore used to leave the mode on AR with the local track disabled, so
+            // neither the retry notice nor the flip button could bring an ordinary camera back.
+            presentationMode = previous
+            videoTrack?.setEnabled(cameraEnabled)
             showMe.value = ShowMeState(previous, "摄像头恢复失败，请重试")
         } finally {
             changingCamera = false
