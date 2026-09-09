@@ -20,6 +20,9 @@ data class MediaStats(
     val qualityLimitation: String = "unknown", val thermalStatus: Int? = null,
     val quality: VideoQuality = VideoQuality.HD,
     val audio: com.zisee.app.rtc.audio.quality.AudioStats = com.zisee.app.rtc.audio.quality.AudioStats(),
+    val audioProcessing: com.zisee.app.rtc.audio.processing.AudioProcessingStats = com.zisee.app.rtc.audio.processing.AudioProcessingStats(),
+    val audioDevice: com.zisee.app.rtc.audio.AudioDeviceState = com.zisee.app.rtc.audio.AudioDeviceState(),
+    val audioBandwidth: com.zisee.app.rtc.audio.AudioBandwidthMode = com.zisee.app.rtc.audio.AudioBandwidthMode.ALL_VIDEO,
 )
 
 /** Framework-free input makes direction, missing values and counter resets testable on the JVM. */

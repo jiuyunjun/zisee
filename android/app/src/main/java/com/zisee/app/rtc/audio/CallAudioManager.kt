@@ -31,6 +31,7 @@ class CallAudioManager(context: Context, private val logger: AppLogger, private 
     private var previousDevice: AudioDeviceInfo? = null
     private var explicitSpeaker = false
     private var registered = false
+    private var recordingRegistered = false
     private var scoRegistered = false
     private var scoStarted = false
     private var scoFailed = false
@@ -45,6 +46,9 @@ class CallAudioManager(context: Context, private val logger: AppLogger, private 
         override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) { scoFailed = false; recover() }
         override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) { scoFailed = false; recover() }
     }
+    private val recording = object : AudioManager.AudioRecordingCallback() {
+        override fun onRecordingConfigChanged(configs: MutableList<android.media.AudioRecordingConfiguration>?) { publish() }
+    }
     private val scoReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (request == null) return
@@ -52,6 +56,11 @@ class CallAudioManager(context: Context, private val logger: AppLogger, private 
                 handler.removeCallbacks(scoTimeout)
                 safely { manager.isBluetoothScoOn = true }
                 publish()
+            } else if (!isInitialStickyBroadcast && scoStarted &&
+                intent?.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, -1) == AudioManager.SCO_AUDIO_STATE_DISCONNECTED) {
+                scoStarted = false; scoFailed = true
+                safely { manager.isBluetoothScoOn = false }
+                recover()
             } else publish()
         }
     }
@@ -81,6 +90,7 @@ class CallAudioManager(context: Context, private val logger: AppLogger, private 
             mutable.value = mutable.value.copy(state = if (granted) AudioState.RECOVERING else AudioState.INTERRUPTED)
             manager.mode = AudioManager.MODE_IN_COMMUNICATION
             manager.registerAudioDeviceCallback(devices, handler); registered = true
+            manager.registerAudioRecordingCallback(recording, handler); recordingRegistered = true
             if (Build.VERSION.SDK_INT >= 31) {
                 val listener = AudioManager.OnCommunicationDeviceChangedListener { publish() }
                 manager.addOnCommunicationDeviceChangedListener(context.mainExecutor, listener)
@@ -96,6 +106,7 @@ class CallAudioManager(context: Context, private val logger: AppLogger, private 
     fun setSpeaker(enabled: Boolean): Boolean {
         if (request == null) return false
         explicitSpeaker = enabled
+        if (!enabled) scoFailed = false
         if (mutable.value.state == AudioState.INTERRUPTED) safely {
             if (manager.requestAudioFocus(requireNotNull(request)) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
                 interrupt(false); mutable.value = mutable.value.copy(state = AudioState.RECOVERING)
@@ -108,6 +119,7 @@ class CallAudioManager(context: Context, private val logger: AppLogger, private 
     private fun recover() {
         if (request == null) return
         safely {
+            if (mutable.value.state != AudioState.INTERRUPTED) manager.mode = AudioManager.MODE_IN_COMMUNICATION
             if (Build.VERSION.SDK_INT >= 31) {
                 val available = manager.availableCommunicationDevices
                 val route = AudioRoutePolicy.select(available.map { route(it) }.toSet(), explicitSpeaker)
@@ -116,7 +128,11 @@ class CallAudioManager(context: Context, private val logger: AppLogger, private 
                     logger.error(AppEvent.RTC_MEDIA_FAILED)
                 }
             } else {
-                val available = manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).map { route(it) }.toMutableSet()
+                val devices = manager.getDevices(AudioManager.GET_DEVICES_INPUTS) + manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                val available = devices.map { route(it) }.toMutableSet()
+                // Some legacy devices advertise only A2DP until SCO has been requested.
+                if (manager.isBluetoothScoAvailableOffCall && devices.any { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP })
+                    available.add(AudioRoute.BLUETOOTH)
                 if (scoFailed) available.remove(AudioRoute.BLUETOOTH)
                 val selected = AudioRoutePolicy.select(available, explicitSpeaker)
                 if (selected == AudioRoute.BLUETOOTH && !scoStarted) {
@@ -144,7 +160,8 @@ class CallAudioManager(context: Context, private val logger: AppLogger, private 
                     .map { route(it) }.filter { it != AudioRoute.BLUETOOTH }.toSet(), false) ?: AudioRoute.UNKNOWN
             }
             mutable.value = AudioDeviceState(if (mutable.value.state == AudioState.INTERRUPTED)
-                AudioState.INTERRUPTED else AudioState.ACTIVE, output)
+                AudioState.INTERRUPTED else AudioState.ACTIVE, output,
+                route(manager.activeRecordingConfigurations.firstOrNull()?.audioDevice))
         }
     }
 
@@ -155,6 +172,8 @@ class CallAudioManager(context: Context, private val logger: AppLogger, private 
         handler.removeCallbacks(scoTimeout)
         if (registered) safely { manager.unregisterAudioDeviceCallback(devices) }
         registered = false
+        if (recordingRegistered) safely { manager.unregisterAudioRecordingCallback(recording) }
+        recordingRegistered = false
         if (scoRegistered) safely { context.unregisterReceiver(scoReceiver) }
         scoRegistered = false
         if (Build.VERSION.SDK_INT >= 31) {
@@ -178,6 +197,7 @@ class CallAudioManager(context: Context, private val logger: AppLogger, private 
     private fun route(device: AudioDeviceInfo?): AudioRoute = when (device?.type) {
         AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> AudioRoute.SPEAKER
         AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> AudioRoute.EARPIECE
+        AudioDeviceInfo.TYPE_BUILTIN_MIC -> AudioRoute.MICROPHONE
         AudioDeviceInfo.TYPE_BLUETOOTH_SCO, AudioDeviceInfo.TYPE_BLE_HEADSET -> AudioRoute.BLUETOOTH
         AudioDeviceInfo.TYPE_WIRED_HEADSET, AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> AudioRoute.WIRED
         AudioDeviceInfo.TYPE_USB_HEADSET, AudioDeviceInfo.TYPE_USB_DEVICE -> AudioRoute.USB

@@ -178,6 +178,11 @@ class CallViewModel(application: Application, private val container: AppContaine
         }
     }
 
+    fun setNoiseSuppression(mode: com.zisee.app.rtc.audio.processing.NoiseSuppressionMode) {
+        val current = rtc ?: return
+        viewModelScope.launch { current.setNoiseSuppression(mode) }
+    }
+
     /** The Show Me hint teaches the swap gesture once per install, never on every call. */
     fun dismissShowMeHint() {
         showMeHintSeen = true

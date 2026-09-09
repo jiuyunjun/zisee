@@ -1,0 +1,25 @@
+[package]
+name = "zisee_audio"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+deep_filter = { path = "../upstream/libDF", default-features = false, features = ["tract"] }
+ndarray = "0.15"
+jni = "0.21.1"
+# Upstream libDF uses the 0.21.4 graph/ndarray API; later 0.21.x releases changed it.
+tract-core = "=0.21.4"
+tract-onnx = "=0.21.4"
+tract-pulse = "=0.21.4"
+tract-hir = "=0.21.4"
+kstring = "=2.0.2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+panic = "unwind"

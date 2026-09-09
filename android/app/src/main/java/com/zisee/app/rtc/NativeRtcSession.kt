@@ -48,6 +48,21 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var audioSource: AudioSource? = null
     private var videoTrack: VideoTrack? = null
     private var audioTrack: AudioTrack? = null
+    private var audioSender: RtpSender? = null
+    private var noiseMode = com.zisee.app.rtc.audio.processing.NoiseSuppressionMode.AUTO
+    private val audioProcessing = com.zisee.app.rtc.audio.processing.AudioProcessingEngine(context) {
+        scope.launch { if (!released) applyNoiseSuppression() }
+    }
+    private var ownsAudioProcessing = false
+    private val audioMemory = object : android.content.ComponentCallbacks2 {
+        override fun onConfigurationChanged(config: android.content.res.Configuration) = Unit
+        override fun onLowMemory() { audioProcessing.onMemoryPressure() }
+        override fun onTrimMemory(level: Int) {
+            if (level == android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW ||
+                level == android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
+                level >= android.content.ComponentCallbacks2.TRIM_MEMORY_COMPLETE) audioProcessing.onMemoryPressure()
+        }
+    }
     private var remoteTrack: VideoTrack? = null
     private var remoteBackTrack: VideoTrack? = null
     private var backSource: VideoSource? = null
@@ -107,6 +122,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var sentView: ViewRequest? = null
     private var desiredView = ViewRequest.Default
     private var adaptationEnabled = true
+    private val audioBandwidth = com.zisee.app.rtc.audio.AudioBandwidthPolicy()
+    private val videoSending = mutableMapOf<RtpSender, Boolean>()
     private val powerManager = context.getSystemService(PowerManager::class.java)
     @Volatile private var startedNanos = 0L
     private var setupReported = false
@@ -122,6 +139,10 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
 
     suspend fun start(iceServers: List<IceServerConfig>) = withContext(dispatcher) {
         initialize(context, logger)
+        audioProcessing.prepare()
+        val processingFactory = com.zisee.app.rtc.audio.processing.SharedAudioProcessing.acquire(audioProcessing)
+        ownsAudioProcessing = true
+        context.registerComponentCallbacks(audioMemory)
         cellularStandby.start()
         egl = EglBase.create()
         val shared = requireNotNull(egl).eglBaseContext
@@ -160,6 +181,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             networkIgnoreMask = LOOPBACK_ADAPTER
         }
         factory = PeerConnectionFactory.builder().setAudioDeviceModule(audioModule)
+            .setAudioProcessingFactory(processingFactory)
             .setOptions(options)
             .setVideoEncoderFactory(DefaultVideoEncoderFactory(shared, true, true))
             .setVideoDecoderFactory(DefaultVideoDecoderFactory(shared)).createPeerConnectionFactory()
@@ -263,8 +285,9 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "true"))
         })
         audioTrack = requireNotNull(factory).createAudioTrack(MediaTrack.MICROPHONE.wireId, audioSource).also {
-            requireNotNull(peer).addTrack(it, listOf("zisee"))
+            audioSender = requireNotNull(peer).addTrack(it, listOf("zisee"))
         }
+        applyNoiseSuppression()
         withContext(Dispatchers.Main.immediate) { callAudio.start() }
         // Open the supported quality ceiling immediately; native congestion control adapts output.
         val initialQuality = qualityPolicy.current.quality
@@ -278,14 +301,21 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                     recoveryConfig.handoverStatsIntervalMs else 1_000L
                 withTimeoutOrNull(interval) { statsWake.receive() }
                 try {
-                    val result = stats()
                     val thermal = if (Build.VERSION.SDK_INT >= 29) powerManager.currentThermalStatus else null
+                    // Thermal protection must keep running even when RTCStats is unavailable.
+                    if ((thermal ?: 0) >= 3 && !changingCamera)
+                        applyQuality(QualityDecision(VideoQuality.ECONOMY, QualityReason.THERMAL))
+                    audioProcessing.setThermal(thermal ?: 0)
+                    val result = stats()
                     val observed = result.copy(thermalStatus = thermal)
                     // Never use idle/muted encoder statistics to make quality decisions.
                     if (iceState.value == IceState.CONNECTED && videoTrack?.enabled() == true && adaptationEnabled && !changingCamera) {
                         applyQuality(qualityPolicy.update(observed, System.nanoTime() / 1_000_000))
                     }
-                    sampledStats.value = observed.copy(quality = appliedQuality ?: VideoQuality.HD)
+                    if (iceState.value == IceState.CONNECTED && !changingCamera) applyAudioBandwidth(observed)
+                    sampledStats.value = observed.copy(quality = appliedQuality ?: VideoQuality.HD,
+                        audioProcessing = audioProcessing.stats(), audioDevice = callAudio.state.value,
+                        audioBandwidth = audioBandwidth.mode)
                     missing = false
                 } catch (error: kotlinx.coroutines.TimeoutCancellationException) {
                     sampledStats.value = sampledStats.value.copy(sampleAvailable = false)
@@ -315,6 +345,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         localUfrags = description.description.lineSequence().filter { it.startsWith("a=ice-ufrag:") }.map { it.substringAfter(":").trim() }.toSet()
         acceptingCandidates = true
         setDescription(description, local = true)
+        configureAudioSender()
         // Send immediately. Candidates are delivered independently, including slow TURN results.
         description
     }
@@ -329,6 +360,44 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     suspend fun remoteDescription(type: String, sdp: String) = withContext(dispatcher) {
         require(type == "offer" || type == "answer")
         setDescription(SessionDescription(SessionDescription.Type.fromCanonicalForm(type), sdp), local = false)
+        configureAudioSender()
+    }
+
+    private fun configureAudioSender() {
+        val sender = audioSender ?: return
+        val parameters = sender.parameters
+        if (parameters.encodings.isEmpty()) return
+        parameters.encodings.forEach { it.maxBitrateBps = 32_000; it.minBitrateBps = null; it.bitratePriority = 4.0 }
+        if (!sender.setParameters(parameters)) logger.error(AppEvent.RTC_QUALITY_REJECTED)
+    }
+
+    private fun applyAudioBandwidth(stats: MediaStats) {
+        videoSending.keys.retainAll(listOfNotNull(videoSender, backSender).toSet())
+        val mode = audioBandwidth.update(stats.availableOutgoingKbps, stats.audio.outboundLoss, stats.sampledAtMs)
+        val frontMain = dualCapture == null || (remoteView.front == ViewSize.LARGE && remoteView.back == ViewSize.SMALL)
+        for ((sender, primary) in listOf(videoSender to frontMain, backSender to !frontMain)) {
+            if (sender == null) continue
+            val enabled = mode == com.zisee.app.rtc.audio.AudioBandwidthMode.ALL_VIDEO ||
+                (mode == com.zisee.app.rtc.audio.AudioBandwidthMode.PRIMARY_ONLY && primary)
+            if (videoSending[sender] == enabled) continue
+            val parameters = sender.parameters
+            if (parameters.encodings.isEmpty()) continue
+            parameters.encodings.forEach { it.active = enabled }
+            if (sender.setParameters(parameters)) videoSending[sender] = enabled
+            else logger.error(AppEvent.RTC_QUALITY_REJECTED)
+        }
+    }
+
+    suspend fun setNoiseSuppression(mode: com.zisee.app.rtc.audio.processing.NoiseSuppressionMode) = withContext(dispatcher) {
+        if (!released) { noiseMode = mode; applyNoiseSuppression() }
+    }
+
+    private fun applyNoiseSuppression() {
+        val track = audioTrack ?: return
+        if (!audioProcessing.configure(track, noiseMode)) logger.error(AppEvent.RTC_MEDIA_FAILED)
+        val info = audioProcessing.stats()
+        sampledStats.value = sampledStats.value.copy(audioProcessing = info)
+        logger.info(AppEvent.RTC_AUDIO_PROCESSING, "${info.mode} ${info.state} ${info.fallback}")
     }
 
     /**
@@ -623,7 +692,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             cleanup { backTrack?.removeSink(localBackFeed) }
             cleanup { videoTrack?.removeSink(localFeed) }
             cleanup { peer?.close() }
-            cleanup { peer?.dispose() }; peer = null; videoSender = null
+            cleanup { peer?.dispose() }; peer = null; videoSender = null; audioSender = null
             cleanup { camera?.dispose() }; camera = null
             cleanup { videoTrack?.dispose() }; videoTrack = null
             cleanup { audioTrack?.dispose() }; audioTrack = null
@@ -633,6 +702,12 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             cleanup { audioSource?.dispose() }; audioSource = null
             cleanup { texture?.dispose() }; texture = null
             cleanup { factory?.dispose() }; factory = null
+            if (ownsAudioProcessing) {
+                cleanup { com.zisee.app.rtc.audio.processing.SharedAudioProcessing.release(audioProcessing) }
+                ownsAudioProcessing = false
+                cleanup { context.unregisterComponentCallbacks(audioMemory) }
+            }
+            cleanup { audioProcessing.close() }
             cleanup { audioModule?.release() }; audioModule = null
             cleanup { egl?.release() }; egl = null
             withContext(Dispatchers.Main.immediate) {

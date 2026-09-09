@@ -1,8 +1,9 @@
 package com.zisee.app.rtc.audio
 
-enum class AudioRoute { SPEAKER, EARPIECE, BLUETOOTH, WIRED, USB, UNKNOWN }
+enum class AudioRoute { SPEAKER, EARPIECE, BLUETOOTH, WIRED, USB, MICROPHONE, UNKNOWN }
 enum class AudioState { IDLE, PREPARING, ACTIVE, INTERRUPTED, RECOVERING, STOPPING }
-data class AudioDeviceState(val state: AudioState = AudioState.IDLE, val output: AudioRoute = AudioRoute.UNKNOWN)
+data class AudioDeviceState(val state: AudioState = AudioState.IDLE, val output: AudioRoute = AudioRoute.UNKNOWN,
+    val input: AudioRoute = AudioRoute.UNKNOWN)
 
 /** External devices take precedence until the user explicitly selects the speaker. */
 object AudioRoutePolicy {

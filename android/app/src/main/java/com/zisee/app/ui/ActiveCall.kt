@@ -88,7 +88,8 @@ private val HandleRightShape = RoundedCornerShape(topStart = 7.dp, bottomStart =
 @Composable
 internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> Unit,
     onShowMe: () -> Unit, onSwitch: () -> Unit, onSpeaker: () -> Unit, onEnd: () -> Unit,
-    onHintSeen: () -> Unit = {}, onViewLayout: (Boolean, Boolean) -> Unit = { _, _ -> }) {
+    onHintSeen: () -> Unit = {}, onViewLayout: (Boolean, Boolean) -> Unit = { _, _ -> },
+    onNoiseMode: (com.zisee.app.rtc.audio.processing.NoiseSuppressionMode) -> Unit = {}) {
     var controls by remember { mutableStateOf(true) }
     var interaction by remember { mutableLongStateOf(0L) }
     var more by remember { mutableStateOf(false) }
@@ -110,6 +111,8 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
     val hint = state.showMeHint && remoteDual
     // Priority: what is happening now, then what failed, then the one-time teaching hint.
     val tip = when {
+        state.stats.audioDevice.state == com.zisee.app.rtc.audio.AudioState.INTERRUPTED -> "音频被其他应用中断；可点击扬声器按钮恢复"
+        state.stats.audioBandwidth == com.zisee.app.rtc.audio.AudioBandwidthMode.AUDIO_ONLY -> "网络较弱，已暂停发送画面以优先保持语音"
         starting -> "正在开启摄像头…"
         state.showMe.message.isNotEmpty() -> state.showMe.message
         hint -> "点击小窗即可切换主视角"
@@ -349,13 +352,14 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                 }
             }
         }
-        if (more) CallOptions(state, onDismiss = { more = false; interaction++ }, onSwitch = onSwitch)
+        if (more) CallOptions(state, onDismiss = { more = false; interaction++ }, onSwitch = onSwitch, onNoiseMode = onNoiseMode)
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun CallOptions(state: CallUiState, onDismiss: () -> Unit, onSwitch: () -> Unit) {
+private fun CallOptions(state: CallUiState, onDismiss: () -> Unit, onSwitch: () -> Unit,
+    onNoiseMode: (com.zisee.app.rtc.audio.processing.NoiseSuppressionMode) -> Unit) {
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Color(0xFF12181D), contentColor = CallText) {
         Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp).padding(bottom = 28.dp),
@@ -366,6 +370,16 @@ private fun CallOptions(state: CallUiState, onDismiss: () -> Unit, onSwitch: () 
                 colors = ButtonDefaults.textButtonColors(contentColor = CallAccent)) { Text("切换前后摄像头") }
             Text("「给你看」在支持双摄的设备上同时展示人像与现场，否则改用单后摄。",
                 style = MaterialTheme.typography.bodySmall, color = CallMuted)
+            Text("麦克风降噪", style = MaterialTheme.typography.titleSmall)
+            for (mode in com.zisee.app.rtc.audio.processing.NoiseSuppressionMode.entries) {
+                Row(Modifier.fillMaxWidth().clickable { onNoiseMode(mode) }, verticalAlignment = Alignment.CenterVertically) {
+                    RadioButton(selected = state.stats.audioProcessing.mode == mode, onClick = { onNoiseMode(mode) })
+                    Text(mode.label)
+                }
+            }
+            Text(if (state.stats.audioProcessing.state == com.zisee.app.rtc.audio.processing.AiState.DEGRADED)
+                "当前使用标准降噪，以保持语音连续。" else "AI 在本机处理语音。自动模式会根据设备状态降级。",
+                style = MaterialTheme.typography.bodySmall, color = CallMuted)
             if (BuildConfig.DEBUG) {
                 val stats = state.stats
                 Text("连接详情", Modifier.padding(top = 8.dp), style = MaterialTheme.typography.titleSmall)
@@ -374,6 +388,16 @@ private fun CallOptions(state: CallUiState, onDismiss: () -> Unit, onSwitch: () 
                     "发送 ${stats.sentWidth} × ${stats.sentHeight} · ${stats.sentFps} fps\n" +
                     "收/发 ${stats.receiveKbps}/${stats.sendKbps} kbps · 上行估计 ${stats.availableOutgoingKbps ?: "—"} kbps\n" +
                     "${stats.codec} · ${stats.encoder}\n限制 ${stats.qualityLimitation} · 热状态 ${stats.thermalStatus ?: "—"}",
+                    style = MaterialTheme.typography.bodySmall, color = CallMuted)
+                val audio = stats.audio
+                val processing = stats.audioProcessing
+                Text("音频 ${stats.audioDevice.state} · 输入 ${stats.audioDevice.input} · 输出 ${stats.audioDevice.output}\n" +
+                    "AEC 软件 · ${processing.engine} · ${processing.state}\n" +
+                    "${audio.codec} · 发 ${audio.sendKbps?.toLong() ?: "—"} kbps · 抖动 ${audio.jitterMs?.toLong() ?: "—"} ms\n" +
+                    "上/下行丢包 ${audio.outboundLoss ?: "—"}/${audio.inboundLoss ?: "—"}\n" +
+                    "NetEq ${audio.jitterBufferMs?.toLong() ?: "—"} ms · PLC ${audio.concealmentRatio ?: "—"}\n" +
+                    "AI avg/p95/p99/max ${processing.averageUs}/${processing.p95Us}/${processing.p99Us}/${processing.maxUs} µs\n" +
+                    "超时 ${processing.deadlineMisses} · 回退 ${processing.fallbackCount} ${processing.fallback}",
                     style = MaterialTheme.typography.bodySmall, color = CallMuted)
             }
         }

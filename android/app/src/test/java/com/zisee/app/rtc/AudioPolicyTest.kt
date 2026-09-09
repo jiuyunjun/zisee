@@ -7,6 +7,15 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AudioPolicyTest {
+    @Test fun audioReserveSuspendsVideoAndNeedsSustainedRecovery() {
+        val policy = com.zisee.app.rtc.audio.AudioBandwidthPolicy()
+        assertEquals(com.zisee.app.rtc.audio.AudioBandwidthMode.PRIMARY_ONLY, policy.update(200, null, 1000))
+        assertEquals(com.zisee.app.rtc.audio.AudioBandwidthMode.AUDIO_ONLY, policy.update(80, null, 2000))
+        assertEquals(com.zisee.app.rtc.audio.AudioBandwidthMode.AUDIO_ONLY, policy.update(null, null, 3000))
+        for (time in 4000L..8000L step 1000) assertEquals(com.zisee.app.rtc.audio.AudioBandwidthMode.AUDIO_ONLY, policy.update(500, 0.0, time))
+        assertEquals(com.zisee.app.rtc.audio.AudioBandwidthMode.ALL_VIDEO, policy.update(500, 0.0, 9000))
+        assertEquals(com.zisee.app.rtc.audio.AudioBandwidthMode.AUDIO_ONLY, policy.update(1000, 0.2, 10000))
+    }
     @Test fun externalRouteAndDisconnectFallback() {
         val devices = setOf(AudioRoute.SPEAKER, AudioRoute.EARPIECE, AudioRoute.BLUETOOTH)
         assertEquals(AudioRoute.BLUETOOTH, AudioRoutePolicy.select(devices, false))

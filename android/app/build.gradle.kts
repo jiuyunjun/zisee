@@ -1,3 +1,6 @@
+import java.util.Properties
+import java.security.MessageDigest
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -79,3 +82,29 @@ dependencies {
     testImplementation(libs.json.test)
     testImplementation(libs.coroutines.test)
 }
+
+// Committed native artifacts keep ordinary Android builds independent of Rust/WSL.
+// Fail if source/model/binaries drift; rebuild with audio-native/build.py to refresh the manifest.
+val verifyAudioNative by tasks.registering {
+    val manifest = rootProject.file("audio-native/artifacts.properties")
+    inputs.file(manifest)
+    doLast {
+        val entries = Properties().apply { manifest.inputStream().use { load(it) } }
+        entries.forEach { path, checksum ->
+            val file = rootProject.file(path.toString())
+            check(file.isFile) { "Missing audio artifact: $path. See audio-native/README.md" }
+            val digest = MessageDigest.getInstance("SHA-256")
+            file.inputStream().use { input ->
+                val buffer = ByteArray(65536)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    digest.update(buffer, 0, count)
+                }
+            }
+            val actual = digest.digest().joinToString("") { "%02x".format(it) }
+            check(actual == checksum) { "Audio artifact changed: $path. Rebuild with audio-native/build.py" }
+        }
+    }
+}
+tasks.named("preBuild") { dependsOn(verifyAudioNative) }

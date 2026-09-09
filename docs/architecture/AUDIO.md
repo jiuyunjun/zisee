@@ -1943,3 +1943,40 @@ AI 跑不动时：
 - JVM 测试与 Debug lint 通过。蓝牙/SCO、双讲回声和真实弱网仍需设备矩阵验收。
 
 参考：[Android 通信设备路由](https://developer.android.com/develop/connectivity/bluetooth/ble-audio/audio-manager)、[WebRTC ADM](https://webrtc.googlesource.com/src/+/refs/heads/main/sdk/android/api/org/webrtc/audio/JavaAudioDeviceModule.java)。
+
+## Phase 2–3
+
+- 已接入真实 DeepFilterNet mobile 模型和 JNI；模型/许可证随 APK 分发，arm64-v8a 和 x86_64 原生库已构建。32 位或库加载失败回退 WebRTC NS。原生依赖、构建步骤、校验及许可见 [audio-native/README.md](../../android/audio-native/README.md)。
+- 通话准备阶段在 RTC 工作线程加载、预热、测量并清除合成预热尾音。逐帧推理在 WebRTC 音频线程执行，不在主线程，不跨线程排队、不额外堆积 PCM。
+- 当前 WebRTC 扩展点在 AGC 后：AI 模式显式关闭 WebRTC NS/AGC，桥接在 AI 后做温和数字增益及限幅；标准模式恢复 WebRTC NS/AGC。不会把 AI 放到原始麦克风回调冒充 AEC 后处理。
+- 默认 AUTO；通话选项提供 OFF / STANDARD / AI / AUTO。AI 与 AUTO 都受安全预算约束，不能强制绕过性能、过热或模型失败保护。RNNoise 是可选项，本版直接回退 WebRTC NS。
+- 首次运行用非静音合成输入做轻量测量；同一模型/系统版本的结果缓存 24 小时，后续仍短暂预热。P95 ≥4 ms 时保留标准模式。运行时连续 5 帧 ≥4 ms 或任一帧 ≥10 ms，立即旁路 AI，再在 RTC 控制线程恢复标准 NS。本次通话不自动重新升档，避免反复震荡。
+- 严重热状态先触发已有视频降载，再停 AI，不依赖 RTCStats 成功返回；低内存、模型错误、格式不匹配也回退。安全回退后释放模型工作内存；ICE 重启、网络变化或耳机路由切换本身不销毁模型/采集链。
+- 原生输入/输出数组复用、模型上下文持久化；WebRTC JNI 包装和 Tract 内部不保证零分配。Rust 可展开 panic 转成失败，不能承诺隔离 SIGSEGV/OOM 或中止正在运行的模型。
+- 上行估计低于 250 kbps 时暂停辅助视频；低于 96 kbps 或音频上行丢包 ≥15% 时暂停全部视频发送。持续 5 秒达到 ≥400 kbps 且已知上行音频丢包 <5% 后恢复。缺失带宽样本不触发恢复。用户静音和摄像头开关不被覆盖。
+- Debug 详情显示实际输入/输出设备类别、模式/引擎、音频 codec/码率、方向性丢包、NetEq/PLC、平均/P95/P99/最大推理耗时、deadline miss 与回退原因。没有启用 PCM 录制。
+
+## 验证记录与未完成验收
+
+2026-09-09，Pixel 9a / Android 16 / arm64：
+
+| 验证 | 实测结果 |
+| --- | --- |
+| 两次原生创建、各处理 500 帧合成 PCM、释放 | 通过；有限值、限幅范围、输出确实改变 |
+| 首次合成处理 avg / P95 / P99 / max | 311 / 343 / 357 / 370 µs，0 次 10 ms deadline miss |
+| 第二次合成处理 avg / P95 / P99 / max | 345 / 384 / 866 / 1873 µs，0 次 deadline miss |
+| 本机 RTC 编码/解码、四种模式切换 | 通过，实际 codec 为 audio/opus |
+| RTC 并发负载下 AI 回退 | 观察到连续慢帧触发 DEADLINE；当时 P95 4861 µs，回退后继续通话 |
+| ICE restart、摄像头切换、释放 | 通过 |
+| 同进程连续两次完整通话 | 通过；第二次 AI_ACTIVE，avg / P95 1645 / 3067 µs；验证进程级 APM 转发器可复用 |
+| 注入严重热状态、低内存、不支持的帧格式 | 通过；转标准 NS、不自动升档；close 后迟到 callback 被忽略 |
+| JNI 错误尺寸与故障锁定 | 通过；返回失败，后续处理保持失败，交给控制层回退 |
+
+Debug/Release APK、Debug instrumentation APK、JVM 单元测试、Debug lint 已通过。原生 ELF LOAD 段已核对 16 KB 对齐。设备测试命令：
+
+```powershell
+adb shell am instrument -w -r -e audio true com.zisee.app.debug.test/com.zisee.app.rtc.RtcSmokeInstrumentation
+adb shell am instrument -w -r -e repeat 2 com.zisee.app.debug.test/com.zisee.app.rtc.RtcSmokeInstrumentation
+```
+
+上述是短时功能和耗时验证，不是降噪主观质量、A/B 结论或端到端延迟测量。仍需低/中/高端多设备、蓝牙/有线/USB 路由矩阵、失焦/恢复、真实弱网、双讲回声、风噪、长通话功耗/温度及 RNNoise 对照验收。AI 音质和电量收益尚未证实。Phase 4 未实施。

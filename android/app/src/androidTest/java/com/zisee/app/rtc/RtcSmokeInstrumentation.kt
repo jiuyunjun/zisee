@@ -24,18 +24,28 @@ class RtcSmokeInstrumentation : Instrumentation() {
     private var preview = false
     private var capabilities = false
     private var orientationPreview = false
+    private var audio = false
+    private var repetitions = 1
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         expectedQuality = arguments?.getString("expectedQuality")
         preview = arguments?.getString("preview") == "true"
         capabilities = arguments?.getString("capabilities") == "true"
         orientationPreview = arguments?.getString("orientationPreview") == "true"
+        audio = arguments?.getString("audio") == "true"
+        repetitions = arguments?.getString("repeat")?.toIntOrNull()?.coerceIn(1, 3) ?: 1
         start()
     }
 
     override fun onStart() {
         val output = Bundle()
         try {
+            if (audio) {
+                AudioSmoke.run(targetContext, output)
+                output.putString("stream", "PASS: native model, finite output, repeated lifecycle; synthetic input only\n")
+                finish(Activity.RESULT_OK, output)
+                return
+            }
             if (orientationPreview) {
                 try {
                     for (mode in listOf("face", "mine", "both")) {
@@ -110,7 +120,8 @@ class RtcSmokeInstrumentation : Instrumentation() {
                 finish(Activity.RESULT_OK, output)
                 return
             }
-            runBlocking { withTimeout(40_000) { smoke(output) } }
+            runBlocking { withTimeout(40_000L * repetitions) { repeat(repetitions) { smoke(output) } } }
+            output.putInt("completedCalls", repetitions)
             output.putString("stream", "PASS: native camera, ICE, encode/decode, sender ceilings and release\n")
             finish(Activity.RESULT_OK, output)
         } catch (error: Exception) {
@@ -180,6 +191,15 @@ class RtcSmokeInstrumentation : Instrumentation() {
             check(session.iceState.value == IceState.CONNECTED)
             check(AppEvent.RTC_QUALITY_CHANGED in events && AppEvent.RTC_QUALITY_REJECTED !in events)
             expectedQuality?.let { check(session.mediaStats.value.quality.name == it) }
+            check(session.mediaStats.value.audioProcessing.fallback != com.zisee.app.rtc.audio.processing.AudioFallback.FORMAT)
+            output.putString("audioProcessing", session.mediaStats.value.audioProcessing.toString())
+            output.putString("audioCodec", session.mediaStats.value.audio.codec)
+            for (mode in com.zisee.app.rtc.audio.processing.NoiseSuppressionMode.entries) {
+                session.setNoiseSuppression(mode)
+                check(session.mediaStats.value.audioProcessing.mode == mode)
+                check(session.mediaStats.value.audioProcessing.fallback != com.zisee.app.rtc.audio.processing.AudioFallback.CONFIGURATION)
+            }
+            output.putString("audioModes", "PASS: OFF, STANDARD, AI, AUTO without renegotiation")
             output.putLong("firstDecodedFrameMs", (firstFrameNanos.get() - started) / 1_000_000)
             output.putLong("decoded30FramesMs", (System.nanoTime() - started) / 1_000_000)
             output.putString("qualityCeiling", session.mediaStats.value.quality.name)
