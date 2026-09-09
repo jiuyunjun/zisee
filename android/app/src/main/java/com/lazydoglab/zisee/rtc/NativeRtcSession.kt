@@ -213,6 +213,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             candidateNetworkPolicy = PeerConnection.CandidateNetworkPolicy.ALL
             iceBackupCandidatePairPingInterval = recoveryConfig.backupPingIntervalMs
             iceConnectionReceivingTimeout = recoveryConfig.receivingTimeoutMs
+            iceCheckIntervalStrongConnectivityMs = recoveryConfig.strongCheckIntervalMs
             stableWritableConnectionPingIntervalMs = recoveryConfig.stablePingIntervalMs
             iceUnwritableTimeMs = recoveryConfig.unwritableTimeoutMs
             iceUnwritableMinChecks = recoveryConfig.unwritableMinChecks

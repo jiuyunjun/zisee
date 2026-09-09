@@ -19,6 +19,10 @@ data class WebRtcRecoveryConfig(
     // Two failed checks cannot land inside a 750 ms timeout while the selected pair is only pinged
     // every 500 ms, so the cadence, not the timeout, was setting how fast a dead path is noticed.
     // A hundred-byte check four times a second costs a few kbps and buys back most of that.
+    //
+    // libwebrtc rejects the whole configuration, and with it the peer connection, if the stable
+    // writable interval is shorter than the strong connectivity one, so the two move together.
+    val strongCheckIntervalMs: Int = 250,
     val stablePingIntervalMs: Int = 250,
     // A measured Wi-Fi to cellular switch took 1502 ms to select the already checked cellular pair,
     // which is this timeout: ICE will not leave a selected connection until it is declared
