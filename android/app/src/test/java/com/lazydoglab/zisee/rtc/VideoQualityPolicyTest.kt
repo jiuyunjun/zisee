@@ -125,6 +125,19 @@ class VideoQualityPolicyTest {
         for (time in 13_000L..20_000L step 1_000) policy.update(unmeasured, time)
         assertTrue(policy.current.quality.ordinal >= VideoQuality.HD.ordinal)
     }
+
+    @Test fun `a route change comes back small so the first key frame is small`() {
+        val policy = VideoQualityPolicy(true, preferFullHd = true)
+        for (time in 0L..3_000L step 1_000) policy.update(fast, time)
+        assertEquals(VideoQuality.FULL_HD, policy.current.quality)
+        policy.routeChanged(4_000)
+        // A 1080p key frame on a re-started estimate freezes the picture for seconds.
+        assertEquals(VideoQuality.ECONOMY, policy.current.quality)
+        assertEquals(QualityReason.RECOVERY, policy.current.reason)
+        // And it climbs straight back to what the previous route held.
+        for (time in 5_000L..11_000L step 1_000) policy.update(fast, time)
+        assertEquals(VideoQuality.FULL_HD, policy.current.quality)
+    }
 }
 
 class SixtyFrameTest {

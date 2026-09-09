@@ -499,6 +499,9 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 qualityPolicy.routeChanged(result.sampledAtMs)
                 handover.pairChanged(result.sampledAtMs, appliedQuality)
                 seedBitrate(result.sampledAtMs)
+                // Push the smaller frame out now rather than a tick later, and without restarting
+                // the camera: the key frame this asks for is the one the viewer is waiting on.
+                applyQuality(qualityPolicy.current, changeCapture = false)
             }
             lastCandidate = route; lastSelectedPairId = result.selectedPairId
             // Log pair transitions even when both paths have the same candidate types. Never log IPs or SDP.
@@ -509,6 +512,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             sustainedSendKbps = maxOf(result.sendKbps, sustainedSendKbps * 9 / 10)
         }
         handover.sample(result)?.let { logger.info(AppEvent.RTC_HANDOVER, it.encode()) }
+        handover.videoResumed()?.let { logger.info(AppEvent.RTC_HANDOVER_VIDEO, "ms=$it") }
         handover.qualityRestored(appliedQuality, result.sampledAtMs)
             ?.let { logger.info(AppEvent.RTC_QUALITY_RESTORED, "ms=$it") }
         return@withTimeout result

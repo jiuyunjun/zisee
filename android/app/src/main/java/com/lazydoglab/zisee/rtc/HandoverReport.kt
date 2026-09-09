@@ -20,6 +20,13 @@ class HandoverReport {
 
     private var lastBytes: Long? = null
     private var lastFlowMs: Long? = null
+    // Bytes arriving is not a picture. The first frame after a switch has to be a key frame, and a
+    // large one on a re-started estimate can take seconds longer than the first byte does.
+    private var lastFrames: Long? = null
+    private var lastFrameMs: Long? = null
+    private var frameGapFromMs: Long? = null
+    private var frameStartMs: Long? = null
+    private var videoGapMs: Long? = null
     private var startedMs: Long? = null
     private var gapFromMs: Long? = null
     private var selectedMs: Long? = null
@@ -47,6 +54,9 @@ class HandoverReport {
         startedMs = nowMs
         // The freeze starts at the last frame that arrived, not at the moment anything noticed.
         gapFromMs = lastFlowMs ?: nowMs
+        frameGapFromMs = lastFrameMs ?: nowMs
+        frameStartMs = nowMs
+        videoGapMs = null
         selectedMs = null
         restarted = false
     }
@@ -58,7 +68,17 @@ class HandoverReport {
         val flowing = previous != null && stats.inboundBytes > previous
         lastBytes = stats.inboundBytes
         if (flowing) lastFlowMs = stats.sampledAtMs
+        val previousFrames = lastFrames
+        val decoding = previousFrames != null && stats.videoFrames > previousFrames
+        lastFrames = stats.videoFrames
+        if (decoding) lastFrameMs = stats.sampledAtMs
         val start = startedMs ?: return null
+        // The picture can still be frozen long after the bytes resume, so it is timed separately
+        // and reported with whichever summary the byte gap produces.
+        if (decoding && videoGapMs == null && frameStartMs?.let { stats.sampledAtMs > it } == true) {
+            videoGapMs = stats.sampledAtMs - (frameGapFromMs ?: start)
+            frameStartMs = null
+        }
         if (!flowing || stats.sampledAtMs <= start) return null
         val summary = Summary(
             gapMs = stats.sampledAtMs - (gapFromMs ?: start),
@@ -69,6 +89,17 @@ class HandoverReport {
         )
         startedMs = null; gapFromMs = null; selectedMs = null; restarted = false
         return summary
+    }
+
+    /**
+     * How long the picture itself was frozen, reported once, when the first frame decoded after a
+     * handover arrives. Always at least the byte gap and often much more: that first frame has to
+     * be a key frame, and a large one costs seconds on an estimate that has just restarted.
+     */
+    fun videoResumed(): Long? {
+        val value = videoGapMs ?: return null
+        videoGapMs = null
+        return value
     }
 
     /**

@@ -42,6 +42,11 @@ class VideoQualityPolicy(
         val held = restoreCeiling?.takeIf { nowMs < restoreUntilMs && it.ordinal > current.quality.ordinal }
         restoreCeiling = held ?: current.quality
         restoreUntilMs = nowMs + RESTORE_WINDOW_MS
+        // The first frame on a new route has to be a key frame, and its size is this decision. A
+        // 1080p key frame is hundreds of kilobytes: on an estimate that has just restarted it takes
+        // seconds to arrive, and the picture stays frozen for every one of them even though bytes
+        // are already flowing. Coming back small and climbing is what the viewer wants to see.
+        current = QualityDecision(VideoQuality.ECONOMY, QualityReason.RECOVERY)
     }
 
     fun update(stats: MediaStats, nowMs: Long): QualityDecision {
