@@ -36,8 +36,8 @@ class DualCameraCapture(private val context: Context, private val egl: EglBase.C
     @Volatile private var targetRotation = Surface.ROTATION_0
 
     /**
-     * CameraX reports frame rotation relative to this, so it has to track the phone rather than the
-     * window: with auto-rotate off the window never turns and the scene would stay sideways.
+     * CameraX reports frame rotation relative to this. Follow the effective display rotation so
+     * Face Call and Show Me both respect the user's screen rotation lock.
      */
     suspend fun setTargetRotation(rotation: Int) = withContext(Dispatchers.Main.immediate) {
         targetRotation = rotation

@@ -49,7 +49,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
                                 .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
                             try {
                                 waitForIdleSync()
-                                // ActiveCall requests FULL_SENSOR on entry. Override only in this
+                                // ActiveCall requests FULL_USER on entry. Override only in this
                                 // synthetic fixture after composition so the requested matrix is real.
                                 runOnMainSync {
                                     activity.requestedOrientation = if (viewer == 0)

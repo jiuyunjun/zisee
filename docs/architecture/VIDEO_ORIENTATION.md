@@ -1,7 +1,7 @@
 ---
 title: 视频方向与双方横竖屏专项设计
 document_id: ARCH-VIDEO-ORIENTATION-001
-version: 1.0.0
+version: 1.1.0
 status: Active
 created: 2026-09-09
 updated: 2026-09-09
@@ -15,22 +15,22 @@ owners:
 
 ## 目标与范围
 
-A、B 可以各自横持、竖持或倒置手机；任何一方转动都不要求另一方配合。Face Call、单方 Show Me、双方 Show Me 和单后摄降级遵循同一组规则：画面正立、比例真实、现场内容完整、前后摄镜像明确，转屏不重建通话或重新协商 SDP。
+A、B 可以各自横持、竖持或倒置手机；任何一方转动都不要求另一方配合。Face Call、单方 Show Me、双方 Show Me 和单后摄降级遵循同一组规则：画面遵循用户方向锁、比例真实、现场内容完整、前后摄镜像明确，转屏不重建通话或重新协商 SDP。
 
-本次实现摄像头视频的方向防抖、按每路帧尺寸布局、主辅视角选择及画质请求一致性。屏幕共享和 AR 标注尚未接入当前通话，本文定义其后续接入约束，不宣称实现了这些功能。
+本次实现摄像头视频的屏幕方向同步、按每路帧尺寸布局、主辅视角选择及画质请求一致性。屏幕共享和 AR 标注尚未接入当前通话，本文定义其后续接入约束，不宣称实现了这些功能。
 
 ## 四种不同的方向
 
 | 信息 | 所属端 | 用途 |
 |---|---|---|
 | Camera sensor orientation | 发送端，每个摄像头各自拥有 | 将传感器原始缓冲区解释为图像 |
-| 手机物理方向 | 发送端 OrientationEventListener | 决定发送视频相对重力的正立方向 |
+| 有效屏幕方向 | 发送端 Display.rotation | 决定发送视频的方向，尊重用户旋转锁 |
 | VideoFrame.rotation 与 buffer 尺寸 | 每路视频逐帧 | 接收端旋转及计算实际宽高比的依据 |
 | 当前可用窗口宽高 | 观看端 | 主画面容器、小窗排列、控件安全区 |
 
 禁止用 B 的窗口方向覆盖 A 的帧方向；禁止把 A 前摄的尺寸推断为 A 后摄的尺寸；禁止根据 1920×1080 编码缓冲区直接判定画面横屏。旋转 90°/270° 时显示宽高应交换。
 
-Android Surface rotation 和方向传感器角度的正方向不同。映射及 CameraX targetRotation 参考 [Android 官方旋转指南](https://developer.android.com/media/camera/camerax/orientation-rotation)。自然横屏平板上的 ROTATION_0 不代表竖屏，UI 始终依据实际窗口尺寸布局。
+CameraX targetRotation 使用有效 display rotation，不直接使用重力角度。参考 [Android 官方旋转指南](https://developer.android.com/media/camera/camerax/orientation-rotation)。自然横屏平板上的 ROTATION_0 不代表竖屏，UI 始终依据实际窗口尺寸布局。
 
 ## A 与 B 的组合矩阵
 
@@ -79,15 +79,24 @@ Android Surface rotation 和方向传感器角度的正方向不同。映射及 
 
 ## 采集与旋转实现
 
-1. `DeviceOrientation` 初值读取当前 display rotation，避免已经横持进入通话时先假定为 ROTATION_0。
-2. `OrientationQuantizer` 量化四个方向。跨越原方向 60° 才切换，即 45° 边界外增加 15° 迟滞，防止手机在对角线附近抖动导致 90° 来回旋转。UNKNOWN/无效值保留上次方向。
-   无法检测方向传感器时，单摄保留 capturer 自身基于 display 的旋转，不用冻结的物理方向猜测覆盖它；双摄无传感器设备仍需验证 targetRotation 的设备行为。
-3. 单摄延续现有补偿：前摄增加 physical-display，后摄使用相反符号；保留 sensor orientation，不复制或物理旋转像素。
-4. CameraX 双摄更新各 Preview 的 targetRotation，由各自 TransformationInfo 提供 frame rotation；不叠加单摄补偿。
-5. `VideoFeed.geometry` 发布每路实际 buffer 尺寸与 rotation；StateFlow 仅在几何变化时通知 UI，不经过每秒 RTC stats，也不保存图像。
-6. renderer 继续消费原始 VideoFrame，由 WebRTC 应用 rotation。`VideoGeometry` 只用于布局，旋转 90°/270° 时交换显示宽高。
+1. `DeviceOrientation` 读取实际 display rotation，通过 DisplayManager.DisplayListener 监听变化；重复通知不重复更新双摄，释放时注销监听。
+2. 单摄保留 libwebrtc capturer 的逐帧旋转，删除物理方向补偿 processor，避免侧躺时绕过旋转锁。
+3. CameraX 双摄以同一有效 display rotation 更新各 Preview 的 targetRotation，由各自 TransformationInfo 提供 frame rotation；启动时直接读取最新 display rotation。
+4. `VideoFeed.geometry` 发布各路实际尺寸与 rotation；renderer 只应用一次帧旋转，90°/270° 时布局交换宽高。
 
-沿用现有通话窗口 `FULL_SENSOR`：通话期间允许四向旋转，即使系统自动旋转被关闭；离开通话恢复原 Activity 设置。该产品行为须在设备验收中明确检查。系统多窗口/大屏可能忽略 requestedOrientation，此时以实际窗口布局，不强行改变对端视频。
+通话窗口使用 `FULL_USER`：系统自动旋转开启时允许四向旋转，锁定时遵守用户偏好；离开通话恢复原 Activity 设置。参考 [Android 官方方向说明](https://developer.android.com/guide/topics/manifest/activity-element.html)。不修改系统旋转设置、不新增权限。大屏/多窗口可能忽略 requestedOrientation，以实际 display 和窗口工作，不通过重力猜测用户意图。
+
+### 侧躺及方向锁
+
+| A 的操作 | 发送方向与 B 的观看结果 |
+|---|---|
+| 锁定竖屏，手机与脸一起侧转 | 保持竖屏；脸相对手机正向时，B 看到正向人像 |
+| 锁定横屏后侧躺 | 保持有效横屏方向，不被重力强行旋转 |
+| 自动旋转开启且系统实际转屏 | 视频跟随实际屏幕方向，B 等比显示 |
+| Show Me 且方向锁定 | 前后摄都遵守有效屏幕方向，各自保留传感器补偿 |
+| 仅 B 转屏 | A 的发送方向不变，仅更新 B 的布局与留边 |
+
+不做人脸检测或自动转正：如果仅脸歪了而手机不动，B 仍会看到歪着的脸。用户方向锁优先于“相对重力正立”。
 
 Activity 现有 configChanges 处理窗口旋转，普通转屏不触发后台结束通话逻辑。折叠、多窗口引起的其他 Activity 重建及后台通话能力属于已有生命周期边界，不能用该配置宣称所有场景都不会重建。
 
@@ -122,7 +131,7 @@ UI 必须上报**计算后的实际主画面**，不能仅上报用户是否手�
 
 自动测试覆盖：
 
-- 四方向显示宽高与前后摄补偿的全组合；传感器对角线抖动、360° 环绕、UNKNOWN 和横屏初值。
+- 四方向显示宽高；锁定竖屏重复通知、锁定横屏初值、解锁后的实际 display 变化与无效通知。
 - Face/STARTING/DUAL/BACK_ONLY 的双方模式组合、默认及手动主视角。
 - A/B 各四种帧旋转、观看窗口横/竖/方形、一至三个小窗的比例、边界和互不重叠。
 - 默认远端主画面、双摄主辅交换、单后摄降级的 Track 清晰度请求。
@@ -140,10 +149,16 @@ adb -s <emulator> shell am instrument -w -e orientationPreview true com.zisee.ap
 
 真机验收至少两台 Android：A/B 分别在 0/90/180/270° 间转动；普通通话、A Show Me、B Show Me、双方 Show Me、双摄不支持降级；镜像文字左右；切换主辅后转屏、拖动/停靠后转屏；系统旋转锁开/关；横持进入通话、放平、摄像头开关、切网期间转屏。记录 callId 连续性、无多余 SDP、正立稳定性和资源释放。模拟器合成图不代表 CameraX 双摄、OEM 镜像、真实传输旋转或 AR 已通过真机验证。
 
-## 本次验证记录（2026-09-09）
+## 1.0 验证记录（历史）
 
 - 86 个 JVM 单元测试通过，Debug APK、AndroidTest APK 构建及 lint 通过。
 - Small_Phone API 36 模拟器完成 12 种合成视频布局截图并复核；确认异向主画面正立、等比留边，小窗可见，横屏 Show Me 提示与小窗分离，挂断按钮可见。窄小窗使用单字标签并隐藏交换图标，完整语义标签仍保留给无障碍服务。
 - 截图验证发现并修复仅设置 FIT 仍裁切、主容器背景遮盖已有 SurfaceView 小窗、提示覆盖横屏小窗三类问题。测试夹具另断言截图实际横/竖方向，避免 FULL_SENSOR 覆盖测试设置造成假覆盖。
 - 首次模拟器因原 1 GB 内存被 lowmemorykiller 杀进程；以 4 GB 内存冷启动后完成验证。未修改真机应用或采集真实音视频。
 - 截图保存在本地忽略目录 `android/app/build/orientation-review/files/`，不进入版本控制。两台真机端到端旋转、实际 CameraX 双摄和 OEM 镜像仍未验证。
+
+## 1.1 方向锁修正（2026-09-09）
+
+替代 1.0 的物理方向优先和 FULL_SENSOR 行为。删除不再适用的传感器量化/补偿测试，改为有效屏幕方向状态测试；保留布局和主辅 Track 测试。需两台真机补测：A 锁定竖屏后侧躺，B 横/竖持；通话中切换系统自动旋转；前摄、单后摄、双摄各验证一次。旧合成截图不能证明方向锁或真实摄像头通过。
+
+本次 82 个 JVM 测试通过，Debug APK、AndroidTest APK 构建和 lint 通过；尚未执行上述两台真机侧躺验证。

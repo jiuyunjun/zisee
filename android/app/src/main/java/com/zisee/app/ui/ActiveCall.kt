@@ -126,14 +126,9 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
         val lightNavigation = bars?.isAppearanceLightNavigationBars
         bars?.isAppearanceLightStatusBars = false
         bars?.isAppearanceLightNavigationBars = false
-        // Orientation has two halves. The sender stamps each frame so it is upright with respect to
-        // gravity, but that leaves it upright in the *viewer's screen* coordinates: a viewer holding
-        // the phone sideways under a portrait-locked window still sees a sideways picture. Letting
-        // the call window follow the device settles both halves at once, because each end's display
-        // rotation then equals how that person is actually holding the phone. Auto-rotate is
-        // deliberately overridden here: it is a per-call surface, restored on the way out.
+        // Respect the system rotation lock; unlocked users can still use all four directions.
         val previousOrientation = activity?.requestedOrientation
-        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
+        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_USER
         onDispose {
             lightStatus?.let { bars?.isAppearanceLightStatusBars = it }
             lightNavigation?.let { bars?.isAppearanceLightNavigationBars = it }

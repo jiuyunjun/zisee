@@ -4,36 +4,25 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class DeviceOrientationTest {
-    @Test fun `a window that already follows the device needs no correction`() {
-        for (degrees in listOf(0, 90, 180, 270)) {
-            assertEquals(0, orientationCorrection(degrees, degrees, frontFacing = true))
-            assertEquals(0, orientationCorrection(degrees, degrees, frontFacing = false))
+    @Test fun `locked portrait stays unchanged across repeated display callbacks`() {
+        val state = DisplayRotationState(0)
+        repeat(20) { assertNull(state.update(0)) }
+    }
+    @Test fun `locked landscape starts with the actual display direction`() {
+        for (rotation in 0..3) assertNull(DisplayRotationState(rotation).update(rotation))
+    }
+    @Test fun `unlock and actual display rotation update dual capture once`() {
+        val state = DisplayRotationState(0)
+        for (rotation in listOf(1, 2, 3, 0)) {
+            assertEquals(rotation, state.update(rotation))
+            assertNull(state.update(rotation))
         }
     }
-    @Test fun `a locked window is corrected by the difference the sensor reports`() {
-        // Portrait-locked window, phone turned onto its side.
-        assertEquals(90, orientationCorrection(90, 0, frontFacing = true))
-        assertEquals(180, orientationCorrection(180, 0, frontFacing = true))
-        assertEquals(270, orientationCorrection(270, 0, frontFacing = true))
-    }
-    @Test fun `a rear camera turns the opposite way from a front one`() {
-        // The capturer subtracts the device orientation for a rear camera, so the correction that
-        // undoes it has to be mirrored, and the two must always cancel.
-        for (physical in listOf(0, 90, 180, 270)) {
-            for (display in listOf(0, 90, 180, 270)) {
-                val front = orientationCorrection(physical, display, frontFacing = true)
-                val back = orientationCorrection(physical, display, frontFacing = false)
-                assertEquals(0, (front + back) % 360)
-            }
-        }
-    }
-    @Test fun `every correction is a legal frame rotation`() {
-        for (physical in listOf(0, 90, 180, 270)) {
-            for (display in listOf(0, 90, 180, 270)) {
-                for (front in listOf(true, false)) {
-                    assertTrue(orientationCorrection(physical, display, front) in setOf(0, 90, 180, 270))
-                }
-            }
-        }
+    @Test fun `invalid callback does not replace the last display rotation`() {
+        val state = DisplayRotationState(1)
+        assertNull(state.update(-1))
+        assertNull(state.update(4))
+        assertNull(state.update(1))
+        assertEquals(0, state.update(0))
     }
 }
