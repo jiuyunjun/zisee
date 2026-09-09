@@ -137,6 +137,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var lastRouteChangeMs: Long? = null
     private var previousInboundBytes: Long? = null
     private var backupReady: Boolean? = null
+    private var lastPairChangeMs: Long? = null
+    private var relayReported = false
     private var sustainedSendKbps = 0L
     private val videoSending = mutableMapOf<RtpSender, Pair<Boolean, Boolean>>()
     private val powerManager = context.getSystemService(PowerManager::class.java)
@@ -536,12 +538,29 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 }
             }
             lastCandidate = route; lastSelectedPairId = result.selectedPairId
+            lastPairChangeMs = result.sampledAtMs; relayReported = false
             // Log pair transitions even when both paths have the same candidate types. Never log IPs or SDP.
             logger.info(AppEvent.RTC_SELECTED_CANDIDATE, "$route atMs=${result.sampledAtMs}")
         } else if (result.sendKbps > 0 && audioBandwidth.mode == com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.ALL_VIDEO) {
             // A recent peak, not an all-call one: what the next route has to reach is what this one
             // was carrying lately, so an old high water mark decays out of it.
             sustainedSendKbps = maxOf(result.sendKbps, sustainedSendKbps * 9 / 10)
+        }
+        // Staying on a relay is the right answer when nothing else reaches the peer, and a waste of
+        // latency and relay traffic when something does. Only the pairs that actually succeeded can
+        // tell those apart, so count the direct ones once the route has settled.
+        if (!relayReported && (result.candidateType == "relay" || result.remoteCandidateType == "relay") &&
+            lastPairChangeMs?.let { result.sampledAtMs - it >= RELAY_CHECK_MS } == true) {
+            val kinds = report.statsMap.values
+                .filter { it.type == "local-candidate" || it.type == "remote-candidate" }
+                .associate { it.id to (it.members["candidateType"] as? String ?: "unknown") }
+            val direct = report.statsMap.values.count { entry ->
+                entry.type == "candidate-pair" && entry.members["state"] == "succeeded" &&
+                    kinds[entry.members["localCandidateId"]] != "relay" &&
+                    kinds[entry.members["remoteCandidateId"]] != "relay"
+            }
+            relayReported = true
+            logger.info(AppEvent.RTC_RELAY_PINNED, "directSucceeded=$direct")
         }
         handover.sample(result)?.let { logger.info(AppEvent.RTC_HANDOVER, it.encode()) }
         handover.videoResumed()?.let { logger.info(AppEvent.RTC_HANDOVER_VIDEO, "ms=$it") }
@@ -950,6 +969,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         private const val HANDOVER_WINDOW_MS = 5_000L
         // Long enough for reflexive and relay gathering to have finished on every interface.
         private const val BACKUP_CHECK_MS = 8_000L
+        // Long enough for the direct pairs to have finished their checks after a switch.
+        private const val RELAY_CHECK_MS = 5_000L
         private const val MIN_SEED_BPS = 300_000L
         private const val MAX_SEED_BPS = 1_000_000L
         private const val SEED_COOLDOWN_MS = 10_000L
