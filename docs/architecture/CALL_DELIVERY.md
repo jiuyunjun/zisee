@@ -1,1401 +1,1461 @@
-# 咫尺 Android 来电可达性专项设计
+# 咫尺来电可达性专项设计
 
-> 范围：Android  
-> 目标：后台、锁屏、Doze、进程被回收等情况下，尽可能可靠地收到语音/视频通话请求。  
-> 核心技术：FCM + Android Telecom/Core-Telecom + CallStyle Notification + Signaling + WebRTC
-
----
-
-# 1. 设计目标
-
-咫尺的“常驻”目标不定义为：
-
-> 让 Android 进程永远存在。
-
-而定义为：
-
-> 即使咫尺进程不存在，只要设备联网、FCM 可用且用户没有 Force Stop App，服务器发起来电后，系统仍能重新启动咫尺的来电处理链路，并向用户展示真正的来电界面。
-
-因此整体采用：
-
-```text
-FCM                     唤醒 / 通知有来电
-        ↓
-Android Telecom         注册系统级 VoIP Call
-        ↓
-CallStyle Notification  响铃 / 接听 / 拒绝 / 锁屏展示
-        ↓
-Signaling               建立实时信令连接
-        ↓
-WebRTC                   P2P / TURN 音视频连接
-```
-
-不依赖：
-
-```text
-永久 Service
-永久 WebSocket
-1 秒一次心跳
-AlarmManager 保活
-反复拉起进程
-```
-
-Android 12+ 已严格限制后台启动前台服务，因此“永久 Service 保活”本身不是可靠架构。高优先级 FCM 属于允许后台启动通话处理的重要例外，但系统也可能在滥用高优先级 FCM 时将其降级。
+> 范围：Android、国产 Android ROM、HarmonyOS
+> 目标：在后台、锁屏、Doze、进程被回收等情况下，最大化真实 VoIP 来电可达性。
+> 核心原则：**不要保活 App，要保活“来电通道”。**
 
 ---
 
-# 2. 可达性边界
+# 1. 目标重新定义
 
-必须明确哪些场景能够保证，哪些场景系统本身就不允许保证。
-
-| 状态 | 目标 |
-|---|---|
-| App 前台 | 必须收到 |
-| App 后台 | 必须收到 |
-| 最近任务中被划掉 | 必须收到 |
-| App 进程被 LMK 杀死 | 必须收到 |
-| 手机锁屏 | 必须收到 |
-| Doze | 高优先级 FCM 唤醒 |
-| Battery Saver | 尽量正常收到 |
-| 重启后 App 未主动打开 | FCM/Telecom 正常初始化后应可收到 |
-| Wi-Fi / 4G / 5G 切换 | 应恢复 |
-| 暂时断网 | 网络恢复后根据 TTL 判断是否仍响铃 |
-| FCM Token 更新 | 自动恢复 |
-| 用户关闭普通通知 | Telecom CallStyle 应尽量保持来电能力 |
-| 用户 Force Stop | **无法保证** |
-| 无 Google Play Services | **FCM 不可用，需要其他 Push Provider** |
-
-Android 的 Force Stop 是硬边界。进入 stopped state 后，应用不能自行启动；FCM 也可能被丢弃。Android 15 对这一行为进一步严格化。
-
-因此产品不能宣传：
-
-> 100% 永远可以收到来电。
-
-正确表述应是：
-
-> 在系统允许的范围内最大化来电可达性。
-
----
-
-# 3. 总体架构
+咫尺不追求：
 
 ```text
-┌──────────────── Caller Android ────────────────┐
-│                                               │
-│ Call UI                                       │
-│   │                                           │
-│   ▼                                           │
-│ Signaling Client ───────────────┐              │
-└─────────────────────────────────│──────────────┘
-                                  │
-                                  ▼
-                    ┌────────────────────────┐
-                    │      Zhichi Server     │
-                    │                        │
-                    │ Call Orchestrator      │
-                    │ Signaling Server       │
-                    │ Device Registry        │
-                    │ Push Gateway           │
-                    └───────────┬────────────┘
-                                │
-                       FCM HIGH priority
-                                │
-                                ▼
-┌──────────────── Callee Android ─────────────────┐
-│                                                 │
-│ FirebaseMessagingService                        │
-│            │                                    │
-│            ▼                                    │
-│ IncomingCallCoordinator                         │
-│            │                                    │
-│            ├──── CallSessionStore               │
-│            │                                    │
-│            ▼                                    │
-│ TelecomController / Core-Telecom                │
-│            │                                    │
-│            ▼                                    │
-│ CallStyle Notification                          │
-│       │              │                          │
-│     接听             拒绝                       │
-│       │                                         │
-│       ▼                                         │
-│ IncomingCallActivity                            │
-│       │                                         │
-│       ▼                                         │
-│ SignalingClient ─────────────── Server           │
-│       │                                         │
-│       ▼                                         │
-│ WebRTC Session                                  │
-└─────────────────────────────────────────────────┘
+App 永不被杀
+Service 永久运行
+WebSocket 永久在线
 ```
 
----
-
-# 4. Android Telecom
-
-## 4.1 必须接入 Telecom
-
-咫尺属于真正的 VoIP / Video Call App，不建议单纯通过一个普通 Notification 模拟电话。
-
-Android 官方推荐 VoIP 应用把通话加入 Telecom。这样系统能够理解：
+而追求：
 
 ```text
-这是一个 Call
-而不是普通后台任务
-```
+即使 App 进程已经不存在
 
-并参与：
-
-- 系统通话并发管理
-- 蓝牙设备
-- Wear OS
-- Android Auto
-- 音频路由
-- Audio Focus
-- 系统通话状态
-- 前台执行优先级
-
-Core-Telecom 提供 `CallsManager` 来完成这一层。
-
-推荐：
-
-```gradle
-implementation("androidx.core:core-telecom:1.0.0")
-```
-
-先使用稳定版。
-
----
-
-# 5. Android 版本策略
-
-咫尺保持：
-
-```text
-minSdk = 24
-```
-
-因此分为两层。
-
-## API 26+
-
-主实现：
-
-```text
-androidx.core:core-telecom
-CallsManager
-```
-
-注册：
-
-```kotlin
-val callsManager = CallsManager(context)
-
-callsManager.registerAppWithTelecom(
-    CallsManager.CAPABILITY_BASELINE or
-        CallsManager.CAPABILITY_SUPPORTS_VIDEO_CALLING
-)
-```
-
-收到来电：
-
-```kotlin
-callsManager.addCall(
-    callAttributes,
-    onAnswer,
-    onDisconnect,
-    onSetActive,
-    onSetInactive
-) {
-    // RINGING / ACTIVE 生命周期
-}
-```
-
-Core-Telecom 在 Android 13 及以下使用兼容 Telecom 实现，在 Android 14+ 使用新的通话机制。
-
-## API 24–25
-
-`CallsManager` 要求 API 26，因此保留 Legacy：
-
-```text
-FCM
- ↓
-IncomingCallForegroundService
- ↓
-高优先级来电 Notification
- ↓
-IncomingCallActivity
- ↓
+服务器
+   ↓
+系统 Push 通道
+   ↓
+操作系统感知有一通真实 VoIP 来电
+   ↓
+展示来电
+   ↓
+用户接听
+   ↓
+恢复咫尺进程
+   ↓
+Signaling
+   ↓
 WebRTC
 ```
 
-这部分只作为旧系统兼容层。
+因此：
 
-不要让 API 24–25 的历史兼容逻辑污染主架构。
+```text
+后台空闲
+→ 允许进程死亡
+
+来电
+→ 系统级 Push 唤醒/展示
+
+通话
+→ Telecom / OEM Call Framework 提升生命周期优先级
+```
 
 ---
 
-# 6. Manifest
+# 2. 不再假设所有 Android 都是 FCM
 
-建议至少声明：
-
-```xml
-<uses-permission android:name="android.permission.INTERNET" />
-
-<uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
-
-<uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
-
-<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-
-<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-
-<uses-permission
-    android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
-
-<uses-permission android:name="android.permission.RECORD_AUDIO" />
-<uses-permission android:name="android.permission.CAMERA" />
-```
-
-Android 14+ 对 Foreground Service Type 有更严格要求，`phoneCall` 类型需要相应前台服务权限，并需要 `MANAGE_OWN_CALLS` 或 Dialer Role。
-
----
-
-# 7. FCM 的定位
-
-FCM **不是 Signaling Server**。
-
-它只负责：
+原本：
 
 ```text
-Wake Up
-+
-告诉手机：
-“call_id=xxx 有来电”
+Server
+  ↓
+FCM
+  ↓
+Android
 ```
 
-绝对不要在 FCM 内塞：
+修改为：
 
 ```text
-完整 SDP
-大量 ICE candidate
-WebRTC Session 状态
-持续通话信令
+                         ┌─ FCM
+                         ├─ Xiaomi VoIP Push
+                         ├─ OPPO Push
+Call Orchestrator ──────►├─ vivo Push
+                         ├─ HONOR Push
+                         └─ HarmonyOS Push Kit
 ```
 
-真正的 SDP / ICE / Hangup / Renegotiation：
+客户端统一抽象：
 
-```text
-WebSocket Signaling
+```kotlin
+interface PushProvider {
+
+    val type: PushProviderType
+
+    suspend fun initialize()
+
+    suspend fun getToken(): String?
+
+    fun capabilities(): PushCapabilities
+}
 ```
 
-负责。
+Capabilities：
 
----
-
-# 8. FCM 消息类型
-
-定义：
-
-```text
-call_invite
-call_cancel
-call_state
+```kotlin
+data class PushCapabilities(
+    val canWakeProcess: Boolean,
+    val supportsSystemNotification: Boolean,
+    val supportsVoipMessage: Boolean,
+    val supportsDeliveryReceipt: Boolean,
+    val supportsNotificationRecall: Boolean
+)
 ```
 
-其中：
-
-```text
-call_invite
-```
+**不要根据 `Build.MANUFACTURER` 直接假设能力。**
 
 必须：
 
 ```text
-HIGH priority
-短 TTL
-data-only
+检测 SDK
++
+检测系统 capability
++
+检测 token
++
+记录实际发送结果
 ```
-
-FCM 官方说明，高优先级消息会尝试立即交付，并可在 Doze 时唤醒设备；这正适合来电这种需要立即展示给用户的事件。
 
 ---
 
-# 9. FCM Call Invite Payload
+# 3. Push 与业务彻底分层
 
-推荐：
+业务层永远只认识：
 
-```json
-{
-  "message": {
-    "token": "<FCM_TOKEN>",
-    "android": {
-      "priority": "HIGH",
-      "ttl": "30s"
-    },
-    "data": {
-      "type": "call_invite",
-
-      "call_id": "019c...",
-      "caller_id": "user_xxx",
-      "caller_name": "九云",
-
-      "media_type": "video",
-
-      "issued_at": "2026-09-09T15:30:00Z",
-      "expires_at": "2026-09-09T15:30:30Z",
-
-      "call_version": "1",
-      "invite_token": "<SHORT_LIVED_OPAQUE_TOKEN>"
-    }
-  }
-}
+```text
+CALL_INVITE
+CALL_CANCEL
+CALL_ANSWERED_ELSEWHERE
+CALL_ENDED
 ```
 
-### 为什么使用 data-only
-
-不要：
-
-```json
-"notification": {
-    ...
-}
-```
-
-因为 FCM Notification Message 在 App 后台时主要由系统直接放进通知栏，而不会按普通方式交给 `onMessageReceived()`。
-
-咫尺需要：
+不认识：
 
 ```text
 FCM
-→ onMessageReceived()
-→ Telecom
-→ CallStyle
+MiPush
+OPush
+VivoPush
+HonorPush
 ```
 
-所以来电采用 Data Message。
+统一模型：
 
----
+```kotlin
+data class CallPushEnvelope(
+    val type: CallPushType,
+    val callId: String,
+    val version: Long,
+    val issuedAt: Instant,
+    val expiresAt: Instant,
+    val payload: CallInvitePayload
+)
+```
 
-# 10. FCM 收到后的原则
-
-`FirebaseMessagingService.onMessageReceived()` 中：
-
-**只做很少的事情。**
+每个 Provider：
 
 ```text
-1. parse
-2. 检查 expires_at
-3. 去重
-4. 保存 PendingCall
-5. addCall()
-6. 发 CallStyle Notification
+FCM Adapter
+Xiaomi Adapter
+OPPO Adapter
+vivo Adapter
+HONOR Adapter
+HarmonyOS Adapter
 ```
 
-不要：
-
-```text
-先请求头像
-先请求用户资料
-先打开 WebSocket
-先请求 5 个 API
-然后才显示通知
-```
-
-FCM 官方明确建议 `onMessageReceived()` 内立即处理消息和展示通知；耗时异步处理可能因为进程生命周期结束导致通知丢失。
-
-所以：
-
-```text
-Push 里直接包含 caller_name
-```
-
-头像可以晚一点加载。
-
----
-
-# 11. IncomingCallCoordinator
-
-所有来电入口统一进入：
+最终全部进入：
 
 ```text
 IncomingCallCoordinator
 ```
 
-禁止：
-
-```text
-FCM 自己管一套
-NotificationReceiver 自己管一套
-Activity 自己管一套
-WebSocket 又管一套
-```
-
-接口建议：
-
-```kotlin
-interface IncomingCallCoordinator {
-
-    suspend fun onPushInvite(invite: CallInvite)
-
-    suspend fun answer(callId: String)
-
-    suspend fun reject(callId: String)
-
-    suspend fun cancel(callId: String)
-
-    suspend fun onRemoteCallState(
-        callId: String,
-        state: RemoteCallState
-    )
-}
-```
-
-内部持有：
-
-```text
-CallSessionStore
-TelecomController
-CallNotificationManager
-SignalingClient
-CallRepository
-```
-
 ---
 
-# 12. 来电状态机
+# 4. Global Android
 
-客户端：
-
-```text
-IDLE
-  │
-  │ FCM INVITE
-  ▼
-PUSH_RECEIVED
-  │
-  ▼
-RINGING
-  │
-  ├──── reject ───────────────► ENDED
-  │
-  ├──── timeout ──────────────► MISSED
-  │
-  ├──── remote cancel ────────► ENDED
-  │
-  ▼
-ANSWERING
-  │
-  ▼
-SIGNALING_CONNECTING
-  │
-  ▼
-WEBRTC_CONNECTING
-  │
-  ▼
-ACTIVE
-  │
-  ▼
-ENDING
-  │
-  ▼
-ENDED
-```
-
-必须保证状态转换幂等。
-
-例如：
+拥有正常 Google Play Services：
 
 ```text
-CALL_INVITE
-CALL_INVITE
-CALL_INVITE
-```
-
-重复收到三次，最终仍只能生成：
-
-```text
-1 个 CallSession
-1 个 Telecom Call
-1 个 Notification
-```
-
-主键：
-
-```text
-call_id
-```
-
----
-
-# 13. Telecom Call
-
-构造：
-
-```kotlin
-val attributes = CallAttributesCompat(
-    displayName = invite.callerName,
-    address = Uri.parse("zhichi:${invite.callerId}"),
-    direction = CallAttributesCompat.DIRECTION_INCOMING,
-    callType =
-        if (invite.mediaType == VIDEO)
-            CallAttributesCompat.CALL_TYPE_VIDEO_CALL
-        else
-            CallAttributesCompat.CALL_TYPE_AUDIO_CALL,
-    callCapabilitiesCompat = ...
-)
-```
-
-然后：
-
-```text
-CallsManager.addCall()
-```
-
-成功后代表 Telecom 已经知道：
-
-```text
-咫尺现在有一个 RINGING Call
-```
-
-Android 官方明确指出 `addCall()` 后 Call 可以处于 `RINGING`，并且应用需要及时发布 CallStyle Notification。
-
----
-
-# 14. CallStyle Notification
-
-Android 12+ 使用：
-
-```text
-NotificationCompat.CallStyle
-```
-
-Incoming：
-
-```kotlin
-NotificationCompat.CallStyle.forIncomingCall(
-    caller,
-    declineIntent,
-    answerIntent
-)
-```
-
-它天然支持：
-
-```text
-来电人
-接听
-拒绝
-系统通话样式
-高通知优先级
-```
-
-CallStyle 是 Android 官方专门给来电和持续通话设计的。
-
----
-
-# 15. 5 秒规则
-
-这一点作为强制设计约束：
-
-```text
-Telecom addCall()
+FCM HIGH priority data message
         ↓
-5 秒以内
+FirebaseMessagingService
         ↓
-CallStyle Notification
-```
-
-Core-Telecom 官方要求添加通话后 5 秒内发布有效通知；只要有效 Call 和 CallStyle Notification 存在，应用就可以获得通话所需要的前台执行优先级。
-
-所以：
-
-```text
-notification 不允许依赖网络
-notification 不允许等待头像
-notification 不允许等待 WebRTC
-```
-
----
-
-# 16. Notification Channel
-
-创建专用：
-
-```text
-calls.incoming
-calls.ongoing
-```
-
-Incoming：
-
-```text
-IMPORTANCE_HIGH
-CATEGORY_CALL
-AudioAttributes.USAGE_NOTIFICATION_RINGTONE
-Vibration = enabled
-LockScreen visibility = configurable
-```
-
-Ongoing：
-
-```text
-ongoing
-silent
+IncomingCallCoordinator
+        ↓
+Android Telecom
+        ↓
 CallStyle
 ```
 
-不要把：
+这是海外 Android 主路径。
+
+此时：
 
 ```text
-普通聊天消息
-系统通知
-通话
+FCM = Wake Channel
+WebSocket = Live Signaling Channel
+WebRTC = Media Channel
 ```
-
-放在同一个 NotificationChannel。
 
 ---
 
-# 17. Full Screen Intent
+# 5. 中国大陆 Android
 
-锁屏来电使用：
-
-```text
-Full Screen Intent
-```
-
-但是 Android 14+ 对其进行了限制：
+不能假设：
 
 ```text
-USE_FULL_SCREEN_INTENT
+FCM 一定存在
 ```
 
-主要只允许真正的：
+更不能假设：
 
 ```text
-Calling App
-Alarm App
+FCM 即使装了就一定长期可靠
 ```
 
-用户也可以关闭该能力。应通过：
+国内发行版本使用：
+
+```text
+OEM System Push
+```
+
+优先级：
+
+```text
+Xiaomi / Redmi
+    → MiPush VoIP
+
+OPPO / OnePlus / realme
+    → OPPO Push
+
+vivo / iQOO
+    → vivo Push
+
+HONOR
+    → HONOR Push
+
+Huawei HarmonyOS
+    → HarmonyOS 原生 Push Kit
+```
+
+---
+
+# 6. Xiaomi / MIUI / HyperOS
+
+## 6.1 Xiaomi 是重点优化对象
+
+不能把 Xiaomi 简单设计为：
+
+```text
+MiPush Data Message
+→ App
+```
+
+因为普通 MiPush 的透传消息服务已经停止。
+
+小米官方从 2022 年 9 月起停止提供普通透传消息下发。
+
+但是，小米现在提供了一个对咫尺非常重要的能力：
+
+```text
+VoIP Service Kit
+```
+
+这是专门针对：
+
+```text
+IM
+语音通话
+视频通话
+```
+
+设计的系统能力。
+
+官方定义包括：
+
+* 来电一键接听
+* 横幅通知
+* 静音/取消静音
+* VoIP 消息
+* `onCallMessage()`
+* 消息回执
+* VoIP 能力检测
+
+所以 Xiaomi 的正确架构是：
+
+```text
+Zhichi Server
+      ↓
+MiPush VoIP Message
+      ↓
+HyperOS System Push
+      ↓
+onCallMessage()
+      ↓
+IncomingCallCoordinator
+      ↓
+Telecom / Call UI
+      ↓
+Signaling
+      ↓
+WebRTC
+```
+
+---
+
+# 7. Xiaomi Capability Detection
+
+初始化后检查：
 
 ```kotlin
-NotificationManager.canUseFullScreenIntent()
+val pushSupported =
+    MiPushSdk.getInstance().isSupport(context)
+
+val voipSupported =
+    MiPushSdk.getInstance().isPushSupport(
+        MiPushSdk.FLAG_SUPPORT_CALLKIT
+    )
 ```
 
-判断。
-
-策略：
+只有：
 
 ```text
-有 Full Screen 权限
-    ↓
-锁屏 → IncomingCallActivity 全屏
-
-没有
-    ↓
-CallStyle Heads-up Notification
+pushSupported == true
+AND
+voipSupported == true
 ```
 
-不要为了弹 Activity：
+才标记：
 
 ```text
-SYSTEM_ALERT_WINDOW
-悬浮窗
-后台强开 Activity
+XIAOMI_NATIVE_VOIP
 ```
 
----
-
-# 18. POST_NOTIFICATIONS
-
-Android 13+ 有：
+否则降级：
 
 ```text
-POST_NOTIFICATIONS
+XIAOMI_NOTIFICATION_PUSH
 ```
 
-咫尺仍建议正常向用户申请，因为：
-
-```text
-聊天通知
-系统通知
-未接来电
-其他普通通知
-```
-
-都需要它。
-
-不过 Android 对正确配置成 Self-managed Calling App 的 `CallStyle` 有特殊豁免机制。
-
-因此 Telecom 接入不只是为了 UI，也能让 Android 正确认识咫尺：
-
-```text
-这是通话 App。
-```
-
----
-
-# 19. 不要在收到 FCM 时启动 Camera/Microphone
-
-错误：
+再不行：
 
 ```text
 FCM
- ↓
-直接打开 Camera
-直接开始 Microphone
 ```
 
-Android 14+ 对 camera / microphone 的 while-in-use 权限进行了严格限制。
-
-后台收到 FCM 并不意味着可以直接获得摄像头/麦克风使用权限；后台创建相关 FGS 可能直接抛 `SecurityException`。
-
-正确：
-
-```text
-FCM
- ↓
-RINGING
- ↓
-用户点击“接听”
- ↓
-IncomingCallActivity visible
- ↓
-启动 WebRTC
- ↓
-打开 microphone / camera
-```
-
-这也符合隐私预期。
+如果设备有 GMS。
 
 ---
 
-# 20. Answer 流程
+# 8. Xiaomi VoIP 消息
 
-用户点击：
-
-```text
-接听
-```
-
-流程：
+服务端：
 
 ```text
-Notification / Telecom
-       │
-       ▼
-IncomingCallCoordinator.answer(callId)
-       │
-       ▼
-POST /calls/{callId}/answer
-       │
-       ▼
-服务器原子抢占 Answer
-       │
-       ├── SUCCESS
-       │      ↓
-       │   Telecom answer()
-       │      ↓
-       │   打开 CallActivity
-       │      ↓
-       │   WebSocket
-       │      ↓
-       │   WebRTC
-       │
-       └── ALREADY_ANSWERED
-              ↓
-          结束本机 ringing
-```
-
----
-
-# 21. 多设备来电
-
-一个用户可能：
-
-```text
-Phone
-Tablet
-另一台 Phone
-```
-
-服务器应该把 `call_invite` 发到该用户所有有效设备。
-
-例如：
-
-```text
-Device A ─┐
-Device B ─┼──── 同时响
-Device C ─┘
-```
-
-Device B 接听：
-
-```text
-POST /answer
-```
-
-服务器通过事务/CAS：
-
-```text
-RINGING
-  ↓
-ANSWERED(device_B)
-```
-
-只有第一个成功。
-
-然后向其他设备发送：
-
-```text
-call_cancel
-reason=answered_elsewhere
-```
-
-结果：
-
-```text
-A 停止响铃
-C 停止响铃
-```
-
-这一步必须由服务器决定，不能依赖客户端自己判断。
-
----
-
-# 22. 服务端 Call 状态机
-
-```text
-CREATED
-   │
-   ▼
-RINGING
-   │
-   ├──── REJECTED
-   ├──── CANCELLED
-   ├──── TIMEOUT
-   │
-   ▼
-ANSWERING
-   │
-   ▼
-CONNECTED
-   │
-   ▼
-ENDED
-```
-
-数据库：
-
-```text
-calls
-──────────────────────────────────
-id
-caller_user_id
-callee_user_id
-media_type
-
-state
-state_version
-
-created_at
-expires_at
-
-answered_at
-answered_device_id
-
-ended_at
-end_reason
-```
-
-所有状态变更：
-
-```text
-UPDATE ... WHERE state = expected_state
-```
-
-防止双接听。
-
----
-
-# 23. Device Registry
-
-```text
-devices
-────────────────────────────────
-device_id
-user_id
-installation_id
-
-platform
-push_provider
-
-fcm_token
-
-app_version
-os_version
-
-token_updated_at
-last_seen_at
-
-enabled
-```
-
-不要直接认为：
-
-```text
-一个 user = 一个 FCM token
-```
-
-正确：
-
-```text
-User
- ├─ Device 1
- │    └─ token
- ├─ Device 2
- │    └─ token
- └─ Device 3
-      └─ token
-```
-
----
-
-# 24. FCM Token 生命周期
-
-客户端至少处理：
-
-```kotlin
-FirebaseMessagingService.onNewToken()
-```
-
-然后：
-
-```text
-PUT /devices/{deviceId}/push-token
-```
-
-App 正常启动时，也主动：
-
-```kotlin
-FirebaseMessaging.getInstance().token
-```
-
-与服务器同步一次。
-
-FCM Token 会因为恢复设备、重装、清除数据等发生变化，因此不能把首次注册的 Token 永久保存。Firebase 也建议持续维护注册时间并清理无效 Token。
-
-服务器遇到：
-
-```text
-UNREGISTERED
-```
-
-立即：
-
-```text
-device.push_enabled = false
-```
-
-不要继续无限发送。
-
----
-
-# 25. FCM High Priority 使用规则
-
-只有真正时间敏感、立即展示给用户的事件使用：
-
-```text
-HIGH
-```
-
-推荐：
-
-```text
-call_invite        HIGH
-call_cancel        HIGH
-```
-
-其他：
-
-```text
-profile_updated
-contact_sync
-普通后台同步
-```
-
-全部：
-
-```text
-NORMAL
-```
-
-原因是 Android/FCM 会观察高优先级消息是否真正用于用户可见的时间敏感事件；滥用可能导致以后被降成 Normal。
-
-因此绝对禁止：
-
-```text
-每分钟 HIGH heartbeat
-HIGH keep-alive
-HIGH presence ping
-```
-
----
-
-# 26. WebSocket 策略
-
-不要为了来电：
-
-```text
-24h 永久在线 WebSocket
-```
-
-推荐状态：
-
-```text
-App foreground
-    → WebSocket ON
-
-Incoming ringing
-    → WebSocket ON
-
-Active call
-    → WebSocket ON
-
-App background + idle
-    → WebSocket OFF
-    → 等 FCM 唤醒
+message-type: 3
 ```
 
 即：
 
 ```text
-FCM = Wake Channel
-WebSocket = Live Channel
+VoIP Message
 ```
 
-这样比单纯依赖后台长连接稳定得多，也更省电。
+核心数据：
 
----
-
-# 27. Incoming Push 到响铃完整流程
-
-```text
-Caller
-  │
-  │ POST /calls
-  ▼
-Server
-  │
-  ├── Create Call
-  │
-  ├── state = RINGING
-  │
-  └── FCM HIGH
-          │
-          ▼
-Google FCM
-          │
-          ▼
-Android
-          │
-          ▼
-ZhichiFirebaseMessagingService
-          │
-          ├── validate TTL
-          ├── dedupe call_id
-          └── IncomingCallCoordinator
-                    │
-                    ▼
-                Telecom
-                    │
-                    ▼
-             CallStyle Notification
-                    │
-           ┌────────┴────────┐
-           │                 │
-         reject            answer
-           │                 │
-           ▼                 ▼
-         Server       POST /answer
-                             │
-                             ▼
-                           claim
-                             │
-                             ▼
-                      CallActivity
-                             │
-                             ▼
-                       Signaling WS
-                             │
-                             ▼
-                         WebRTC
-```
-
----
-
-# 28. Call Cancel
-
-呼叫方挂机时：
-
-```text
-Server state:
-RINGING → CANCELLED
-```
-
-同时：
-
-```text
-WebSocket call_cancel
-+
-FCM call_cancel
-```
-
-为什么两个都发：
-
-```text
-如果被叫此时已经打开 WebSocket
-    → WS 几乎立即停止响铃
-
-如果 WS 尚未建立
-    → FCM 仍然能通知其停止
-```
-
-客户端：
-
-```text
-收到 call_cancel
-    ↓
-IncomingCallCoordinator.cancel()
-    ↓
-Telecom disconnect()
-    ↓
-remove notification
-    ↓
-stop ringtone
-```
-
----
-
-# 29. 超时
-
-服务器决定最终超时。
-
-例如设计：
-
-```text
-ring_timeout = 30 seconds
-```
-
-这只是产品参数，不依赖 FCM。
-
-服务器：
-
-```text
-expires_at = created_at + 30s
-```
-
-客户端收到 FCM 时：
-
-```kotlin
-if (now >= expiresAt) {
-    return
+```json
+{
+  "call_id": "...",
+  "caller_id": "...",
+  "caller_name": "九云",
+  "media_type": "video",
+  "issued_at": "...",
+  "expires_at": "...",
+  "version": 1,
+  "invite_token": "..."
 }
 ```
 
-因此一条延迟 40 秒才到的旧 FCM：
+小米允许 VoIP `extraData` 携带最多约 4 KB 自定义业务信息。
 
-```text
-不会突然让手机响起来。
+客户端：
+
+```kotlin
+override fun onCallMessage(message: CallMessage) {
+
+    val envelope =
+        parser.parse(message.message)
+
+    incomingCallCoordinator
+        .onIncomingPush(
+            PushProviderType.XIAOMI,
+            envelope
+        )
+}
 ```
 
 ---
 
-# 30. App 进程死亡
+# 9. Xiaomi TTL
 
-这是本设计最重要的测试场景。
+绝对不要用默认长 TTL。
 
-预期：
+小米 VoIP API 默认缓存时间可以达到一小时，因此咫尺必须自己设置短 TTL。
+
+例如：
 
 ```text
-咫尺 Process
-    ✕ 不存在
+Call Ring Timeout = 30s
+Push TTL          = 35s
+```
 
-FCM
+客户端仍然二次判断：
+
+```kotlin
+if (clock.now() >= envelope.expiresAt) {
+    ignore()
+}
+```
+
+这样：
+
+```text
+断网
+↓
+一分钟后恢复
+↓
+收到旧 Push
+```
+
+不会突然响起已经结束的电话。
+
+---
+
+# 10. Xiaomi 消息分类
+
+2026 年小米 Push 新规已经明确把：
+
+```text
+一对一语音通话
+一对一视频通话
+通话发起
+通话结束
+未接来电
+```
+
+归入：
+
+```text
+私信消息 → 音视频通话
+```
+
+而不是普通运营通知。
+
+这非常适合咫尺。
+
+因此建立专门：
+
+```text
+zhichi_call_incoming
+```
+
+不要拿：
+
+```text
+general
+news
+marketing
+```
+
+Channel 发来电。
+
+---
+
+# 11. Xiaomi 2026 模板要求
+
+小米正在进一步要求私信消息模板化。
+
+2026 年的新规则要求私信消息携带：
+
+```text
+channel_id
++
+template_id
+```
+
+并要求既有私信 Channel 在 2026 年 12 月 31 日前完成模板接入，否则会影响下发。
+
+因此 Server 配置不能把这些 ID 写死进业务：
+
+```go
+type XiaomiPushConfig struct {
+    VoipChannelID string
+    VoipTemplateID string
+}
+```
+
+放：
+
+```text
+Push Provider Configuration
+```
+
+统一管理。
+
+---
+
+# 12. Xiaomi VoIP Service Kit 不是无条件开放
+
+这是一个很重要的产品风险。
+
+小米目前对 VoIP Service Kit 有申请条件，包括：
+
+```text
+政企通信
+纯 IM
+客服
+告警
+以及审核认可的特殊场景
+```
+
+官方申请流程还要求：
+
+```text
+应用信息
+包名
+AppID
+Channel
+实际使用场景
+来电界面截图
+相关设置截图
+测试方式
+```
+
+并注明审核回复周期为 15 个工作日。
+
+咫尺本身就是：
+
+```text
+真实用户之间的视频通信 App
+```
+
+在产品性质上比“营销来电”更符合该能力的设计目标，但：
+
+> **最终能否取得权限必须以小米审核结果为准。**
+
+因此架构不能建立在：
+
+```text
+VoIP Kit 一定审核通过
+```
+
+这个前提上。
+
+必须拥有 fallback。
+
+---
+
+# 13. Xiaomi 最终策略
+
+```text
+if Xiaomi:
+    if Native VoIP supported && permission granted:
+        MiPush VoIP Service Kit
+    else:
+        MiPush Private Notification
+```
+
+如果国际版设备同时有 GMS：
+
+```text
+Global Xiaomi
+    → FCM 为主
+
+China Xiaomi
+    → MiPush 为主
+```
+
+不要默认同时双发。
+
+---
+
+# 14. OPPO / OnePlus / realme / ColorOS
+
+OPPO Push 是：
+
+```text
+ColorOS System Push Channel
+```
+
+由系统维护长连接，不依赖咫尺自己驻留后台。
+
+其历史官方文档明确：
+
+```text
+普通 Push 主要是通知栏消息
+
+消息可以由系统展示
+而不先启动目标 App
+```
+
+因此不能写：
+
+```text
+OPush callback
+→ 一定可以像 FCM data-only 一样立即执行业务
+```
+
+这是错误前提。
+
+---
+
+# 15. ColorOS 新消息分类
+
+OPPO 在新的消息分类中已经支持：
+
+```text
+通知栏
+锁屏
+横幅
+铃声
+震动
+```
+
+并明确：
+
+```text
+聊天交友
+电话短信
+办公
+
+可以申请更高等级提醒能力
+```
+
+相关新分类从 ColorOS 13+ 开始支持，并持续覆盖更多版本。
+
+所以咫尺申请：
+
+```text
+即时通信 / 电话类
+```
+
+而不是：
+
+```text
+普通公信消息
+```
+
+---
+
+# 16. OPPO 路径
+
+理想：
+
+```text
+OPPO Push
     ↓
-FirebaseMessagingService
+System Incoming Notification
     ↓
-新进程启动
+用户点击 / 系统允许进入 App
     ↓
 IncomingCallCoordinator
     ↓
+查询服务器 Call State
+    ↓
 Telecom
     ↓
-CallStyle
+WebRTC
 ```
 
-所以任何 IncomingCall 需要的数据都不能只存在：
+这里有一个关键设计：
+
+> **任何厂商通知被点击后，不直接相信 Push 本身仍有效。**
+
+必须：
 
 ```text
-Singleton
-ViewModel
-Activity
-内存变量
+GET /v1/calls/{callId}
 ```
 
-至少持久化：
+服务器返回：
 
 ```text
-call_id
-caller
-media_type
-expires_at
-call_version
-state
+RINGING
 ```
 
-可以使用：
+才允许进入接听流程。
+
+否则：
 
 ```text
-Room
+CANCELLED
+ANSWERED
+TIMEOUT
+ENDED
 ```
 
-或者轻量：
+立即关闭界面。
+
+这样可以减轻 OEM Push 延迟导致的“幽灵来电”。
+
+---
+
+# 17. OPPO 分发来源也可能影响策略
+
+OPPO 对非 OPPO 软件商店官方来源应用的部分 Push 场景存在额外管控策略。
+
+所以测试矩阵必须加入：
 
 ```text
-DataStore + serialized PendingCall
+OPPO Store 安装
+
+vs
+
+官网下载 APK / sideload
 ```
 
-推荐 Room，因为以后要支持：
+不能只用：
 
 ```text
-Call History
-Missed Call
-Diagnostics
+adb install
+```
+
+测试完就认为真实用户环境可靠。
+
+---
+
+# 18. vivo / iQOO / OriginOS
+
+vivo 同样提供自己的系统 Push 服务。
+
+设备注册后：
+
+```text
+vivo Push Token
+```
+
+上传服务器。
+
+服务端：
+
+```text
+VivoPushProvider
+```
+
+进行推送。
+
+vivo 官方开放平台当前仍提供推送服务和独立 Push SDK。
+
+但目前公开可核实资料不足以让我确认：
+
+```text
+vivo 普通 Push
+```
+
+是否在所有当前 OriginOS 版本上都提供一个等价于：
+
+```text
+FCM high-priority data
+或 Xiaomi onCallMessage
+```
+
+的 VoIP 业务唤醒接口。
+
+因此设计上不能猜。
+
+第一阶段把 vivo 定义为：
+
+```text
+SYSTEM_NOTIFICATION_PUSH
+```
+
+而不是：
+
+```text
+GUARANTEED_PROCESS_WAKE
+```
+
+等拿到 vivo 官方 VoIP / 私信特殊通道审核能力后，再升级 Capability。
+
+---
+
+# 19. HONOR / MagicOS
+
+荣耀已经拥有独立的：
+
+```text
+HONOR Push
+```
+
+SDK 目前提供：
+
+```text
+Push 初始化
+Token 获取
+Token 删除
+Push Support 检测
+通知中心状态检测
+```
+
+例如：
+
+```text
+HonorPushClient.checkSupportHonorPush()
+HonorPushClient.getPushToken()
+HonorPushClient.getNotificationCenterStatus()
+```
+
+因此：
+
+```text
+HONOR
+→ HonorPushProvider
+```
+
+而不是继续认为：
+
+```text
+荣耀 = 华为 HMS Push
+```
+
+这是现在架构上必须区分的。
+
+---
+
+# 20. Huawei 是另一种情况
+
+新一代华为设备不能再简单放到：
+
+```text
+Android OEM
+```
+
+这一层处理。
+
+针对 HarmonyOS NEXT / HarmonyOS 5+ / 6 / 7：
+
+```text
+单独视为 HarmonyOS Platform
+```
+
+当前 HarmonyOS 已经提供专门：
+
+```text
+Push Kit VoIP Message
++
+CallServiceKit
+```
+
+其中 Push Kit 明确支持：
+
+```text
+VoIP
+BACKGROUND
+IM
+```
+
+等场景化消息。
+
+通话系统又提供：
+
+```text
+voipCall.reportIncomingCall()
+voipCall.reportOutgoingCall()
+voipCall.reportCallStateChange()
+```
+
+因此未来华为版本应当：
+
+```text
+HarmonyOS Push Kit
+       ↓
+VoIP Message
+       ↓
+CallServiceKit
+       ↓
+Zhichi Signaling
+       ↓
+WebRTC / HarmonyOS RTC implementation
+```
+
+而不是：
+
+```text
+HMS Push
+→ Android Telecom
+```
+
+硬套 Android 架构。
+
+---
+
+# 21. Platform Architecture
+
+最终形成：
+
+```text
+                    Zhichi Call Backend
+                           │
+                           ▼
+                    Push Orchestrator
+                           │
+          ┌────────────────┼──────────────────┐
+          │                │                  │
+          ▼                ▼                  ▼
+       GLOBAL            CHINA             HARMONY
+          │                │                  │
+        FCM      ┌─────────┼────────┐      Push Kit
+                 │         │        │          │
+               Xiaomi    OPPO     vivo       VoIP
+                 │         │        │          │
+             VoIP Kit   OPush    VPush    CallServiceKit
+                 │         │        │
+                 └─────────┴────────┘
+                           │
+                           ▼
+             IncomingCallCoordinator
+                           │
+                           ▼
+                       Signaling
+                           │
+                           ▼
+                        WebRTC
 ```
 
 ---
 
-# 31. 重启
+# 22. 国内版和国际版建议拆 Build Flavor
 
-不设计：
+不建议：
 
 ```text
-BOOT_COMPLETED
-→ 启动永久 phoneCall Service
+一个 APK
++
+FCM
++
+HMS
++
+MiPush
++
+OPPO
++
+vivo
++
+HONOR
 ```
 
-Android 15+ 对从 BOOT_COMPLETED 启动 phoneCall 前台服务有额外限制。
+全塞进去。
 
-重启后只做：
+原因：
 
 ```text
-初始化基础组件
-同步 Device Registration
-确认 Push Token
-必要时恢复 Telecom Registration
+APK 增大
+初始化复杂
+SDK 冲突
+隐私合规声明膨胀
+不同区域的数据处理要求不同
+厂商 SDK 更新风险
 ```
 
-然后继续：
+建议：
 
 ```text
-等待 FCM。
+productFlavors {
+
+    global {
+        dimension = "market"
+    }
+
+    china {
+        dimension = "market"
+    }
+}
 ```
 
 ---
 
-# 32. “常驻”最终策略
-
-咫尺没有通话时：
+# 23. Global Build
 
 ```text
-Process
-可以死。
+zhichi-global.apk
+```
 
-Service
-可以没有。
+包含：
 
-WebSocket
-可以断。
+```text
+FCM
+Android Telecom
+WebRTC
+```
 
-Notification
-可以没有。
+必要时以后增加：
+
+```text
+Xiaomi Global Push
+```
+
+但不是第一优先级。
+
+---
+
+# 24. China Build
+
+```text
+zhichi-cn.apk
+```
+
+包含：
+
+```text
+MiPush
+OPPO Push
+vivo Push
+HONOR Push
+Android Telecom
+WebRTC
+```
+
+根据当前设备：
+
+```text
+只激活对应厂商 Provider
+```
+
+例如 Xiaomi：
+
+```text
+MiPush.initialize()
+
+OPPO SDK
+不初始化
+
+vivo SDK
+不初始化
+```
+
+---
+
+# 25. Xiaomi SDK 还要区分区域
+
+小米官方目前对：
+
+```text
+中国大陆发行
+```
+
+与：
+
+```text
+非中国大陆发行
+```
+
+提供不同 Push SDK / 数据存储配置要求。
+
+这进一步说明：
+
+```text
+global / china flavor
+```
+
+是更干净的工程方案。
+
+---
+
+# 26. Device Registry 重构
+
+原：
+
+```text
+device_id
+fcm_token
+```
+
+不够。
+
+改为：
+
+```text
+devices
+────────────────────────────
+
+device_id
+
+user_id
+installation_id
+
+platform
+manufacturer
+brand
+model
+
+os_name
+os_version
+
+app_distribution
+app_version
+
+last_seen_at
+```
+
+然后独立：
+
+```text
+device_push_tokens
+────────────────────────────
+
+device_id
+
+provider
+
+token
+
+capabilities
+
+registered_at
+last_verified_at
+
+last_delivery_at
+last_delivery_result
+
+enabled
+```
+
+一个设备允许：
+
+```text
+多个 Push Token
+```
+
+但有：
+
+```text
+一个 Primary Provider
+```
+
+---
+
+# 27. Push Provider Selection
+
+服务器计算：
+
+```text
+PushRoute
+```
+
+例如：
+
+```text
+Pixel
+GMS=true
+    → FCM
+
+Samsung Japan
+GMS=true
+    → FCM
+
+Xiaomi Japan
+GMS=true
+    → FCM
+
+Xiaomi China
+MiPushVoIP=true
+    → Xiaomi VoIP
+
+Xiaomi China
+MiPushVoIP=false
+    → Xiaomi private notification
+
+OPPO China
+    → OPPO Push
+
+vivo China
+    → vivo Push
+
+HONOR China
+    → HONOR Push
+
+HarmonyOS
+    → HarmonyOS Push Kit
+```
+
+---
+
+# 28. 不要简单双发
+
+例如 Xiaomi：
+
+```text
+FCM
++
+MiPush
+```
+
+同时发，可能：
+
+```text
+出现两个系统通知
+两个 callback
+双响铃
+```
+
+客户端虽然可以：
+
+```text
+call_id dedupe
 ```
 
 但是：
 
-```text
-FCM Token
-必须有效。
+> 系统厂商自己已经展示出来的 Notification，不一定能在 App 去重前阻止。
 
-Server Device Registry
-必须有效。
-
-Telecom Registration
-必须有效。
-```
-
-有通话时：
+因此：
 
 ```text
-Telecom Call
-+
-CallStyle Notification
-+
-Signaling
-+
-WebRTC
+Primary Push Provider
 ```
 
-构成真正的高优先级实时会话。
+原则上只选一个。
+
+如果以后真的设计 fallback：
+
+```text
+Primary
+↓
+Provider delivery failure
+↓
+Secondary
+```
+
+而不是：
+
+```text
+两个同时发。
+```
 
 ---
 
-# 33. 无 GMS 设备
+# 29. Server Push Orchestrator
 
-FCM 依赖 Google Play Services/Google APIs 环境。
+```go
+type PushOrchestrator interface {
 
-因此 Push 层从一开始抽象：
-
-```kotlin
-interface PushProvider {
-    fun getToken(): String?
+    SendCallInvite(
+        ctx context.Context,
+        device Device,
+        call Call,
+    ) PushResult
 }
 ```
 
-服务器：
+内部：
 
 ```text
-PushGateway
- ├── FCM
- ├── HMS       future
- ├── Xiaomi    future
- ├── OPPO      future
- └── vivo      future
+resolveRoute()
+    ↓
+buildProviderPayload()
+    ↓
+send()
+    ↓
+recordProviderMessageId()
+    ↓
+recordReceipt()
 ```
 
-第一阶段：
+Provider：
 
 ```text
-Japan / Google Play
-→ FCM only
+FcmProvider
+XiaomiPushProvider
+OppoPushProvider
+VivoPushProvider
+HonorPushProvider
+HarmonyPushProvider
 ```
-
-如果以后进入中国大陆：
-
-```text
-再增加国产 Push Provider
-```
-
-不要把 FCM 直接写死到业务模型里。
 
 ---
 
-# 34. 来电可达性诊断页
+# 30. Push Receipt
 
-建议咫尺设置里增加：
+能够获得回执的 Provider：
+
+```text
+必须使用。
+```
+
+例如 Xiaomi VoIP Push 官方支持服务端消息回执。
+
+记录：
+
+```text
+PUSH_REQUESTED
+PROVIDER_ACCEPTED
+PROVIDER_DELIVERED
+CLIENT_RECEIVED
+NOTIFICATION_SHOWN
+ANSWERED
+```
+
+于是以后可以知道：
+
+```text
+Xiaomi Push
+provider delivered
+
+但是
+
+咫尺没有响
+```
+
+说明：
+
+```text
+问题在 Client / OS 展示
+```
+
+而不是推送服务器。
+
+---
+
+# 31. IncomingCallCoordinator
+
+不管：
+
+```text
+FCM
+MiPush
+OPPO
+vivo
+HONOR
+Harmony
+```
+
+全部：
+
+```text
+onIncomingPush()
+```
+
+例如：
+
+```kotlin
+suspend fun onIncomingPush(
+    provider: PushProviderType,
+    envelope: CallPushEnvelope
+) {
+
+    if (envelope.isExpired()) {
+        return
+    }
+
+    if (sessionStore.exists(envelope.callId)) {
+        merge(envelope)
+        return
+    }
+
+    val serverState =
+        callRepository.fetchState(
+            envelope.callId
+        )
+
+    if (serverState != RINGING) {
+        return
+    }
+
+    sessionStore.create(...)
+
+    telecomController.showIncomingCall(...)
+}
+```
+
+---
+
+# 32. 必须服务器二次确认 Call
+
+国产 Push 最大的问题之一：
+
+```text
+延迟
+```
+
+所以国产端进入 App 时：
+
+```text
+Push == Hint
+```
+
+而不是最终真相。
+
+真正真相：
+
+```text
+Call Server
+```
+
+因此：
+
+```text
+收到 PUSH
+   ↓
+检查 expiresAt
+   ↓
+必要时 GET call
+   ↓
+确认 RINGING
+   ↓
+展示
+```
+
+FCM 极快路径可以：
+
+```text
+先 Telecom
+异步校验
+```
+
+但 OEM 通知点击恢复路径：
+
+```text
+建议先查询 Call
+```
+
+避免幽灵来电。
+
+---
+
+# 33. OEM 电池优化
+
+这一层作为：
+
+```text
+Reliability Enhancement
+```
+
+而不是核心架构。
+
+绝对不能设计：
+
+```text
+没有自启动权限
+=
+无法通话
+```
+
+否则说明 Push 架构本身就失败了。
+
+厂商 System Push 的价值就是：
+
+```text
+App 不运行时仍然由系统维护 Push 通道
+```
+
+例如 MiPush 和 OPPO Push 都明确描述了这种系统级长连接机制。
+
+---
+
+# 34. 但仍然需要 OEM Reachability Diagnostics
+
+增加：
 
 ```text
 设置
@@ -1406,575 +1466,941 @@ Japan / Google Play
 显示：
 
 ```text
-✓ FCM 已连接
-✓ Push Token 已注册
-✓ Telecom 已注册
-✓ 通知可用
-✓ 全屏来电可用
-✓ 麦克风权限
-✓ 摄像头权限
-✓ Google Play Services 可用
-✓ 最近一次 Push：13:42:31
-```
+来电状态              良好
 
-异常时：
-
-```text
-⚠ 全屏来电已关闭
-  [前往设置]
-
-⚠ Google Play 服务不可用
-  无法通过 FCM 接收后台来电
-```
-
-这比用户说：
-
-> “为什么昨天没响？”
-
-然后开发者完全不知道哪里断了，要好很多。
-
----
-
-# 35. Telemetry
-
-每一通电话记录时间点：
-
-```text
-call_created_at
-
-push_requested_at
-fcm_accepted_at
-
-push_received_at
-
-telecom_added_at
-notification_posted_at
-
-answer_clicked_at
-answer_server_accepted_at
-
-signaling_connected_at
-ice_connected_at
-
-first_audio_at
-first_video_frame_at
-
-ended_at
-```
-
-客户端上传：
-
-```text
-push_receive
-incoming_notification_shown
-incoming_answer
-incoming_reject
-incoming_timeout
-telecom_add_failed
-full_screen_denied
-signaling_failed
-ice_failed
-```
-
-以后可以准确区分：
-
-```text
-“没收到来电”
-```
-
-到底是：
-
-```text
-Server 没发
-FCM 没到
-FCM 到了但 App 没处理
-Telecom 失败
-Notification 失败
-用户没看到
-Signaling 失败
-WebRTC 失败
+系统推送              ✓ Xiaomi Push
+VoIP Push             ✓ 已启用
+通知权限              ✓
+来电通知 Channel      ✓
+全屏来电              ✓
+后台限制              正常
+最近 Push             16:42:13
+最近测试来电           成功
 ```
 
 ---
 
-# 36. 推荐内部指标
+# 35. 对 OEM 设置不要过度自动化
 
-这是工程目标，不是对用户的 SLA：
+可以设计：
 
-```text
-Call Created
-    ↓
-Push Received
-    ↓
-Notification Visible
+```kotlin
+interface OemSettingsNavigator
 ```
 
-重点监控：
+提供：
 
 ```text
-push_receive_rate
-
-push_to_notification_ms
-
-call_answer_success_rate
-
-answer_to_signaling_ms
-
-answer_to_ice_connected_ms
-
-ghost_ringing_rate
-
-duplicate_notification_rate
+打开通知设置
+打开 App Details
+打开电池设置
+打开 Full Screen Intent 设置
 ```
 
-特别关注：
+但是：
+
+> 不应依赖未经文档保证的厂商内部 Activity 名称作为核心功能。
+
+因为：
 
 ```text
-ghost_ringing_rate
+MIUI / HyperOS 更新
+ColorOS 更新
+OriginOS 更新
 ```
 
-即：
+随时可能让 undocumented Intent 失效。
 
-> 呼叫方已经挂机，被叫仍然响。
+优先使用 Android 官方：
 
-这会严重破坏通话产品体验。
+```text
+ACTION_APPLICATION_DETAILS_SETTINGS
+ACTION_APP_NOTIFICATION_SETTINGS
+```
+
+厂商特殊页面只作为：
+
+```text
+best effort
+```
+
+并需要真机测试。
 
 ---
 
-# 37. 必须测试的矩阵
+# 36. 不要一启动就要求“无限制后台”
 
-至少覆盖：
+用户第一次打开：
+
+```text
+通知
+电池
+后台
+自启动
+悬浮窗
+所有权限
+```
+
+一起要，是非常差的体验。
+
+推荐：
+
+### 第一次首次通话前
+
+只要求：
+
+```text
+Notification
+Camera
+Microphone
+```
+
+### 检测到可达性问题
+
+才提示：
+
+```text
+“为了避免错过咫尺来电，
+建议允许后台来电。”
+```
+
+然后给：
+
+```text
+修复
+```
+
+---
+
+# 37. Reachability Score
+
+内部可以计算：
+
+```text
+A
+B
+C
+D
+```
+
+例如：
+
+### A
+
+```text
+Native VoIP Push ✓
+Notification ✓
+Call UI ✓
+```
+
+### B
+
+```text
+System Push ✓
+Notification ✓
+Process Wake uncertain
+```
+
+### C
+
+```text
+FCM/OEM Push token abnormal
+```
+
+### D
+
+```text
+Push unavailable
+Notification disabled
+```
+
+注意：
+
+这个等级是：
+
+```text
+诊断等级
+```
+
+不是：
+
+```text
+“保证 99.999%”
+```
+
+---
+
+# 38. Background WebSocket
+
+国产 ROM 也不要因此重新走回：
+
+```text
+永久 WebSocket
+```
+
+策略仍然：
+
+```text
+Foreground
+    WebSocket ON
+
+Ringing
+    WebSocket ON
+
+Call Active
+    WebSocket ON
+
+Background Idle
+    WebSocket OFF
+```
+
+Push：
+
+```text
+负责找到 App
+```
+
+WebSocket：
+
+```text
+负责找到 Call Session
+```
+
+---
+
+# 39. Push 到达后马上建立 WebSocket
+
+一旦 App 确实被 VoIP Push 唤醒：
+
+```text
+Push
+↓
+IncomingCallCoordinator
+├─ Telecom
+└─ Signaling warm-up
+```
+
+可以并行：
+
+```text
+Telecom.addCall()
+
+AND
+
+connectSignaling()
+```
+
+但是：
+
+```text
+Camera
+Microphone
+WebRTC Media
+```
+
+仍然等：
+
+```text
+用户 Answer
+```
+
+之后再开始。
+
+---
+
+# 40. 来电取消必须多路径
+
+Caller：
+
+```text
+Cancel
+```
+
+服务器：
+
+```text
+RINGING
+→ CANCELLED
+```
+
+同时：
+
+```text
+WebSocket CallCancel
++
+OEM Push CallCancel
+```
+
+支持 Recall 的 Provider：
+
+```text
+再执行 Notification Recall
+```
+
+目的：
+
+```text
+减少 OEM System Notification
+已经显示后继续存在。
+```
+
+---
+
+# 41. Client State Version
+
+每次：
+
+```text
+Call State
+```
+
+携带：
+
+```text
+version
+```
+
+例如：
+
+```text
+INVITE
+version = 1
+
+CANCEL
+version = 2
+
+ANSWERED_ELSEWHERE
+version = 3
+```
+
+客户端只接受：
+
+```text
+version > currentVersion
+```
+
+这样即使：
+
+```text
+CANCEL
+先到
+
+INVITE
+后到
+```
+
+也不会重新响铃。
+
+---
+
+# 42. Push Payload Security
+
+国产 Push 服务商都能够看到 Push envelope 的传输内容。
+
+所以不要放：
+
+```text
+SDP
+ICE Candidate
+完整头像
+联系人隐私数据
+Access Token
+长期 Credential
+```
+
+Push 仅：
+
+```text
+callId
+callerDisplayName
+mediaType
+expiresAt
+version
+short-lived invite token
+```
+
+甚至以后可以进一步：
+
+```text
+Push 只携带 callId
+```
+
+真正数据：
+
+```text
+HTTPS 拉取。
+```
+
+---
+
+# 43. Push SDK 隐私合规
+
+China build 引入：
+
+```text
+MiPush
+OPush
+VivoPush
+HonorPush
+```
+
+意味着：
+
+```text
+隐私政策
+第三方 SDK 列表
+数据处理说明
+```
+
+必须同步维护。
+
+因此建立：
+
+```text
+docs/compliance/PUSH_SDK.md
+```
+
+记录：
+
+```text
+SDK
+版本
+厂商
+用途
+初始化时机
+收集信息
+隐私政策版本
+升级日期
+```
+
+不要等上架审核时再补。
+
+---
+
+# 44. 真机测试矩阵
+
+至少购买/长期保留：
+
+```text
+Pixel
+Samsung
+
+Xiaomi / Redmi
+OPPO
+vivo / iQOO
+HONOR
+```
+
+Huawei：
+
+```text
+单独 HarmonyOS 测试设备。
+```
+
+---
+
+# 45. 每台国产机必须测试
 
 ### Process
 
 ```text
 前台
 后台
-Home
-Recent Task 划掉
+最近任务划掉
 LMK kill
-Force Stop
 ```
 
-### Device
+### System
 
 ```text
-屏幕亮
 锁屏
+息屏
+省电模式
+超级省电
 Doze
-Battery Saver
 重启
 ```
 
-### Network
+### App Settings
 
 ```text
-Wi-Fi
-4G
-5G
-Wi-Fi → 5G
-5G → Wi-Fi
-断网 10 秒恢复
-飞行模式恢复
-```
-
-### Permissions
-
-```text
-Notification Allowed
-Notification Denied
-Full Screen Allowed
-Full Screen Denied
-Camera Denied
-Microphone Denied
-```
-
-### Call
-
-```text
-正常接听
-拒绝
-呼叫方取消
-30 秒超时
-重复 Push
-延迟 Push
-Push 乱序
-多设备同时响
-另一设备接听
-同时两个人打入
-```
-
-### OEM
-
-至少：
-
-```text
-Google Pixel
-Samsung
-Xiaomi / HyperOS
-OPPO / ColorOS
-```
-
----
-
-# 38. ADB 必测场景
-
-开发阶段专门做：
-
-```text
-kill process
-进入 doze
+通知 ON/OFF
+来电 Channel ON/OFF
+横幅 ON/OFF
+锁屏 ON/OFF
+铃声 ON/OFF
 后台限制
-通知关闭
-Force Stop
+自启动 ON/OFF
 ```
 
-不要只测试：
+### Distribution
 
 ```text
-Android Studio
-App 正好开着
-两台手机同 Wi-Fi
-```
+ADB Install
 
-这种环境下能响，不代表来电系统真正完成。
+官网 APK
+
+官方应用商店安装
+```
 
 ---
 
-# 39. 模块结构建议
-
-Android：
+# 46. 特别测试 Xiaomi
 
 ```text
-android/app/src/main/java/.../
+MiPush 普通通知
 
-call/
-├── model/
-│   ├── CallId.kt
-│   ├── CallInvite.kt
-│   ├── CallState.kt
-│   └── CallSession.kt
+MiPush VoIP Service Kit
+
+VoIP capability false
+
+VoIP capability true
+
+Channel 审核前
+
+Channel 审核后
+
+VoIP 权限没有获批
+
+VoIP 权限获批
+```
+
+以及：
+
+```text
+HyperOS
+MIUI legacy
+```
+
+---
+
+# 47. 特别测试 OPPO
+
+```text
+ColorOS < 13
+
+ColorOS >= 13
+
+新消息分类关闭
+
+新消息分类开启
+
+锁屏提醒
+
+横幅
+
+铃声
+
+OPPO Store build
+
+Sideload build
+```
+
+---
+
+# 48. OEM Push Chaos Test
+
+模拟：
+
+```text
+INVITE 延迟 10 秒
+
+INVITE 重复 3 次
+
+INVITE / CANCEL 乱序
+
+CANCEL 丢失
+
+Provider 返回失败
+
+Token 过期
+
+App 正在升级
+
+设备刚刚重启
+
+网络从 Wi-Fi → 5G
+```
+
+全部必须：
+
+```text
+不会重复来电
+不会幽灵响铃
+不会已经接听又弹来电
+```
+
+---
+
+# 49. Telemetry 增强
+
+新增：
+
+```text
+push_provider
+
+push_provider_message_id
+
+push_requested_at
+provider_accepted_at
+provider_delivered_at
+
+client_received_at
+call_ui_shown_at
+
+manufacturer
+model
+os
+rom_version
+
+notification_enabled
+full_screen_enabled
+
+call_result
+```
+
+以后可以直接得到：
+
+```text
+Xiaomi
+Push Receive Rate
+
+OPPO
+Call UI Show Rate
+
+vivo
+Answer Success Rate
+```
+
+---
+
+# 50. OEM Dashboard
+
+后台建立：
+
+```text
+Call Reachability Dashboard
+```
+
+例如：
+
+```text
+                   RECEIVE    UI SHOW    ANSWER
+
+FCM                 99.x%       ...
+Xiaomi VoIP         ...
+OPPO Push           ...
+vivo Push           ...
+HONOR Push          ...
+```
+
+任何厂商：
+
+```text
+突然下降
+```
+
+就能发现：
+
+```text
+是不是 ROM 更新
+是不是 SDK 更新
+是不是厂商策略修改
+```
+
+这种基础设施对通话 App 非常重要。
+
+---
+
+# 51. 最终 Android 架构
+
+Global：
+
+```text
+FCM HIGH
+   ↓
+FirebaseMessagingService
+   ↓
+IncomingCallCoordinator
+   ↓
+Android Telecom
+   ↓
+CallStyle
+   ↓
+Signaling
+   ↓
+WebRTC
+```
+
+Xiaomi China：
+
+```text
+MiPush VoIP
+   ↓
+onCallMessage
+   ↓
+IncomingCallCoordinator
+   ↓
+Android Telecom
+   ↓
+Signaling
+   ↓
+WebRTC
+```
+
+OPPO/vivo/HONOR：
+
+```text
+OEM System Push
+   ↓
+OEM Notification / callback
+   ↓
+IncomingCallCoordinator
+   ↓
+Server state validation
+   ↓
+Telecom
+   ↓
+Signaling
+   ↓
+WebRTC
+```
+
+HarmonyOS：
+
+```text
+HarmonyOS Push Kit
+   ↓
+VoIP Message
+   ↓
+CallServiceKit
+   ↓
+Zhichi Signaling
+   ↓
+RTC
+```
+
+---
+
+# 52. 推荐实现优先级
+
+不要一开始同时接五家。
+
+## P0 — Global
+
+```text
+FCM
++
+Core-Telecom
++
+CallStyle
+```
+
+先建立真正稳定的：
+
+```text
+Process Dead → Incoming Call
+```
+
+---
+
+## P1 — Xiaomi
+
+第一家国产适配：
+
+```text
+MiPush
++
+VoIP Service Kit
++
+VoIP Channel
++
+Receipt
+```
+
+原因：
+
+```text
+官方已经提供真正针对 VoIP 的能力
+```
+
+而且与咫尺场景非常匹配。
+
+---
+
+## P2 — OPPO
+
+```text
+OPush
++
+私信/通话分类
++
+锁屏/横幅/铃声适配
+```
+
+---
+
+## P3 — vivo + HONOR
+
+加入：
+
+```text
+VivoPushProvider
+HonorPushProvider
+```
+
+---
+
+## P4 — HarmonyOS
+
+单独：
+
+```text
+harmony/
+```
+
+工程。
+
+不是：
+
+```text
+android/
+```
+
+里面堆一堆：
+
+```text
+if Huawei
+```
+
+---
+
+# 53. 工程结构
+
+```text
+android/app/src/main/java/.../call/
+
+push/
+├── PushProvider.kt
+├── PushCapabilities.kt
+├── PushProviderResolver.kt
 │
-├── incoming/
-│   ├── IncomingCallCoordinator.kt
-│   └── IncomingCallActivity.kt
+├── fcm/
+│   └── FcmPushProvider.kt
 │
-├── telecom/
-│   ├── TelecomController.kt
-│   ├── CoreTelecomController.kt
-│   └── LegacyTelecomController.kt
+├── xiaomi/
+│   ├── XiaomiPushProvider.kt
+│   └── XiaomiCallMessageReceiver.kt
 │
-├── notification/
-│   ├── CallNotificationManager.kt
-│   └── CallNotificationChannels.kt
+├── oppo/
+│   └── OppoPushProvider.kt
 │
-├── push/
-│   ├── ZhichiFirebaseMessagingService.kt
-│   ├── PushMessageParser.kt
-│   └── PushTokenManager.kt
+├── vivo/
+│   └── VivoPushProvider.kt
 │
-├── signaling/
-│   ├── SignalingClient.kt
-│   └── SignalingSession.kt
-│
-├── persistence/
-│   ├── CallSessionEntity.kt
-│   └── CallSessionDao.kt
-│
-└── diagnostics/
-    └── CallReachabilityDiagnostics.kt
+└── honor/
+    └── HonorPushProvider.kt
+```
+
+公共：
+
+```text
+incoming/
+├── IncomingCallCoordinator.kt
+├── IncomingCallValidator.kt
+└── IncomingCallActivity.kt
+
+telecom/
+├── TelecomController.kt
+└── CoreTelecomController.kt
+
+diagnostics/
+├── ReachabilityDiagnostics.kt
+├── ReachabilityGrade.kt
+└── OemSettingsNavigator.kt
 ```
 
 服务端：
 
 ```text
-server/internal/
+server/internal/push/
 
-call/
-├── service.go
-├── model.go
-├── repository.go
-└── state_machine.go
+orchestrator.go
 
-push/
-├── gateway.go
+provider/
 ├── fcm.go
-└── device_registry.go
+├── xiaomi.go
+├── oppo.go
+├── vivo.go
+├── honor.go
+└── harmony.go
 
-signaling/
-└── ...
+routing/
+├── resolver.go
+└── capabilities.go
 ```
 
 ---
 
-# 40. 服务端 API
+# 54. 最终原则
 
-建议：
+咫尺必须避免两个极端：
 
-```text
-PUT  /v1/devices/{deviceId}/push-token
-
-POST /v1/calls
-GET  /v1/calls/{callId}
-
-POST /v1/calls/{callId}/answer
-POST /v1/calls/{callId}/reject
-POST /v1/calls/{callId}/cancel
-POST /v1/calls/{callId}/hangup
-```
-
-Signaling：
+错误方案 A：
 
 ```text
-WSS /v1/signaling
+Android 都用 FCM。
 ```
 
-认证后：
+在中国大陆显然不够。
 
-```json
-{
-  "type": "join_call",
-  "call_id": "..."
-}
-```
-
-之后才交换：
+错误方案 B：
 
 ```text
-offer
-answer
-candidate
-renegotiation
-hangup
+为了国产 ROM，
+自己搞各种黑科技保活。
 ```
 
----
+这同样不可维护。
 
-# 41. 第一阶段实现顺序
-
-## Phase 1
-
-> 状态：已实现。
-> 服务端 `internal/push`（FCM HTTP v1，凭据走 ADC，`FCM_PROJECT_ID=zisee-app`，与 Firestore 同项目）+ `devices` 表 push token 字段 +
-> `PUT /v1/devices/{deviceId}/push-token`；通话进入 `ringing` 时 best-effort 唤醒被叫方所有注册设备。
-> Android `com.zisee.app.push`：`ZiseeFirebaseMessagingService` → `IncomingPushGate`
-> （过期丢弃 + `call_id` 去重）→ `calls.incoming` heads-up 通知；`PushTokenManager` 在每次
-> 后台登录时同步 token。Telecom / CallStyle / full-screen intent 仍属 Phase 2。
-
-先把：
+正确方案是：
 
 ```text
-FCM Token
-Device Registry
-HIGH Priority data push
+                    OS SYSTEM
+                        │
+      ┌─────────────────┼─────────────────┐
+      │                 │                 │
+     FCM           OEM PUSH         Harmony Push
+      │                 │                 │
+      └─────────────────┼─────────────────┘
+                        ▼
+             IncomingCallCoordinator
+                        │
+                 ┌──────┴───────┐
+                 ▼              ▼
+             Telecom        Signaling
+                                │
+                                ▼
+                              WebRTC
 ```
 
-打通。
+也就是说：
 
-要求：
+> **国外信 Google 的系统通道。**
+
+> **国内信手机厂商自己的系统通道。**
+
+> **小米能走专用 VoIP Service Kit 就绝不退回普通通知。**
+
+> **OPPO/vivo/HONOR 不假定具备 FCM data-only 等价能力，必须基于实际 Capability 设计。**
+
+> **后台保活只是辅助优化，不是来电架构。**
+
+> **华为新鸿蒙直接视为独立平台，而不是继续往 Android 兼容层里塞。**
+
+最终要做到：
 
 ```text
-kill process
-→ 发 push
-→ FirebaseMessagingService 确实被启动
+咫尺可以死，
+但是“有人正在找你”这条系统级通道不能死。
 ```
-
----
-
-## Phase 2
-
-接：
-
-```text
-Core-Telecom
-+
-CallStyle
-+
-Answer / Reject
-```
-
-做到：
-
-```text
-进程死亡
-锁屏
-Doze
-```
-
-依然可以看到真正的来电。
-
----
-
-## Phase 3
-
-接入：
-
-```text
-Signaling
-+
-现有 WebRTC
-```
-
-形成：
-
-```text
-FCM
-→ Ring
-→ Answer
-→ Signaling
-→ WebRTC
-```
-
----
-
-## Phase 4
-
-加入：
-
-```text
-call_cancel
-timeout
-多设备
-duplicate handling
-Room state
-```
-
----
-
-## Phase 5
-
-加入：
-
-```text
-Diagnostics
-Telemetry
-OEM tests
-Chaos tests
-```
-
----
-
-# 42. 验收标准
-
-这个专项完成的标准不是：
-
-> 我手机上测试能响。
-
-而是：
-
-### Case A
-
-```text
-App 完全不在内存
-屏幕锁定
-Doze
-```
-
-服务器呼叫：
-
-```text
-→ 手机出现来电
-→ 能接听
-→ WebRTC 建立
-```
-
-### Case B
-
-```text
-App 被 recent tasks 划掉
-```
-
-仍然：
-
-```text
-→ 收到
-→ 响铃
-→ 接听
-```
-
-### Case C
-
-呼叫方取消：
-
-```text
-→ 被叫立即停止响铃
-```
-
-### Case D
-
-30 秒前的过期 Push：
-
-```text
-→ 不响
-```
-
-### Case E
-
-同一 FCM 重复到三次：
-
-```text
-→ 只有一条来电
-```
-
-### Case F
-
-两个设备同时登录：
-
-```text
-→ 两台同时响
-→ 任意一台接听
-→ 另一台立即结束
-```
-
-### Case G
-
-用户 Force Stop：
-
-```text
-→ 明确认定为系统不可恢复状态
-→ 用户再次主动打开咫尺后恢复
-```
-
----
-
-# 43. 最终架构结论
-
-咫尺的后台通话架构固定为：
-
-```text
-                    ┌── Telecom
-FCM HIGH ──────────►│
-                    ├── CallStyle
-                    │
-                    └── IncomingCallCoordinator
-                               │
-                               ▼
-                           Signaling
-                               │
-                               ▼
-                            WebRTC
-```
-
-而不是：
-
-```text
-Permanent Service
-      +
-Permanent WebSocket
-      +
-疯狂保活
-```
-
-原则：
-
-> **Idle 时允许咫尺死。**
-
-> **有来电时，由 FCM 把它唤醒。**
-
-> **唤醒后立即把 Call 注册给 Android Telecom。**
-
-> **Telecom + CallStyle 负责系统级来电生命周期。**
-
-> **用户接听以后才启动真正的 Signaling、Camera、Microphone 和 WebRTC。**
-
-这才是咫尺长期可维护、符合现代 Android 后台规则，也最接近 WhatsApp、Telegram、Discord 等 VoIP App 所需要的通话基础设施方向。
