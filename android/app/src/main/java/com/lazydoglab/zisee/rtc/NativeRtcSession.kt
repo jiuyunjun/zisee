@@ -104,6 +104,10 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         if (type != NetworkChangeDetector.ConnectionType.CONNECTION_NONE) {
             networksSeen = true; networksReady.complete(Unit)
         }
+        // ICE twice promoted a Wi-Fi pair moments after the interface was gone. libwebrtc removes
+        // the ports on a network it is told has disconnected, so when it learns of the loss decides
+        // whether that is a stale pair it should never have had, or one it kept on purpose.
+        logger.info(AppEvent.RTC_NETWORK_CHANGED, "native/${type.name}")
     }
     private var released = false
     private var lastCandidate: String? = null

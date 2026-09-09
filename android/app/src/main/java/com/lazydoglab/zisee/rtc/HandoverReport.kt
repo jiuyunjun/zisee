@@ -54,9 +54,12 @@ class HandoverReport {
         startedMs = nowMs
         // The freeze starts at the last frame that arrived, not at the moment anything noticed.
         gapFromMs = lastFlowMs ?: nowMs
-        frameGapFromMs = lastFrameMs ?: nowMs
-        frameStartMs = nowMs
-        videoGapMs = null
+        // A handover that is still waiting for its first frame keeps the measurement it started:
+        // successive pair changes would otherwise reset it and the picture gap would never report.
+        if (frameStartMs == null && videoGapMs == null) {
+            frameGapFromMs = lastFrameMs ?: nowMs
+            frameStartMs = nowMs
+        }
         selectedMs = null
         restarted = false
     }

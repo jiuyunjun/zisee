@@ -4,7 +4,10 @@ package com.lazydoglab.zisee.rtc
 data class WebRtcRecoveryConfig(
     val networkDebounceMs: Long = 200,
     val routeDebounceMs: Long = 250,
-    val naturalRecoveryMs: Long = 750,
+    // Measured natural recovery on this handover: 708, 1262, 1281, 1526 ms. Giving up at 750 ms
+    // restarted ICE on a route that was about to come back on its own, and each such restart cost
+    // three more pair changes and their gaps. Wait past the range that recovers by itself.
+    val naturalRecoveryMs: Long = 2_000,
     val disconnectedGraceMs: Long = 1_500,
     val restartCooldownMs: Long = 5_000,
     val negotiationTimeoutMs: Long = 12_000,

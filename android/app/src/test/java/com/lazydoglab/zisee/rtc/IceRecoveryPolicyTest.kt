@@ -9,15 +9,26 @@ class IceRecoveryPolicyTest {
         policy.networkChanged(1, 6_000)
         // The first evaluate can only run after reconnecting WSS and reading call.sync.
         assertEquals(IceRecoveryPolicy.Action.RESTART,
-            policy.evaluate(IceState.CONNECTED, 1, true, 7_000))
+            policy.evaluate(IceState.CONNECTED, 1, true, 8_000))
     }
 
     @Test fun `duplicate notifications preserve elapsed route grace`() {
         val policy = IceRecoveryPolicy(0)
         policy.networkChanged(1, 6_000)
         policy.networkChanged(1, 6_700)
+        assertEquals(IceRecoveryPolicy.Action.WAIT, policy.evaluate(IceState.CONNECTED, 1, true, 7_900))
         assertEquals(IceRecoveryPolicy.Action.RESTART,
-            policy.evaluate(IceState.CONNECTED, 1, true, 6_750))
+            policy.evaluate(IceState.CONNECTED, 1, true, 8_000))
+    }
+
+    @Test fun `a route that recovers inside the wider window is never restarted`() {
+        val policy = IceRecoveryPolicy(0)
+        policy.networkChanged(1, 6_000)
+        // The measured range for this handover is 700 to 1550 ms.
+        policy.evaluate(IceState.CONNECTED, 1, true, 6_600, sample(6_400, 100))
+        assertEquals(IceRecoveryPolicy.Action.WAIT,
+            policy.evaluate(IceState.CONNECTED, 1, true, 7_550, sample(7_400, 140)))
+        assertEquals(1_550L, policy.lastNaturalRecoveryMs)
     }
 
     @Test fun `media received during signaling reconnect proves natural recovery`() {
@@ -63,9 +74,9 @@ class IceRecoveryPolicyTest {
     @Test fun `stale connected state without incoming media still restarts`() {
         val policy = IceRecoveryPolicy(0)
         assertEquals(IceRecoveryPolicy.Action.WAIT, policy.evaluate(IceState.CONNECTED, 1, true, 6_000))
-        assertEquals(IceRecoveryPolicy.Action.WAIT, policy.evaluate(IceState.CONNECTED, 1, true, 6_500))
-        assertEquals(IceRecoveryPolicy.Action.RESTART, policy.evaluate(IceState.CONNECTED, 1, true, 6_750))
-        policy.generationStarted(6_750, 1)
+        assertEquals(IceRecoveryPolicy.Action.WAIT, policy.evaluate(IceState.CONNECTED, 1, true, 7_500))
+        assertEquals(IceRecoveryPolicy.Action.RESTART, policy.evaluate(IceState.CONNECTED, 1, true, 8_000))
+        policy.generationStarted(8_000, 1)
         assertEquals(IceRecoveryPolicy.Action.WAIT, policy.evaluate(IceState.CHECKING, 1, false, 7_000))
     }
     @Test fun `incoming media on recovered path avoids unnecessary restart`() {
@@ -84,14 +95,16 @@ class IceRecoveryPolicyTest {
         policy.evaluate(IceState.CONNECTED, 1, true, 6_200, sample(6_200, 120))
         policy.evaluate(IceState.CONNECTED, 1, true, 6_400, sample(6_400, 10))
         assertEquals(IceRecoveryPolicy.Action.RESTART,
-            policy.evaluate(IceState.CONNECTED, 1, true, 6_750, sample(6_400, 10)))
+            policy.evaluate(IceState.CONNECTED, 1, true, 8_000, sample(6_400, 10)))
     }
     @Test fun `second route change discards first route progress`() {
         val policy = IceRecoveryPolicy(0)
         policy.evaluate(IceState.CONNECTED, 1, true, 6_000, sample(6_000, 100))
         policy.evaluate(IceState.CONNECTED, 2, true, 6_200, sample(6_100, 120))
+        assertEquals(IceRecoveryPolicy.Action.WAIT,
+            policy.evaluate(IceState.CONNECTED, 2, true, 8_100, sample(6_100, 120)))
         assertEquals(IceRecoveryPolicy.Action.RESTART,
-            policy.evaluate(IceState.CONNECTED, 2, true, 6_950, sample(6_100, 120)))
+            policy.evaluate(IceState.CONNECTED, 2, true, 8_200, sample(6_100, 120)))
     }
     @Test fun `receiving packets cannot override disconnected ICE state`() {
         val policy = IceRecoveryPolicy(0)
@@ -126,7 +139,7 @@ class IceRecoveryPolicyTest {
         val policy = IceRecoveryPolicy(0)
         policy.networkChanged(1, 6_000)
         assertEquals(IceRecoveryPolicy.Action.RESTART,
-            policy.evaluate(IceState.CONNECTED, 1, true, 7_000, sample(6_900, 0)))
+            policy.evaluate(IceState.CONNECTED, 1, true, 8_000, sample(6_900, 0)))
         assertEquals(IceRecoveryPolicy.Reason.ROUTE, policy.lastReason)
         val failed = IceRecoveryPolicy(0)
         assertEquals(IceRecoveryPolicy.Action.RESTART, failed.evaluate(IceState.FAILED, 0, true, 6_000))
