@@ -129,7 +129,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private val handover = HandoverReport()
     private val gatheredOrigins = mutableSetOf<String>()
     private var connectedSinceMs = Long.MAX_VALUE
-    private var lastSeedMs = Long.MIN_VALUE
+    private var lastSeedMs: Long? = null
     private var sustainedSendKbps = 0L
     private val videoSending = mutableMapOf<RtpSender, Pair<Boolean, Boolean>>()
     private val powerManager = context.getSystemService(PowerManager::class.java)
@@ -492,6 +492,9 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             // The first pair a call selects is not a handover away from anything, and neither is
             // the peer-reflexive to host promotion that normally follows it a second later.
             if (lastSelectedPairId != null && result.sampledAtMs - connectedSinceMs >= SETTLED_MS) {
+                // ICE keeps improving the route for seconds after a switch, and each promotion
+                // costs media of its own. Measure and react to those at handover resolution too.
+                handoverStatsUntilMs = result.sampledAtMs + recoveryConfig.handoverStatsDurationMs
                 audioBandwidth.routeChanged(result.sampledAtMs)
                 qualityPolicy.routeChanged(result.sampledAtMs)
                 handover.pairChanged(result.sampledAtMs, appliedQuality)
@@ -535,7 +538,9 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private fun seedBitrate(nowMs: Long) {
         if (sustainedSendKbps <= 0) return
         if (audioBandwidth.mode == com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.AUDIO_ONLY) return
-        if (nowMs - lastSeedMs < SEED_COOLDOWN_MS) return
+        // Never subtract from a sentinel: nowMs - Long.MIN_VALUE overflows negative and this
+        // guard then swallowed every seed the feature exists to apply.
+        if (lastSeedMs?.let { nowMs - it < SEED_COOLDOWN_MS } == true) return
         val seed = (sustainedSendKbps * 1_000 / 4).coerceIn(MIN_SEED_BPS, MAX_SEED_BPS).toInt()
         lastSeedMs = nowMs
         if (peer?.setBitrate(null, seed, null) == false) logger.error(AppEvent.RTC_QUALITY_REJECTED)
