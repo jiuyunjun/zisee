@@ -62,6 +62,7 @@ android {
 }
 
 dependencies {
+    implementation(libs.arcore)
     implementation(libs.webrtc)
     implementation(libs.camera.core)
     implementation(libs.camera.camera2)

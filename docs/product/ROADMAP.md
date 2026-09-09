@@ -1,7 +1,7 @@
 ---
 title: Zisee 开发路线图
 document_id: PROD-ROADMAP-001
-version: 1.1.0
+version: 1.2.0
 status: Active
 created: 2026-09-08
 updated: 2026-09-09
@@ -67,8 +67,8 @@ M1  1v1 P2P 通话          完成
 M1.1 连接可靠性           完成（网络切换/ICE restart/回声退避已验证）
 M2  双摄与 Show Me        完成（含方向适配、悬浮小窗、多画面）
 M3  屏幕共享与 2D 标注    未开始（Annotation2D 数据模型已占位，无 UI/传输）
-M4  基础 AR Assist        未开始
-M5  高精度 AR 同步        未开始
+M4  基础 AR Assist        框架已实现（会话/能力/锚点/协议；通话 UI 与媒体接入待做）
+M5  高精度 AR 同步        历史帧与投影基础已实现（端到端时间戳映射与精度验收待做）
 M6  弱网与媒体智能        部分完成，提前于计划
 M7  产品化与发布          未开始
 M8  后续扩展              未开始
@@ -1657,6 +1657,11 @@ M7
 ---
 
 # Changelog
+
+## 1.2.0 - 2026-09-09
+
+- 按本次确认范围提前完成 AR 框架，详见 [AR_FRAMEWORK.md](../architecture/AR_FRAMEWORK.md)。
+- M4/M5 仅标记框架进度；通话交互、媒体接入、真实时间戳映射及真机退出条件仍未完成，M3 范围不变。
 
 ## 1.1.0 - 2026-09-09
 

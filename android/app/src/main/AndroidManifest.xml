@@ -20,6 +20,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Zisee"
         android:usesCleartextTraffic="false">
+        <meta-data android:name="com.google.ar.core" android:value="optional" />
         <!-- Handle rotation in place: recreating the activity runs onStop, which ends the call. -->
         <activity
             android:name=".MainActivity"
