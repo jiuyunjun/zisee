@@ -73,6 +73,8 @@ internal data class PreviewScenario(
     val sharePhase: ScreenSharePhase = ScreenSharePhase.IDLE,
     val openMore: Boolean = false,
     val remoteSharing: Boolean = false,
+    /** A real field reaches TRACKING seconds after its picture is already on screen. */
+    val trackAfterMs: Long = 0,
 ) {
     val localScene: Boolean get() = localMode in setOf(CameraMode.DUAL, CameraMode.BACK_ONLY, CameraMode.AR)
 }
@@ -118,6 +120,12 @@ internal fun PreviewScenario.toUiState(feeds: List<VideoFeed>) = CallUiState(
 @Composable
 internal fun CallUiPreview(feeds: List<VideoFeed>, initial: PreviewScenario, interactive: Boolean, onExit: () -> Unit) {
     var scenario by remember { mutableStateOf(initial) }
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        if (initial.trackAfterMs > 0) {
+            kotlinx.coroutines.delay(initial.trackAfterMs)
+            scenario = scenario.copy(arState = ArSessionState.TRACKING)
+        }
+    }
     ActiveCall(scenario.toUiState(feeds),
         onMute = { scenario = scenario.copy(muted = !scenario.muted) },
         onCamera = { scenario = scenario.copy(cameraEnabled = !scenario.cameraEnabled) },

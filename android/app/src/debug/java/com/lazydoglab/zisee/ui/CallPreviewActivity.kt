@@ -69,7 +69,9 @@ class CallPreviewActivity : ComponentActivity() {
                 sharePhase = ScreenSharePhase.ACTIVE)
             "ar-notice" -> PreviewScenario(localMode = CameraMode.AR, remoteMode = remoteMode,
                 arState = ArSessionState.TRACKING, arNotice = "对方已加入，可以共同放置标记。", ownMarkers = 2)
-            "more" -> PreviewScenario(localMode = localMode, remoteMode = remoteMode, openMore = true)
+            "ar-late-tracking" -> PreviewScenario(localMode = CameraMode.AR, remoteMode = remoteMode,
+                arState = ArSessionState.SCANNING, trackAfterMs = 1_000)
+            "more" ->PreviewScenario(localMode = localMode, remoteMode = remoteMode, openMore = true)
             else -> PreviewScenario(localMode = localMode, remoteMode = remoteMode)
         }
         setContent {

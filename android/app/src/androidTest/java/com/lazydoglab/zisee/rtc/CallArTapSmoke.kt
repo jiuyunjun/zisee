@@ -11,18 +11,28 @@ import android.view.MotionEvent
  * to the marker layer, not to the call surface's show/hide-controls toggle.
  */
 internal object CallArTapSmoke {
-    fun run(test: Instrumentation): String {
+    /** "ar-late-tracking" is the device order: picture first, TRACKING (and the marker tool) later. */
+    fun run(test: Instrumentation): String =
+        listOf("ar-notice", "ar-late-tracking").joinToString("\n") { "[$it]\n" + run(test, it) }
+
+    private fun run(test: Instrumentation, scenario: String): String {
         val automation = test.uiAutomation
         fun shell(command: String): String =
             android.os.ParcelFileDescriptor.AutoCloseInputStream(automation.executeShellCommand(command))
                 .bufferedReader().use { it.readText() }
         shell("logcat -c")
         val activity = test.startActivitySync(Intent().setClassName(test.targetContext.packageName,
-            "com.lazydoglab.zisee.ui.CallPreviewActivity").putExtra("callUiScenario", "ar-notice")
+            "com.lazydoglab.zisee.ui.CallPreviewActivity").putExtra("callUiScenario", scenario)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         try {
             test.waitForIdleSync()
-            SystemClock.sleep(1_500)
+            SystemClock.sleep(2_500)
+            requireNotNull(automation.takeScreenshot()).let { shot ->
+                try {
+                    java.io.File(test.targetContext.getExternalFilesDir(null), "ar-tap-$scenario.png").outputStream()
+                        .use { shot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+                } finally { shot.recycle() }
+            }
             val location = IntArray(2)
             var x = 0f; var y = 0f
             test.runOnMainSync {
@@ -41,7 +51,7 @@ internal object CallArTapSmoke {
             test.waitForIdleSync()
             SystemClock.sleep(800)
             val lines = shell("logcat -d -s Zisee:I").lines().filter { "AR_TAP" in it }
-            check(lines.any { "AR_TAP shown" in it }) { "Marker layer never composed:\n${lines.joinToString("\n")}" }
+            check(lines.any { "AR_TAP shown" in it }) { "[$scenario] Marker layer never composed:\n${lines.joinToString("\n")}" }
             check(lines.any { "AR_TAP frame=" in it || "AR_TAP outside" in it || "AR_TAP placed" in it }) {
                 "Tap at $x,$y never reached the marker layer:\n${lines.joinToString("\n")}"
             }
