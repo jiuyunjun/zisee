@@ -6,31 +6,32 @@ M3 — Call multitasking, screen sharing and 2D collaboration.
 
 ## Task
 
-Build M3-A phase 1: keep established audio calls alive after Home with an ongoing-call foreground service, while video pauses until PiP exists.
+Build M3-B: add an in-app mini-call and Android Picture-in-Picture while keeping one active call independent of Activity recreation.
 
 ## Scope
 
-Foreground service permissions/types, quiet ongoing notification, return/mute/hang-up actions, safe process-local owner routing, established-call background policy, task-removal cleanup, tests and architecture docs.
+Process-scoped transitional call ownership, one-source compact video selection, draggable in-app mini-call, Android PiP entry/actions/aspect ratio, visible-video background policy, AR guardrails, tests and docs.
 
 ## Delivered
 
-- Established RTC calls no longer end solely because MainActivity stops; idle/ringing flows still stop before media exists.
-- Home keeps audio/signaling alive and publishes camera-off state; returning restores video only when the user intended it enabled.
-- CallForegroundService exposes a private ongoing notification with return, mute/unmute and hang-up actions and ends calls on task removal.
-- ActiveCallActions routes notification actions only to the latest registered call owner; stale owners cannot clear replacements.
-- M3-F screen projection framework remains delivered and unchanged.
+- Active calls are held by the process-level AppContainer transitional owner, so Activity recreation or PiP closure does not dispose RTC resources.
+- Back from the full call opens a draggable in-app mini-call with restore, mute and hang-up controls while the rest of Zisee remains usable.
+- Home enters system PiP on supported devices for normal and Show Me calls; PiP renders one selected remote source and exposes mute/hang-up RemoteActions.
+- Video stays active while PiP is visible. Closing PiP or backgrounding without it pauses camera video but keeps audio/signaling and the ongoing notification.
+- Local AR field mode must end before in-app minimization; system Home enters remote-view PiP while the existing pause cleanup ends the local field. A remote AR guide can watch the field in PiP.
+- M3-F screen projection framework and M3-A foreground service remain delivered.
 
 ## Validation
 
-:app:testDebugUnitTest PASS (183 tests; 2 new action-routing tests), :app:assembleDebug PASS, and :app:lintDebug PASS. The merged Debug manifest contains the camera/microphone foreground-service permissions and service types. No physical background-call validation yet; prior M3-F checks remain valid.
+:app:testDebugUnitTest PASS (186 tests), :app:assembleDebug PASS, and :app:lintDebug PASS. No physical PiP/background-call validation yet; prior M3-F checks remain valid.
 
 ## State
 
-M3 ACTIVE — M3-A phase 1 code implemented; device validation pending. Product screen sharing is not connected yet.
+M3 ACTIVE — M3-A/B code implemented; device validation pending. Product screen sharing is not connected yet.
 
 ## Next
 
-Validate M3-A on two devices, then M3-B mini-call/PiP; M3-C explicit projection consent, mediaProjection service, screen frame sink/RTC sender and bilateral state; then M3.1 annotations. Media ownership still lives in CallViewModel during this transition and must later move to CallSessionCoordinator.
+Validate M3-A/B on two devices, then implement M3-C explicit projection consent, mediaProjection service, screen frame sink/RTC sender and bilateral state; then M3.1 annotations. Media ownership lives in a process-scoped CallViewModel during this transition and must later move to CallSessionCoordinator.
 
 ## Prior milestone checkpoint: M4/M5 AR (preserved)
 

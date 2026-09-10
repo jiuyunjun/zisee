@@ -7,6 +7,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CallVideoLayoutTest {
+    @Test fun `compact window always resolves one remote source`() {
+        assertEquals(CallVideoLayout.PeerScene,
+            CallVideoLayout.compactRemote(CameraMode.DUAL, CallVideoLayout.MeFace))
+        assertEquals(CallVideoLayout.PeerFace,
+            CallVideoLayout.compactRemote(CameraMode.DUAL, CallVideoLayout.PeerFace))
+        assertEquals(CallVideoLayout.PeerScene,
+            CallVideoLayout.compactRemote(CameraMode.BACK_ONLY, CallVideoLayout.PeerFace))
+        assertEquals(CallVideoLayout.PeerFace,
+            CallVideoLayout.compactRemote(CameraMode.FACE, CallVideoLayout.PeerScene))
+    }
+
     @Test fun `all local and remote show me combinations resolve available primary and thumbnail tracks`() {
         for (local in CameraMode.entries) for (remote in CameraMode.entries) {
             val sources = CallVideoLayout.sources(local, remote)

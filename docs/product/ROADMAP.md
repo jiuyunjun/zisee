@@ -1,7 +1,7 @@
 ---
 title: Zisee 开发路线图
 document_id: PROD-ROADMAP-001
-version: 1.6.0
+version: 1.7.0
 status: Active
 created: 2026-09-08
 updated: 2026-09-10
@@ -66,7 +66,7 @@ M0  项目基础              完成
 M1  1v1 P2P 通话          完成
 M1.1 连接可靠性           完成（网络切换/ICE restart/回声退避已验证）
 M2  双摄与 Show Me        完成（含方向适配、悬浮小窗、多画面）
-M3  通话多任务、屏幕共享与 2D 标注    进行中（M3-F 框架、M3-A 后台语音代码闭环已落地；真机与 PiP/RTC 屏幕流待完成）
+M3  通话多任务、屏幕共享与 2D 标注    进行中（M3-F 框架、M3-A/B 后台通话与小窗代码闭环已落地；真机与 RTC 屏幕流待完成）
 M4  基础 AR Assist        基础协作闭环代码已实现，未经真机端到端验证（见下）
 M5  高精度 AR 同步        历史帧与投影基础已实现（端到端时间戳映射与精度验收待做）
 M6  弱网与媒体智能        部分完成，提前于计划
@@ -526,8 +526,8 @@ Secondary Track
 
 当前里程碑已切换到 **M3**。先交付 M3-F：共享状态机、一次性请求、Android Surface 投影后端和单测，见 [SCREEN_SHARE.md](../architecture/SCREEN_SHARE.md)。该框架尚未接入产品，不改变以下服务优先的接入顺序。
 
-1. M3-A：第一阶段代码已完成——活动媒体前台服务、通话通知、Home 后语音继续/视频暂停；真正独立的会话 owner 和双设备后台验收仍待完成，见 [ACTIVE_CALL.md](../architecture/ACTIVE_CALL.md)。
-2. M3-B：应用内迷你通话、系统 PiP，统一普通视频、Show Me 与 AR 双角色的主画面、后台和恢复规则。
+1. M3-A：代码已完成——活动媒体前台服务、通话通知、Home 后持续通话；双设备后台验收仍待完成，见 [ACTIVE_CALL.md](../architecture/ACTIVE_CALL.md)。
+2. M3-B：代码已完成——应用内迷你通话、系统 PiP、单远端主源和关闭 PiP 后的语音退路；AR 现场当前要求先结束，完整模式矩阵与系统行为待真机验收。
 3. M3-C：MediaProjection、独立 Screen Track、归属协商、授权/系统停止与模式互斥切换。
 
 共享方默认屏幕 + 音频，可显式保留已开启的前摄；首版不做本机前后摄 + 屏幕三路发送。共享与整场 AR 协作互斥，模式 owner 决定是否结束。PiP 显示一路远端主源，共享方不在小窗回放自己的屏幕。AR 现场方离开结束现场但保留语音，指导方缩窗仅观看。
@@ -1527,14 +1527,14 @@ M4 基础 AR 协作闭环代码已实现但从未真机端到端验证
 下一目标：
 
 ```text
-M3-F、M3-A 第一阶段代码已完成；下一步真机验收 M3-A → M3-B 小窗 → M3-C 共享接入 → M3.1
+M3-F、M3-A/B 代码已完成；下一步真机验收后台与小窗 → M3-C 共享接入 → M3.1
 ```
 
 详见 [2.1 当前进度速览](#21-当前进度速览2026-09-10)。
 
 ## 29.1 当前选择与 AR 验证边界
 
-当前已从设计进入 M3 框架开发。产品规则见 [CALL_MULTITASKING.md](CALL_MULTITASKING.md)，实现边界见 [SCREEN_SHARE.md](../architecture/SCREEN_SHARE.md)。M3-F 提供状态机和投影后端；后台服务、授权 UI 与屏幕 Track 传输完成前不开放共享入口。
+当前已从设计进入 M3 开发。产品规则见 [CALL_MULTITASKING.md](CALL_MULTITASKING.md)，实现边界见 [SCREEN_SHARE.md](../architecture/SCREEN_SHARE.md) 与 [ACTIVE_CALL.md](../architecture/ACTIVE_CALL.md)。M3-F 提供状态机和投影后端，M3-A/B 提供后台通话与小窗；授权 UI、MediaProjection 服务与屏幕 Track 传输完成前不开放共享入口。
 
 AR 基础闭环仍未经过双设备端到端验证，以下清单保留为 M4 退出与 M3 AR 集成验收门槛；不把它作为 M3 独立框架开发的前置阻塞。现有实现的回环失败问题也仍待判定。
 
@@ -1644,6 +1644,11 @@ M7
 ---
 
 # Changelog
+
+## 1.7.0 - 2026-09-10
+
+- M3-B 落地应用内迷你通话、系统 PiP、远端单源选择和 PiP 关闭后的语音继续策略。
+- 当前过渡通话 owner 提升到进程级，Activity/PiP 销毁不再直接结束媒体；真机验收和独立 `CallSessionCoordinator` 仍待完成。
 
 ## 1.6.0 - 2026-09-10
 

@@ -66,6 +66,7 @@ internal data class PreviewScenario(
     val ownMarkers: Int = 0,
     val audioInterrupted: Boolean = false,
     val audioOnly: Boolean = false,
+    val selectedVideoSource: String? = null,
 ) {
     val localScene: Boolean get() = localMode in setOf(CameraMode.DUAL, CameraMode.BACK_ONLY, CameraMode.AR)
 }
@@ -89,6 +90,7 @@ internal fun PreviewScenario.toUiState(feeds: List<VideoFeed>) = CallUiState(
         audioDevice = AudioDeviceState(state = if (audioInterrupted) AudioState.INTERRUPTED else AudioState.ACTIVE),
         audioBandwidth = if (audioOnly) AudioBandwidthMode.AUDIO_ONLY else AudioBandwidthMode.ALL_VIDEO),
     arState = arState, arNotice = arNotice, arOwnMarkerCount = ownMarkers,
+    selectedVideoSource = selectedVideoSource,
     arCollaboration = ArCollaborationState(connected = true,
         localSession = if (localMode == CameraMode.AR) PreviewFieldSession else null,
         fieldPeerJoined = localMode == CameraMode.AR && fieldPeerJoined,
@@ -114,10 +116,12 @@ internal fun CallUiPreview(feeds: List<VideoFeed>, initial: PreviewScenario, int
         onSwitch = {},
         onSpeaker = { scenario = scenario.copy(speakerOn = !scenario.speakerOn) },
         onEnd = onExit,
+        onMinimize = onExit,
         onHintSeen = { scenario = scenario.copy(showMeHint = false) },
         onArMarker = { _, _, _ -> scenario = scenario.copy(ownMarkers = scenario.ownMarkers + 1) },
         onArUndo = { scenario = scenario.copy(ownMarkers = (scenario.ownMarkers - 1).coerceAtLeast(0)) },
         onArClearOwn = { scenario = scenario.copy(ownMarkers = 0) },
+        onSelectVideo = { scenario = scenario.copy(selectedVideoSource = it) },
         arControls = { if (interactive) PreviewControls(scenario, onExit) { scenario = it } })
 }
 

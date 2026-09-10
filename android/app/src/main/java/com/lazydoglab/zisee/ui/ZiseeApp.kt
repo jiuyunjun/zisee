@@ -71,6 +71,7 @@ private enum class Page { HOME, SETTINGS }
  * exists; the home screen then still lays out, with its call actions inert.
  */
 class CallHomeActions(
+    val activeCall: Boolean = false,
     val contacts: List<com.lazydoglab.zisee.call.Contact> = emptyList(),
     val pendingInvite: String = "",
     val notice: String = "",
@@ -238,7 +239,7 @@ private fun HomeScreen(call: CallHomeActions?, onSettings: () -> Unit) {
         granting = action
         permissions.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
     }
-    val busy = granting != null
+    val busy = granting != null || call?.activeCall == true
 
     Spacer(Modifier.height(20.dp))
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {

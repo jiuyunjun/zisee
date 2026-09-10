@@ -1,7 +1,7 @@
 ---
 title: M3 通话多任务、屏幕共享与画面协作专项设计
 document_id: DESIGN-M3-001
-version: 1.2.0
+version: 1.3.0
 status: Draft
 created: 2026-09-10
 updated: 2026-09-10
@@ -14,7 +14,7 @@ owners:
 
 # M3 通话多任务、屏幕共享与画面协作专项设计
 
-本文定义产品目标；当前已经进入 M3 开发，M3-F 共享状态机和 Android 投影框架见 [SCREEN_SHARE.md](../architecture/SCREEN_SHARE.md)。服务/UI/RTC 共享接入尚未完成。下文是目标行为，**不是当前 APK 能力声明**。M3 从“增加屏幕 Track”扩展为“离开通话页面也能持续交流，并清楚知道双方正在分享、观看和标记什么”。AR 空间交互继续由 [AR_INTERACTION.md](AR_INTERACTION.md) 定义；M3 落地后，跨模式生命周期以本文为准。
+本文定义产品目标；当前已经进入 M3 开发，M3-F 共享框架、M3-A 后台通话和 M3-B 小窗/PiP 已形成代码闭环，架构事实分别见 [SCREEN_SHARE.md](../architecture/SCREEN_SHARE.md) 与 [ACTIVE_CALL.md](../architecture/ACTIVE_CALL.md)。屏幕共享的服务/UI/RTC 接入尚未完成。下文包含目标行为与已标注的实现进度，未完成项不能当作当前 APK 能力。
 
 ## 1. 核心决策
 
@@ -36,10 +36,10 @@ owners:
 
 | 已阅读对象 | 当前事实 / 设计影响 |
 | --- | --- |
-| [MainActivity.kt](../../android/app/src/main/java/com/lazydoglab/zisee/MainActivity.kt) | `onStop` 调用 `setForeground(false)`；`onPause` 改变 AR resumed。不能简单删除一个 stop 就声称后台支持完成。 |
-| [CallViewModel.kt](../../android/app/src/main/java/com/lazydoglab/zisee/call/CallViewModel.kt) | 通话由前台 ViewModel 持有，`setForeground(false)` 会 stop；需把活动通话资源交给明确的会话 owner。 |
-| [AndroidManifest.xml](../../android/app/src/main/AndroidManifest.xml) | 尚无通话/共享前台服务和 PiP 声明；现有 FCM 服务用于来电，不承担持续媒体。 |
-| [CallVideoLayout.kt](../../android/app/src/main/java/com/lazydoglab/zisee/ui/CallVideoLayout.kt) | 已有本人/对方人像与现场稳定 ID、FIT 布局、观看质量请求；需扩展屏幕来源和不同展示容器。 |
+| [MainActivity.kt](../../android/app/src/main/java/com/lazydoglab/zisee/MainActivity.kt) | 已接入应用内迷你通话和系统 PiP；`onStop` 根据 PiP 是否可见决定保留或暂停视频，`onPause` 继续清理本机 AR。 |
+| [CallViewModel.kt](../../android/app/src/main/java/com/lazydoglab/zisee/call/CallViewModel.kt) | 当前由 `AppContainer` 进程级持有，Activity 重建不结束通话；仍需提取独立 `CallSessionCoordinator`，进程死亡不恢复媒体。 |
+| [AndroidManifest.xml](../../android/app/src/main/AndroidManifest.xml) | 已声明通话前台服务和 PiP；MediaProjection 服务类型与产品共享接入仍未完成。 |
+| [CallVideoLayout.kt](../../android/app/src/main/java/com/lazydoglab/zisee/ui/CallVideoLayout.kt) | 已有稳定来源 ID、FIT 布局、观看质量请求与紧凑窗口单远端来源解析；仍需扩展屏幕来源。 |
 | [Annotation.kt](../../android/app/src/main/java/com/lazydoglab/zisee/ar/annotation/Annotation.kt) | `Annotation2D` 只有帧引用和点，不能直接支持笔画、作者、撤销与共享快照。 |
 | [build.gradle.kts](../../android/app/build.gradle.kts) | minSdk 26、targetSdk/compileSdk 35；需覆盖不同系统版本与 OEM，不能仅按最新系统开发。 |
 
@@ -250,7 +250,7 @@ stateDiagram-v2
 | M3-D（已完成） | 专项设计、关联文档与路线图 | 组合规则、两端反馈、生命周期及验收可评审；未实现项明确 |
 | M3-F（框架已实现） | 共享生命周期、单次授权请求、Android Surface 投影后端 | JVM 状态测试、编译与 lint；真实捕获及产品接入仍待验收 |
 | M3-A（代码闭环已实现，待真机） | 活动通话过渡 owner、前台服务、通知、生命周期 | 无 PiP 时 Home 后保留语音并暂停摄像头；返回/通知动作/任务移除已接线，设备行为待验收 |
-| M3-B | 统一主源、应用内迷你通话、系统 PiP | 普通/Show Me/AR 双角色矩阵成立，关闭 PiP 语音继续，权限关闭有可用退路 |
+| M3-B（代码闭环已实现，待真机） | 统一主源、应用内迷你通话、系统 PiP | 普通/Show Me/AR 双角色已接线；关闭 PiP 保留语音，AR 现场按 Home 时同步结束；系统与 OEM 行为待设备验收 |
 | M3-C | 单 owner 屏幕 Track、系统授权与互斥切换 | 双设备从开始到系统停止闭环；取消和首帧失败不泄漏、不误恢复相机 |
 | M3.1-A | 实时 Pointer 与坐标基础 | 同一来源的新鲜帧指示正确，黑边/过期帧/PiP 输入拒绝 |
 | M3.1-B | 共享/相机定格讲解、圈箭头画笔、撤销清除 | 共享方在其他 App 时可返回看到同帧标注；重连和清空竞态最终一致 |
@@ -267,6 +267,11 @@ stateDiagram-v2
 单元测试覆盖策略矩阵、归属/请求代数、恢复条件、坐标与幂等；集成测试覆盖服务与 UI 解耦、Track 协商、投影停止及快照传输；真机覆盖系统 PiP、MediaProjection、CameraX、ARCore、音频与 OEM 生命周期。AR 的双设备精度和性能门槛继续保留，但不阻塞本轮 M3 设计；M3 中 AR 相关路径只能在真机回归通过后标记完成。
 
 ## Changelog
+
+### 1.3.0 - 2026-09-10
+
+- 记录 M3-B 代码闭环：应用内迷你通话、系统 PiP、单远端主源、PiP 关闭继续语音，以及进程级过渡通话 owner。
+- 明确本机 AR 现场暂不允许应用内最小化；按 Home 时进入远端 PiP 并结束本机现场。全部系统生命周期行为待双设备验收。
 
 ### 1.2.0 - 2026-09-10
 

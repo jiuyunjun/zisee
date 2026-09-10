@@ -98,6 +98,7 @@ private val HandleRightShape = RoundedCornerShape(topStart = 7.dp, bottomStart =
 @Composable
 internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> Unit,
     onShowMe: () -> Unit, onSwitch: () -> Unit, onSpeaker: () -> Unit, onEnd: () -> Unit,
+    onMinimize: () -> Unit = {},
     onHintSeen: () -> Unit = {}, onViewLayout: (Boolean, Boolean) -> Unit = { _, _ -> },
     onNoiseMode: (com.lazydoglab.zisee.rtc.audio.processing.NoiseSuppressionMode) -> Unit = {},
     onArMarker: (com.lazydoglab.zisee.rtc.TextureViewRenderer.DisplayedArFrame,
@@ -105,6 +106,7 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
         com.lazydoglab.zisee.ar.session.MarkerKind) -> Unit = { _, _, _ -> },
     onArUndo: () -> Unit = {},
     onArClearOwn: () -> Unit = {},
+    onSelectVideo: (String) -> Unit = {},
     arControls: @Composable () -> Unit = {}) {
     var controls by remember { mutableStateOf(true) }
     var interaction by remember { mutableLongStateOf(0L) }
@@ -114,7 +116,6 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
     var confirmArClear by remember { mutableStateOf(false) }
     val localMode = if (state.showMe.mode == CameraMode.STARTING) stableLocalMode else state.showMe.mode
     SideEffect { stableLocalMode = localMode }
-    var chosen by remember(localMode, state.remotePresentation.mode) { mutableStateOf<String?>(null) }
     // Where the viewer has dragged each thumbnail, as an offset from its stacked position.
     var moved by remember { mutableStateOf(mapOf<String, Offset>()) }
     // Thumbnails parked off an edge, and which edge each went to.
@@ -174,7 +175,7 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
     Surface(color = CallInk, contentColor = CallText, modifier = Modifier.fillMaxSize()) {
         BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().clickable { controls = !controls; interaction++ }) {
             val order = CallVideoLayout.sources(localMode, state.remotePresentation.mode)
-            val main = CallVideoLayout.main(order, chosen)
+            val main = CallVideoLayout.main(order, state.selectedVideoSource)
             val localArMarking = main == MeScene && localMode == CameraMode.AR &&
                 state.arState == com.lazydoglab.zisee.ar.session.ArSessionState.TRACKING
             val remoteArMarking = main == PeerScene && state.remotePresentation.mode == CameraMode.AR &&
@@ -302,7 +303,7 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                         interaction++; onHintSeen()
                         // A handle restores the thumbnail; a thumbnail becomes the main view.
                         if (tile in parked) { parked = parked - tile; moved = moved - tile }
-                        else chosen = tile
+                        else onSelectVideo(tile)
                     }
                     .semantics {
                         contentDescription = if (tile in parked) "展开${label(tile)}"
@@ -374,14 +375,25 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                                 fontSize = 13.sp, color = CallMuted)
                         }
                     }
-                    Box(Modifier.size(44.dp).clip(CircleShape).background(Color(0xFF0C1216).copy(alpha = 0.5f))
-                        .border(1.dp, CallText.copy(alpha = 0.10f), CircleShape)
-                        .clickable { interaction++; onSpeaker() }
-                        .semantics { role = Role.Button; contentDescription = if (state.speakerOn) "免提已开启" else "免提已关闭" },
-                        contentAlignment = Alignment.Center) {
-                        Canvas(Modifier.size(20.dp)) {
-                            scale(size.width / 24f, size.width / 24f, Offset.Zero) {
-                                callIcon(if (state.speakerOn) "speaker" else "speaker-off", CallText)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Box(Modifier.size(44.dp).clip(CircleShape).background(Color(0xFF0C1216).copy(alpha = 0.5f))
+                            .border(1.dp, CallText.copy(alpha = 0.10f), CircleShape)
+                            .clickable { interaction++; onMinimize() }
+                            .semantics { role = Role.Button; contentDescription = "最小化通话" },
+                            contentAlignment = Alignment.Center) {
+                            Canvas(Modifier.size(20.dp)) {
+                                scale(size.width / 24f, size.width / 24f, Offset.Zero) { callIcon("minimize", CallText) }
+                            }
+                        }
+                        Box(Modifier.size(44.dp).clip(CircleShape).background(Color(0xFF0C1216).copy(alpha = 0.5f))
+                            .border(1.dp, CallText.copy(alpha = 0.10f), CircleShape)
+                            .clickable { interaction++; onSpeaker() }
+                            .semantics { role = Role.Button; contentDescription = if (state.speakerOn) "免提已开启" else "免提已关闭" },
+                            contentAlignment = Alignment.Center) {
+                            Canvas(Modifier.size(20.dp)) {
+                                scale(size.width / 24f, size.width / 24f, Offset.Zero) {
+                                    callIcon(if (state.speakerOn) "speaker" else "speaker-off", CallText)
+                                }
                             }
                         }
                     }
@@ -578,6 +590,7 @@ internal fun DrawScope.callIcon(kind: String, ink: Color, knockout: Color = Colo
         "contact" -> { drawCircle(ink, 4f, Offset(10f, 8.5f), style = stroke); path("M3 20c0-3.6 3.1-6 7-6 1.5 0 2.9.35 4 .96"); path("M18 14v6M15 17h6") }
         "lock" -> { drawRoundRect(ink, Offset(4f, 10.5f), Size(16f, 10.5f), CornerRadius(3f), style = stroke); path("M8 10.5V7.5a4 4 0 0 1 8 0v3") }
         "back" -> path("M15 5l-7 7 7 7")
+        "minimize" -> path("M5 9l7 7 7-7")
         "forward" -> path("M9 5l7 7-7 7")
         "gear" -> {
             drawCircle(ink, 3.2f, Offset(12f, 12f), style = stroke)

@@ -28,6 +28,19 @@ internal object CallVideoLayout {
         ?: sources.firstOrNull { it == PeerScene }
         ?: PeerFace
 
+    /** Compact windows show exactly one remote source. A remote user selection wins; otherwise
+     * Show Me and rear-only calls prefer the scene, while an ordinary call prefers the face.
+     */
+    fun compactRemote(remote: CameraMode, chosen: String?): String {
+        val available = when (remote) {
+            CameraMode.DUAL -> setOf(PeerScene, PeerFace)
+            CameraMode.BACK_ONLY, CameraMode.AR -> setOf(PeerScene)
+            else -> setOf(PeerFace)
+        }
+        return chosen?.takeIf { it in available }
+            ?: if (PeerScene in available) PeerScene else PeerFace
+    }
+
     fun remoteView(main: String, remote: CameraMode): ViewRequest {
         // BACK_ONLY uses the original single-camera/front track, not the concurrent back track.
         val frontLarge = main == PeerFace || (main == PeerScene && remote == CameraMode.BACK_ONLY)

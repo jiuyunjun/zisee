@@ -1,10 +1,7 @@
 package com.lazydoglab.zisee.call
 
-import android.content.Context
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.lazydoglab.zisee.auth.LocalIdentity
 import com.lazydoglab.zisee.auth.remote.AccessSession
@@ -61,11 +58,12 @@ data class CallUiState(
     val arCollaboration: com.lazydoglab.zisee.ar.collaboration.ArCollaborationState =
         com.lazydoglab.zisee.ar.collaboration.ArCollaborationState(),
     val arOwnMarkerCount: Int = 0,
+    val selectedVideoSource: String? = null,
     val remotePresentation: com.lazydoglab.zisee.rtc.CameraPresentation = com.lazydoglab.zisee.rtc.CameraPresentation(com.lazydoglab.zisee.rtc.CameraMode.FACE, true),
 )
 
-/** Serial call owner. M3-A keeps established media alive behind a foreground service.
- * A later slice moves ownership out of the Activity-scoped ViewModel entirely.
+/** Process-scoped serial call owner. It survives Activity/PiP destruction through AppContainer.
+ * A later slice separates the session coordinator from this UI state adapter.
  */
 class CallViewModel(application: Application, private val container: AppContainer) : AndroidViewModel(application) {
     private val mutable = MutableStateFlow(CallUiState())
@@ -153,31 +151,31 @@ class CallViewModel(application: Application, private val container: AppContaine
         }
     }
 
-    fun setForeground(value: Boolean) {
+    fun setForeground(value: Boolean, videoVisible: Boolean = value) {
         foreground = value
         if (!value) {
             idleJob?.cancel()
             // Only established native media has an ongoing-call service. Ringing and external
             // authorization still stop, which prevents a background callback starting capture.
             val media = rtc
-            if (media == null) stop()
-            else viewModelScope.launch {
-                // Until PiP lands, a background call is audio-only. The UI intent stays unchanged
-                // so returning may restore video, but the peer receives cameraEnabled=false now.
-                try { media.setTrackEnabled(com.lazydoglab.zisee.media.MediaTrack.FRONT_CAMERA, false) }
-                catch (error: CancellationException) { throw error }
-                catch (_: Exception) { container.logger.error(AppEvent.RTC_MEDIA_FAILED); stop() }
-            }
+            if (media == null) stop() else applyVideoVisibility(media, videoVisible)
         } else {
             val media = rtc
-            if (media != null && mutable.value.cameraEnabled) viewModelScope.launch {
-                try {
-                    if (rtc === media && foreground)
-                        media.setTrackEnabled(com.lazydoglab.zisee.media.MediaTrack.FRONT_CAMERA, true)
-                } catch (error: CancellationException) { throw error }
-                catch (_: Exception) { container.logger.error(AppEvent.RTC_MEDIA_FAILED); stop() }
-            }
+            if (media != null) applyVideoVisibility(media, videoVisible)
             startIdle()
+        }
+    }
+
+    fun setVideoVisible(visible: Boolean) { rtc?.let { applyVideoVisibility(it, visible) } }
+
+    private fun applyVideoVisibility(media: NativeRtcSession, visible: Boolean) {
+        viewModelScope.launch {
+            try {
+                if (rtc === media) media.setTrackEnabled(
+                    com.lazydoglab.zisee.media.MediaTrack.FRONT_CAMERA,
+                    visible && mutable.value.cameraEnabled)
+            } catch (error: CancellationException) { throw error }
+            catch (_: Exception) { container.logger.error(AppEvent.RTC_MEDIA_FAILED); stop() }
         }
     }
     fun close() { stop(); mutable.update { it.copy(visible = false) } }
@@ -206,6 +204,12 @@ class CallViewModel(application: Application, private val container: AppContaine
         val media = rtc ?: return
         if (cameraJob?.isActive == true) return
         cameraJob = viewModelScope.launch { media.toggleShowMe(preferDual) }
+    }
+
+    fun selectVideoSource(source: String) {
+        val valid = com.lazydoglab.zisee.ui.CallVideoLayout.sources(
+            mutable.value.showMe.mode, mutable.value.remotePresentation.mode)
+        if (source in valid) mutable.update { it.copy(selectedVideoSource = source) }
     }
 
     fun setArResumed(resumed: Boolean) {
@@ -692,20 +696,8 @@ class CallViewModel(application: Application, private val container: AppContaine
         }
     }
 
-    override fun onCleared() {
-        container.activeCallActions.clear(this)
-        CallForegroundService.stop(getApplication())
-        super.onCleared()
-    }
-
     companion object {
         // The server issues these for an hour; half of that leaves room for a slow call to renew.
         private const val ICE_REUSE_MS = 30 * 60 * 1000L
-        fun factory(context: Context, container: AppContainer) = object : ViewModelProvider.Factory {
-            override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                require(modelClass.isAssignableFrom(CallViewModel::class.java))
-                @Suppress("UNCHECKED_CAST") return CallViewModel(context.applicationContext as Application, container) as T
-            }
-        }
     }
 }

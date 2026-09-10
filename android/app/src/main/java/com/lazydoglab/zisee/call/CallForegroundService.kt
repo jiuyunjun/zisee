@@ -54,10 +54,6 @@ class CallForegroundService : Service() {
             Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        fun command(action: String, requestCode: Int) = PendingIntent.getService(
-            this, requestCode, Intent(this, CallForegroundService::class.java).setAction(action),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
         return NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_zisee)
             .setContentTitle(getString(R.string.call_active_title, peer))
@@ -68,9 +64,10 @@ class CallForegroundService : Service() {
             .setOnlyAlertOnce(true)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setContentIntent(open)
-            .addAction(0, getString(if (muted) R.string.call_unmute else R.string.call_mute),
-                command(ACTION_TOGGLE_MUTE, REQUEST_MUTE))
-            .addAction(0, getString(R.string.call_hang_up), command(ACTION_HANG_UP, REQUEST_HANG_UP))
+            .addAction(if (muted) R.drawable.ic_call_mic_off else R.drawable.ic_call_mic,
+                getString(if (muted) R.string.call_unmute else R.string.call_mute),
+                mutePendingIntent(this))
+            .addAction(R.drawable.ic_call_end, getString(R.string.call_hang_up), hangUpPendingIntent(this))
             .build()
     }
 
@@ -122,6 +119,17 @@ class CallForegroundService : Service() {
             // An explicit action lets an already-running service remove its notification promptly.
             runCatching { context.startService(Intent(context, CallForegroundService::class.java).setAction(ACTION_STOP)) }
         }
+
+        fun mutePendingIntent(context: Context): PendingIntent =
+            command(context, ACTION_TOGGLE_MUTE, REQUEST_MUTE)
+
+        fun hangUpPendingIntent(context: Context): PendingIntent =
+            command(context, ACTION_HANG_UP, REQUEST_HANG_UP)
+
+        private fun command(context: Context, action: String, requestCode: Int) = PendingIntent.getService(
+            context, requestCode, Intent(context, CallForegroundService::class.java).setAction(action),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
 
         private fun intent(context: Context, action: String, peer: String, muted: Boolean) =
             Intent(context, CallForegroundService::class.java).setAction(action)

@@ -79,21 +79,23 @@ import com.lazydoglab.zisee.rtc.VideoFeed
  * [ActiveCall] takes over once media is flowing.
  */
 @Composable
-fun CallScreen(state: CallUiState, model: CallViewModel) {
+fun CallScreen(state: CallUiState, model: CallViewModel, onMinimize: () -> Unit = {}) {
     var accepting by remember { mutableStateOf(false) }
     val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
         if (grants[Manifest.permission.CAMERA] == true && grants[Manifest.permission.RECORD_AUDIO] == true) model.accept()
         else model.permissionsDenied()
         accepting = false
     }
-    BackHandler { model.close() }
+    BackHandler { if (state.local != null && state.busy) onMinimize() else model.close() }
     if (state.local != null && state.busy) {
         ArCallGeometry(state, model)
         ActiveCall(state, model::toggleMute, model::toggleCamera, { model.toggleShowMe() },
-            { model.toggleShowMe(false) }, model::toggleSpeaker, model::stop, model::dismissShowMeHint,
+            { model.toggleShowMe(false) }, model::toggleSpeaker, model::stop, onMinimize,
+            model::dismissShowMeHint,
             model::reportViewLayout, model::setNoiseSuppression,
             { frame, point, kind -> model.createArMarker(frame, point, kind) }, model::undoArMarker,
             model::clearOwnArMarkers,
+            onSelectVideo = model::selectVideoSource,
             arControls = { ArCallControls(state, model) })
         return
     }

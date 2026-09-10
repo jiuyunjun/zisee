@@ -12,6 +12,8 @@ import com.lazydoglab.zisee.auth.remote.BackendConnection
 import com.lazydoglab.zisee.auth.remote.KeystoreDeviceSigner
 import com.lazydoglab.zisee.call.CallPreferences
 import com.lazydoglab.zisee.call.ActiveCallActions
+import com.lazydoglab.zisee.call.CallViewModel
+import android.app.Application
 import com.lazydoglab.zisee.auth.remote.backendHttpClient
 import com.lazydoglab.zisee.push.CallNotifications
 import com.lazydoglab.zisee.push.FcmPushProvider
@@ -28,6 +30,12 @@ private val Context.pushStore by preferencesDataStore(name = "push_state")
 /** Application-scoped composition root. Media resources must later have a call-scoped owner. */
 class AppContainer(context: Context) {
     val activeCallActions = ActiveCallActions()
+    /** Process-scoped until CallSessionCoordinator is extracted. Activity/PiP destruction must not
+     * clear an established call; process death still drops this object and never revives media.
+     */
+    val callModel: CallViewModel by lazy {
+        CallViewModel(context.applicationContext as Application, this)
+    }
     val identityRepository: IdentityRepository =
         DataStoreIdentityRepository(context.applicationContext.identityStore)
     val callPreferences = CallPreferences(context.applicationContext.callStore)
