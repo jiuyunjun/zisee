@@ -186,14 +186,14 @@ Remaining device acceptance: actual ARCore takeover/restore from FACE/BACK_ONLY/
 
 ## 通话空间标记闭环（1.5）
 
-`99cf7a9` 将现有框架接入通话产品路径。通话“更多”区分开启自己的现场与加入对方标记；只有实际成为 TextureView 当前展示内容、且携带匹配 AR session UUID 的帧才能产生空间点击。双方可在当前主现场选择 Pin、Arrow、Circle，撤销最近一次本人操作或确认后清除本人标记。
+`99cf7a9` 将现有框架接入通话产品路径，`0bdaaa6` 补充现场方全清和暂停指导方权限。通话“更多”区分开启自己的现场与加入对方标记；只有实际成为 TextureView 当前展示内容、且携带匹配 AR session UUID 的帧才能产生空间点击。双方可在当前主现场选择 Pin、Arrow、Circle，撤销最近一次本人操作或确认后清除本人标记。
 
 现场端仍是 Anchor 权威。每帧使用当前相机 Pose 和 CPU image intrinsics 将正在跟踪的 Anchor 投影回未旋转源图像，三类高对比 billboard 在同一 GPU framebuffer 内与相机画面合成，再进入 video_back 编码。因此两端看到的标记与对应源帧一致，不把最新姿态用于远端历史点击，也不需要指导方运行 ARCore。现阶段标记被烧入视频，尚不能单端隐藏、按画面命中或显示不同作者颜色和编号。
 
 两端同时开启现场时，通话主叫端作为协调者保留自己的现场；另一端观察冲突状态后关闭 AR 并恢复此前摄像头。已收到对方 ready 的非协调端不能接管相机。该收敛复用现有可靠有序通道，不允许同时暴露两个现场，但尚未实现带版本的申请/授权协议、邀请和交换流程。
 
-JVM 新增 Anchor 投影和并发现场测试。2026-09-10 本机 168 项 JVM 测试、Debug/AndroidTest 构建和 lint 通过；Pixel 9a 上合成 OES 测试验证相机采样、标记 shader 与方向。物理 `arCameraTakeover` 回归在 ARCore availability/preparation 均 READY 后，被本地回环 ICE 在已收到视频帧后进入 FAILED 阻断，连续三次未进入 AR 接管阶段；本次不能据此宣称物理 AR 或双设备空间标记通过。
+JVM 新增 Anchor 投影、并发现场和现场方控制测试。2026-09-10 本机 169 项 JVM 测试、Debug/AndroidTest 构建和 lint 通过；Pixel 9a 上合成 OES 测试验证相机采样、标记 shader 与方向。物理 `arCameraTakeover` 回归在 ARCore availability/preparation 均 READY 后，被本地回环 ICE 在已收到视频帧后进入 FAILED 阻断，连续三次未进入 AR 接管阶段；本次不能据此宣称物理 AR 或双设备空间标记通过。
 
-仍待交付：作者/编号和列表、现场方全清、撤回对方权限、远端 tracking 可用状态、清空事务代数、重连快照、Pointer、请求/仅观看/交换交互、真实双设备点击与 30/60 分钟功耗验收。完整产品边界和顺序见 [AR_INTERACTION.md](../product/AR_INTERACTION.md)。
+仍待交付：作者/编号和列表、远端 tracking 可用状态、清空事务代数、重连快照、Pointer、请求/仅观看/交换交互、真实双设备点击与 30/60 分钟功耗验收。完整产品边界和顺序见 [AR_INTERACTION.md](../product/AR_INTERACTION.md)。
 
 Implementation contracts were checked against the pinned WebRTC fork's [decoder wrapper](https://github.com/webrtc-sdk/webrtc/blob/m144_release/sdk/android/src/jni/video_decoder_wrapper.cc), [Android decoder](https://github.com/webrtc-sdk/webrtc/blob/m144_release/sdk/android/src/java/org/webrtc/AndroidVideoDecoder.java), and [EglRenderer](https://github.com/webrtc-sdk/webrtc/blob/m144_release/sdk/android/api/org/webrtc/EglRenderer.java).

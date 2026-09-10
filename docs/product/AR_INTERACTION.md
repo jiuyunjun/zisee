@@ -5,7 +5,7 @@ version: 1.1.0
 status: Draft
 created: 2026-09-10
 updated: 2026-09-10
-applies_to: "M4/M5 产品接入；实现基线 99cf7a9"
+applies_to: "M4/M5 产品接入；实现基线 0bdaaa6"
 owners:
   - core
   - design
@@ -321,11 +321,11 @@ stateDiagram-v2
 
 ## 12. 当前实现、文档差异和拆分计划
 
-以仓库 `99cf7a9` 为阅读基线：
+以仓库 `0bdaaa6` 为阅读基线：
 
 | 已核查对象 | 当前能力 / 与本设计的差距 |
 | --- | --- |
-| [ArCallControls.kt](../../android/app/src/main/java/com/lazydoglab/zisee/ui/ArCallControls.kt) | 更多菜单已区分“开启我的现场”和“加入对方标记”，展示现场方/指导方状态并支持退出。请求对方开启、交换现场和显式仅观看仍待实现。 |
+| [ArCallControls.kt](../../android/app/src/main/java/com/lazydoglab/zisee/ui/ArCallControls.kt) | 更多菜单已区分“开启我的现场”和“加入对方标记”，展示现场方/指导方状态，支持退出、现场方全清和暂停对方标记权限。请求对方开启、交换现场和显式仅观看仍待实现。 |
 | [ActiveCall.kt](../../android/app/src/main/java/com/lazydoglab/zisee/ui/ActiveCall.kt) | 主现场支持 Pin/Arrow/Circle、撤销和确认后清除本人标记；空间点击只使用 TextureView 实际展示帧。作者编号、标记管理列表、Pointer、现场方全清和首次教学仍待实现。 |
 | [ArCollaboration.kt](../../android/app/src/main/java/com/lazydoglab/zisee/ar/collaboration/ArCollaboration.kt) | 本地/远端 session、加入握手和主叫端协调的单现场冲突收敛已接入。尚无作者权限代数、权威标记快照或重连状态同步。 |
 | [ArSessionController.kt](../../android/app/src/main/java/com/lazydoglab/zisee/ar/session/ArSessionController.kt) | 历史投影、Pin/Arrow/Circle Anchor、删除和清空已用于产品路径；无作者元数据、统一编号和批量事务语义。 |
@@ -337,8 +337,8 @@ stateDiagram-v2
 
 建议以可验证小步推进：
 
-1. **已实现基础闭环**：双端入口、加入/退出、主叫端协调的单现场收敛、可信展示帧点击、三类 Anchor 叠加、本人撤销/清除和关相机退出 AR。
-2. **下一步一致性与权限**：作者/编号、标记列表、现场方全清、对方撤权、跟踪状态同步、清空代数和加入/重连快照；完成两设备真实通话验证后再视为可发布。
+1. **已实现基础闭环**：双端入口、加入/退出、主叫端协调的单现场收敛、可信展示帧点击、三类 Anchor 叠加、本人撤销/清除、现场方全清/撤权和关相机退出 AR。
+2. **下一步一致性与权限**：作者/编号、标记列表、跟踪状态同步、清空代数和加入/重连快照；完成两设备真实通话验证后再视为可发布。
 3. **首版交互补齐**：请求对方开启、仅观看、临时指示、首次教学、明确模式切换确认、交换现场与持续压力测试。
 4. **P1 产品增强**：文字/步骤、目标找回与定格讲解。
 
@@ -357,7 +357,7 @@ stateDiagram-v2
 
 ### 1.1.0 - 2026-09-10
 
-- 同步 `99cf7a9`：实现双端加入、单现场冲突收敛、实际展示帧点击、Pin/Arrow/Circle 视频叠加及本人撤销/清除。
+- 同步 `99cf7a9` 与 `0bdaaa6`：实现双端加入、单现场冲突收敛、实际展示帧点击、Pin/Arrow/Circle 视频叠加、本人撤销/清除及现场方全清/撤权。
 - 记录尚缺的作者/编号/权限/快照/邀请能力和双设备验收边界，保留 Draft 状态。
 
 ### 1.0.0 - 2026-09-10
