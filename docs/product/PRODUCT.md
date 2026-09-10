@@ -1,10 +1,10 @@
 ---
 title: Zisee 产品定义
 document_id: PROD-001
-version: 1.0.0
+version: 1.1.0
 status: Active
 created: 2026-09-08
-updated: 2026-09-08
+updated: 2026-09-10
 applies_to: ">=0.1.0"
 owners:
   - core
@@ -446,7 +446,7 @@ PiP
 
 ## 7.4 Screen Share
 
-共享 Android 屏幕。
+共享 Android 屏幕。M3 同时建立后台持续通话、应用内迷你通话和系统画中画；用户操作其他 App 时可以继续看对方。Show Me、共享、AR 的双端布局、互斥切换与生命周期，以及共享中的定格讲解，统一见 [M3 通话多任务专项](CALL_MULTITASKING.md)。这是待实施目标，当前 APK 仍会在后台结束通话。
 
 适合：
 
@@ -1422,6 +1422,10 @@ Advanced AI
 ---
 
 # Changelog
+
+## 1.1.0 - 2026-09-10
+
+- 补充 M3 后台通话、画中画与跨功能协作专项入口，区分目标行为与现有实现。
 
 ## 1.0.0 - 2026-09-08
 
