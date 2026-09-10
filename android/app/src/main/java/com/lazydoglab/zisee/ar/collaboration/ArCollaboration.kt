@@ -14,10 +14,14 @@ data class ArCollaborationState(
     val joined: Boolean = false,
     val pendingMarkers: Int = 0,
     val lastResult: ArMessage.Result? = null,
+    val fieldPeerJoined: Boolean = false,
+    /** The call coordinator kept the peer's simultaneous field before two scenes became active. */
+    val ownershipLost: Boolean = false,
 )
 
 /** Serialized by the transport owner. An offer does not start AR or automatically accept guidance. */
-class ArCollaboration(private val send: (ArMessage) -> Boolean) {
+class ArCollaboration(private val localWinsFieldConflict: Boolean = false,
+    private val send: (ArMessage) -> Boolean) {
     private val mutable = MutableStateFlow(ArCollaborationState())
     val state = mutable.asStateFlow()
     private var local: ArFieldEndpoint? = null
@@ -36,17 +40,22 @@ class ArCollaboration(private val send: (ArMessage) -> Boolean) {
     /** Caller retains ownership on false. Attachment is the local user's explicit AR consent. */
     fun attach(endpoint: ArFieldEndpoint): Boolean {
         if (closed || local != null || endpoint.sessionId in retired) return false
+        state.value.remote?.let { remote ->
+            if (!localWinsFieldConflict) return false
+            retire(remote.sessionId)
+            mutable.value = mutable.value.copy(remote = null, joined = false, ownershipLost = false)
+        }
         if (state.value.connected && !send(ArMessage.Ready(endpoint.sessionId, endpoint.depthSupported))) return false
         local = endpoint
         peerJoined = false
-        mutable.value = mutable.value.copy(localSession = endpoint.sessionId)
+        mutable.value = mutable.value.copy(localSession = endpoint.sessionId, fieldPeerJoined = false, ownershipLost = false)
         return true
     }
 
     suspend fun detach() {
         val old = local ?: return
         local = null; peerJoined = false
-        mutable.value = mutable.value.copy(localSession = null)
+        mutable.value = mutable.value.copy(localSession = null, fieldPeerJoined = false, ownershipLost = false)
         try {
             retire(old.sessionId)
             if (state.value.connected) send(ArMessage.Ended(old.sessionId))
@@ -89,25 +98,37 @@ class ArCollaboration(private val send: (ArMessage) -> Boolean) {
         when (message) {
             is ArMessage.Ready -> {
                 if (message.sessionId in retired || message.sessionId == local?.sessionId) return
+                local?.let { field ->
+                    if (localWinsFieldConflict) return
+                    mutable.value = mutable.value.copy(remote = message, joined = false,
+                        pendingMarkers = 0, lastResult = null, ownershipLost = true)
+                    return
+                }
                 val previous = state.value.remote
                 if (previous?.sessionId == message.sessionId) return
                 previous?.let { retire(it.sessionId) }
                 if (closed) return
                 joining = null; pending.clear()
-                mutable.value = mutable.value.copy(remote = message, joined = false, pendingMarkers = 0, lastResult = null)
+                mutable.value = mutable.value.copy(remote = message, joined = false, pendingMarkers = 0,
+                    lastResult = null, ownershipLost = false)
             }
             is ArMessage.Join -> if (message.sessionId == local?.sessionId) {
                 peerJoined = send(ArMessage.Joined(message.sessionId))
+                mutable.value = mutable.value.copy(fieldPeerJoined = peerJoined)
             }
             is ArMessage.Joined -> if (message.sessionId == joining && message.sessionId == state.value.remote?.sessionId) {
                 joining = null
                 mutable.value = mutable.value.copy(joined = true)
             }
-            is ArMessage.Leave -> if (message.sessionId == local?.sessionId) peerJoined = false
+            is ArMessage.Leave -> if (message.sessionId == local?.sessionId) {
+                peerJoined = false
+                mutable.value = mutable.value.copy(fieldPeerJoined = false)
+            }
             is ArMessage.Ended -> if (message.sessionId == state.value.remote?.sessionId) {
                 retire(message.sessionId)
                 joining = null; pending.clear()
-                mutable.value = mutable.value.copy(remote = null, joined = false, pendingMarkers = 0, lastResult = null)
+                mutable.value = mutable.value.copy(remote = null, joined = false, pendingMarkers = 0,
+                    lastResult = null, ownershipLost = false)
             }
             is ArMessage.Result -> if (state.value.joined && message.sessionId == state.value.remote?.sessionId && pending.remove(message.id)) {
                 mutable.value = mutable.value.copy(pendingMarkers = pending.size, lastResult = message)

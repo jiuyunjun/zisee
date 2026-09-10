@@ -100,11 +100,18 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
     onShowMe: () -> Unit, onSwitch: () -> Unit, onSpeaker: () -> Unit, onEnd: () -> Unit,
     onHintSeen: () -> Unit = {}, onViewLayout: (Boolean, Boolean) -> Unit = { _, _ -> },
     onNoiseMode: (com.lazydoglab.zisee.rtc.audio.processing.NoiseSuppressionMode) -> Unit = {},
+    onArMarker: (com.lazydoglab.zisee.rtc.TextureViewRenderer.DisplayedArFrame,
+        com.lazydoglab.zisee.ar.annotation.VideoPoint,
+        com.lazydoglab.zisee.ar.session.MarkerKind) -> Unit = { _, _, _ -> },
+    onArUndo: () -> Unit = {},
+    onArClearOwn: () -> Unit = {},
     arControls: @Composable () -> Unit = {}) {
     var controls by remember { mutableStateOf(true) }
     var interaction by remember { mutableLongStateOf(0L) }
     var more by remember { mutableStateOf(false) }
     var stableLocalMode by remember { mutableStateOf(CameraMode.FACE) }
+    var arKind by remember { mutableStateOf(com.lazydoglab.zisee.ar.session.MarkerKind.PIN) }
+    var confirmArClear by remember { mutableStateOf(false) }
     val localMode = if (state.showMe.mode == CameraMode.STARTING) stableLocalMode else state.showMe.mode
     SideEffect { stableLocalMode = localMode }
     var chosen by remember(localMode, state.remotePresentation.mode) { mutableStateOf<String?>(null) }
@@ -168,6 +175,10 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
         BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().clickable { controls = !controls; interaction++ }) {
             val order = CallVideoLayout.sources(localMode, state.remotePresentation.mode)
             val main = CallVideoLayout.main(order, chosen)
+            val localArMarking = main == MeScene && localMode == CameraMode.AR &&
+                state.arState == com.lazydoglab.zisee.ar.session.ArSessionState.TRACKING
+            val remoteArMarking = main == PeerScene && state.remotePresentation.mode == CameraMode.AR &&
+                state.arCollaboration.joined
             val thumbs = order.filter { it != main }
             // Report the resolved main view, including the automatic Show Me choice.
             LaunchedEffect(main, state.remotePresentation.mode) {
@@ -253,7 +264,8 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
             if (MeScene in order) {
                 VideoTile(if (localMode in setOf(CameraMode.DUAL, CameraMode.AR)) state.localBack else state.local,
                     state.cameraEnabled && (MeScene == main || MeScene !in parked),
-                    slot(MeScene, video = true), MeScene != main, corner(MeScene))
+                    slot(MeScene, video = true), MeScene != main, corner(MeScene),
+                    if (localArMarking) { frame, point -> onArMarker(frame, point, arKind) } else null)
             }
             if (PeerFace in order) {
                 VideoTile(state.remote, state.remotePresentation.enabled && (PeerFace == main || PeerFace !in parked),
@@ -262,7 +274,8 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
             if (PeerScene in order) {
                 VideoTile(if (state.remotePresentation.mode in setOf(CameraMode.DUAL, CameraMode.AR)) state.remoteBack else state.remote,
                     state.remotePresentation.enabled && (PeerScene == main || PeerScene !in parked),
-                    slot(PeerScene, video = true), PeerScene != main, corner(PeerScene))
+                    slot(PeerScene, video = true), PeerScene != main, corner(PeerScene),
+                    if (remoteArMarking) { frame, point -> onArMarker(frame, point, arKind) } else null)
             }
             val mainIsPeer = main == PeerFace || main == PeerScene
             if (mainIsPeer && !state.remotePresentation.enabled) {
@@ -315,6 +328,21 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                 .border(1.dp, CallText.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
                 .padding(horizontal = 13.dp, vertical = 9.dp)) {
                 Text(tip, fontSize = 12.sp, lineHeight = 18.sp, color = CallMuted)
+            }
+            if (localArMarking || remoteArMarking) Row(Modifier.align(Alignment.BottomCenter)
+                .safeDrawingPadding().padding(bottom = 118.dp).clip(RoundedCornerShape(22.dp))
+                .background(DockInk.copy(alpha = 0.88f)).border(1.dp, CallAccent.copy(alpha = .25f), RoundedCornerShape(22.dp))
+                .padding(horizontal = 10.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                listOf(
+                    com.lazydoglab.zisee.ar.session.MarkerKind.PIN to "钉住",
+                    com.lazydoglab.zisee.ar.session.MarkerKind.ARROW to "箭头",
+                    com.lazydoglab.zisee.ar.session.MarkerKind.CIRCLE to "圈",
+                ).forEach { (kind, label) ->
+                    TextButton(onClick = { arKind = kind }, colors = ButtonDefaults.textButtonColors(
+                        contentColor = if (arKind == kind) CallAccent else CallMuted)) { Text(label) }
+                }
+                TextButton(enabled = state.arOwnMarkerCount > 0, onClick = onArUndo) { Text("撤销") }
+                TextButton(enabled = state.arOwnMarkerCount > 0, onClick = { confirmArClear = true }) { Text("清除我的") }
             }
             if (controls) {
                 Box(Modifier.fillMaxWidth().height(190.dp)
@@ -378,6 +406,11 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
             }
         }
         if (more) CallOptions(state, onDismiss = { more = false; interaction++ }, onSwitch = onSwitch, onNoiseMode = onNoiseMode, arControls = arControls)
+        if (confirmArClear) AlertDialog(onDismissRequest = { confirmArClear = false },
+            title = { Text("清除我的标记？") },
+            text = { Text("双方都将看不到你在这个现场放置的 ${state.arOwnMarkerCount} 个标记。此操作不能撤销。") },
+            dismissButton = { TextButton(onClick = { confirmArClear = false }) { Text("取消") } },
+            confirmButton = { TextButton(onClick = { confirmArClear = false; onArClearOwn() }) { Text("清除") } })
     }
 }
 
@@ -393,7 +426,7 @@ private fun CallOptions(state: CallUiState, onDismiss: () -> Unit, onSwitch: () 
             Text("通话选项", style = MaterialTheme.typography.titleMedium)
             arControls()
             TextButton(onClick = { onDismiss(); onSwitch() },
-                enabled = state.cameraEnabled && state.showMe.mode != CameraMode.STARTING,
+                enabled = state.cameraEnabled && state.showMe.mode !in setOf(CameraMode.STARTING, CameraMode.AR),
                 colors = ButtonDefaults.textButtonColors(contentColor = CallAccent)) { Text("切换前后摄像头") }
             Text("「给你看」在支持双摄的设备上同时展示人像与现场，否则改用单后摄。",
                 style = MaterialTheme.typography.bodySmall, color = CallMuted)
@@ -442,10 +475,12 @@ private fun videoAspect(feed: com.lazydoglab.zisee.rtc.VideoFeed?): Float {
 /** A camera's slot in the layout: its picture when it is live, its dark placeholder when not. */
 @Composable
 private fun VideoTile(feed: com.lazydoglab.zisee.rtc.VideoFeed?, live: Boolean, modifier: Modifier,
-    thumbnail: Boolean, corner: Dp = 0.dp) {
+    thumbnail: Boolean, corner: Dp = 0.dp,
+    onArTap: ((com.lazydoglab.zisee.rtc.TextureViewRenderer.DisplayedArFrame,
+        com.lazydoglab.zisee.ar.annotation.VideoPoint) -> Unit)? = null) {
     // The picture rounds itself inside the renderer; only the placeholder can be clipped out here,
     // because it is ordinary Compose drawing rather than a TextureView's own layer.
-    if (live && feed != null) VideoRenderer(feed, modifier, corner)
+    if (live && feed != null) VideoRenderer(feed, modifier, corner, onArTap)
     // The main tile already sits on the call surface's own background; only a thumbnail needs its
     // placeholder painted, so the base surface is not redrawn under a live full-screen picture.
     else Box(if (!thumbnail) modifier

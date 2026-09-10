@@ -34,7 +34,8 @@ import org.webrtc.*
 import org.webrtc.audio.JavaAudioDeviceModule
 
 /** One foreground call owns every native resource. All native operations use the RTC executor. */
-class NativeRtcSession(private val context: Context, private val logger: AppLogger) : RtcSession {
+class NativeRtcSession(private val context: Context, private val logger: AppLogger,
+    private val arFieldCoordinator: Boolean = false) : RtcSession {
     private val dispatcher = Executors.newSingleThreadExecutor { Thread(it, "ZiseeRtc") }.asCoroutineDispatcher()
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
     override val iceState = MutableStateFlow(IceState.NEW)
@@ -95,6 +96,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var arStarting: CompletableDeferred<Unit>? = null
     private val mutableArState = MutableStateFlow(com.lazydoglab.zisee.ar.session.ArSessionState.IDLE)
     val arState = mutableArState.asStateFlow()
+    val arCollaborationState get() = requireNotNull(arCollaboration).state
     var localFeed: VideoFeed? = null; private set
     var remoteFeed: VideoFeed? = null; private set
     private val candidates = mutableListOf<IceCandidate>()
@@ -301,8 +303,13 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             requireNotNull(requireNotNull(peer).createDataChannel(
                 com.lazydoglab.zisee.ar.annotation.ArProtocol.CHANNEL_LABEL,
                 DataChannel.Init().apply { negotiated = true; id = 2; ordered = true },
-            )), dispatcher,
+            )), dispatcher, arFieldCoordinator,
         ) { logger.error(AppEvent.AR_CHANNEL_FAILED) }
+        scope.launch {
+            requireNotNull(arCollaboration).state.collect { collaboration ->
+                if (!released && collaboration.ownershipLost && arLeaseId != null) stopAr()
+            }
+        }
         control?.registerObserver(object : DataChannel.Observer {
             override fun onBufferedAmountChange(previousAmount: Long) = Unit
             override fun onStateChange() { scope.launch {
@@ -772,6 +779,30 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
 
     suspend fun updateArGeometry(rotation: Int, width: Int, height: Int) = withContext(dispatcher) {
         arCapture?.setGeometry(rotation, width, height)
+    }
+
+    suspend fun joinRemoteAr(sessionId: java.util.UUID): Boolean =
+        arCollaboration?.join(sessionId) ?: false
+
+    suspend fun leaveRemoteAr() { arCollaboration?.leave() }
+
+    suspend fun createArMarker(identity: com.lazydoglab.zisee.ar.render.ArFrameIdentity,
+        id: java.util.UUID, kind: com.lazydoglab.zisee.ar.session.MarkerKind,
+        point: com.lazydoglab.zisee.ar.annotation.VideoPoint): Boolean {
+        val request = com.lazydoglab.zisee.ar.annotation.SpatialMarkerRequest(identity.reference, point)
+        val local = arCapture
+        return when {
+            local != null && identity.sessionId == local.sessionId -> local.createLocalMarker(id, kind, request)
+            arCollaboration?.state?.value?.remote?.sessionId == identity.sessionId ->
+                arCollaboration?.create(id, kind, request) ?: false
+            else -> false
+        }
+    }
+
+    suspend fun removeArMarker(sessionId: java.util.UUID, id: java.util.UUID): Boolean {
+        val local = arCapture
+        return if (local != null && local.sessionId == sessionId) local.removeLocalMarker(id)
+        else arCollaboration?.remove(id) ?: false
     }
 
     suspend fun stopAr() = withContext(dispatcher + kotlinx.coroutines.NonCancellable) {

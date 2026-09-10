@@ -42,11 +42,13 @@ internal fun ArCallControls(state: CallUiState, model: CallViewModel) {
     }
     val active = state.showMe.mode == CameraMode.AR || state.arState in setOf(
         ArSessionState.STARTING, ArSessionState.SCANNING, ArSessionState.TRACKING, ArSessionState.TRACKING_LOST)
-    Text("AR 现场视角")
+    val collaboration = state.arCollaboration
+    Text("AR 现场协作")
     Text(when (state.arState) {
         ArSessionState.STARTING -> "正在接管摄像头…"
         ArSessionState.SCANNING -> "缓慢移动手机，扫描现场表面。"
-        ArSessionState.TRACKING -> "AR 正在跟踪现场。远端空间标注尚未开放。"
+        ArSessionState.TRACKING -> if (collaboration.fieldPeerJoined) "我的现场可标记，对方已加入。"
+            else "我的现场可标记，等待对方加入。"
         ArSessionState.TRACKING_LOST -> "暂时失去跟踪，请增加光线并缓慢移动手机。"
         ArSessionState.FAILED -> "AR 已停止，请检查设备环境后重试。"
         else -> when (availability) {
@@ -59,20 +61,27 @@ internal fun ArCallControls(state: CallUiState, model: CallViewModel) {
     })
     if (state.arNotice.isNotBlank()) Text(state.arNotice)
     if (active) {
-        TextButton(onClick = model::stopAr) { Text("退出 AR") }
+        TextButton(onClick = model::stopAr) { Text("结束我的现场") }
+    } else if (collaboration.remote != null) {
+        Text("对方已开启现场。加入只会打开标记工具，不会启动你的 ARCore 或摄像头。")
+        if (collaboration.joined) {
+            TextButton(onClick = model::leaveRemoteAr) { Text("退出标记") }
+        } else {
+            TextButton(enabled = collaboration.connected, onClick = model::joinRemoteAr) { Text("加入对方标记") }
+        }
     } else {
         TextButton(enabled = activity != null && state.cameraEnabled && state.showMe.mode != CameraMode.STARTING &&
             availability in setOf(ArAvailability.READY, ArAvailability.INSTALL_REQUIRED),
-            onClick = { explanation = true }) { Text("开启 AR") }
+            onClick = { explanation = true }) { Text("开启我的现场") }
         if (availability in setOf(ArAvailability.UNAVAILABLE, ArAvailability.CHECKING)) {
             TextButton(onClick = {
                 ArCoreAvailability.check(context) { availability = it }
             }) { Text("重新检查") }
         }
     }
-    if (explanation) AlertDialog(onDismissRequest = { explanation = false }, title = { Text("开启 AR 现场视角") },
+    if (explanation) AlertDialog(onDismissRequest = { explanation = false }, title = { Text("开启我的 AR 现场") },
         text = { Column {
-            Text("AR 会切换到后置摄像头并将现场画面发送给通话对方；退出后恢复之前的摄像头模式。相机和运动传感器用于本机环境跟踪。")
+            Text("AR 会切换到后置摄像头并将现场画面发送给通话对方；前摄和双摄会暂停，结束后恢复。对方加入后可以共同放置标记。相机和运动传感器用于本机环境跟踪。")
             Text("此功能使用 Google 提供的 Google Play Services for AR（ARCore），其数据处理受 Google 隐私政策约束。")
             TextButton(onClick = { uri.openUri("https://policies.google.com/privacy") }) { Text("Google 隐私政策") }
             TextButton(onClick = { uri.openUri("https://developers.google.com/ar/develop/terms") }) { Text("ARCore 条款") }

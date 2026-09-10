@@ -69,7 +69,7 @@ internal object ArChannelSmoke {
                     val rawAr = peer.createDataChannel(ArProtocol.CHANNEL_LABEL,
                         DataChannel.Init().apply { negotiated = true; id = 2; ordered = true })
                     rawArChannels.add(rawAr)
-                    channels.add(ArDataChannel(rawAr, executor) { failures.incrementAndGet() })
+                    channels.add(ArDataChannel(rawAr, executor, false) { failures.incrementAndGet() })
                 }
                 controls[1].registerObserver(object : DataChannel.Observer {
                     override fun onBufferedAmountChange(previousAmount: Long) = Unit

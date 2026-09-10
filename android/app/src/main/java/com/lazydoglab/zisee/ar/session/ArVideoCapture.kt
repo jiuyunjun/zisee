@@ -48,7 +48,14 @@ class ArVideoCapture private constructor(
                         outputSize = width to height
                     }
                     val buffer = pool.capture(width, height) {
-                        backend.renderCamera(snapshot.frame, renderer, width, height)
+                        if (!backend.renderCamera(snapshot.frame, renderer, width, height)) false
+                        else {
+                            val projected = controller.markers().mapNotNull {
+                                com.lazydoglab.zisee.ar.render.MarkerProjection.project(it, snapshot.pose, snapshot.intrinsics)
+                            }
+                            renderer.drawMarkers(projected, width, height)
+                            true
+                        }
                     }
                     if (buffer != null) {
                         val tagged = com.lazydoglab.zisee.ar.render.ArTextureBuffer(buffer,
@@ -74,6 +81,19 @@ class ArVideoCapture private constructor(
     }
 
     override suspend fun execute(message: ArMessage) = endpoint.execute(message)
+
+    suspend fun createLocalMarker(id: UUID, kind: MarkerKind,
+        request: com.lazydoglab.zisee.ar.annotation.SpatialMarkerRequest): Boolean = withContext(dispatcher) {
+        controller.createMarker(sessionId, id, kind, request) is MarkerResult.Created
+    }
+
+    suspend fun removeLocalMarker(id: UUID): Boolean = withContext(dispatcher) {
+        controller.removeMarker(sessionId, id)
+    }
+
+    suspend fun clearLocalMarkers(): Boolean = withContext(dispatcher) {
+        controller.clearMarkers(sessionId)
+    }
 
     override suspend fun close() {
         if (closed) return // The drained pool may already have shut down its HandlerThread.

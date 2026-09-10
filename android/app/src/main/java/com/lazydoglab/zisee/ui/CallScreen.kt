@@ -10,6 +10,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -46,6 +47,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
@@ -89,7 +91,10 @@ fun CallScreen(state: CallUiState, model: CallViewModel) {
         ArCallGeometry(state, model)
         ActiveCall(state, model::toggleMute, model::toggleCamera, { model.toggleShowMe() },
             { model.toggleShowMe(false) }, model::toggleSpeaker, model::stop, model::dismissShowMeHint,
-            model::reportViewLayout, model::setNoiseSuppression, arControls = { ArCallControls(state, model) })
+            model::reportViewLayout, model::setNoiseSuppression,
+            { frame, point, kind -> model.createArMarker(frame, point, kind) }, model::undoArMarker,
+            model::clearOwnArMarkers,
+            arControls = { ArCallControls(state, model) })
         return
     }
     Surface(color = MaterialTheme.colorScheme.background,
@@ -259,10 +264,15 @@ private fun ControlBall(label: String, icon: String, danger: Boolean = false, ac
  * texture composites as nothing and the tile goes transparent. See [TextureViewRenderer].
  */
 @Composable
-internal fun VideoRenderer(feed: VideoFeed, modifier: Modifier, corner: Dp = 0.dp) {
+internal fun VideoRenderer(feed: VideoFeed, modifier: Modifier, corner: Dp = 0.dp,
+    onArTap: ((com.lazydoglab.zisee.rtc.TextureViewRenderer.DisplayedArFrame,
+        com.lazydoglab.zisee.ar.annotation.VideoPoint) -> Unit)? = null) {
     androidx.compose.runtime.key(feed) {
         val geometry by feed.geometry.collectAsState()
         val cornerPx = with(androidx.compose.ui.platform.LocalDensity.current) { corner.toPx() }
+        var renderer by remember(feed) { mutableStateOf<com.lazydoglab.zisee.rtc.TextureViewRenderer?>(null) }
+        val displayedState = renderer?.displayedArFrame
+        val displayed = if (displayedState != null) displayedState.collectAsState().value else null
         // The call surface supplies the bars behind a tile smaller than its box.
         BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
             // Compose imposes EXACT dimensions, so size the surface to the upright frame itself
@@ -270,10 +280,24 @@ internal fun VideoRenderer(feed: VideoFeed, modifier: Modifier, corner: Dp = 0.d
             val aspect = geometry?.aspectRatio ?: (maxWidth.value / maxHeight.value.coerceAtLeast(1f))
             val width = minOf(maxWidth, maxHeight * aspect)
             val height = minOf(maxHeight, width / aspect.coerceAtLeast(0.001f))
-            AndroidView(factory = { context -> TextureViewRenderer(context).also { feed.attach(it) } },
+            AndroidView(factory = { context -> TextureViewRenderer(context).also { renderer = it; feed.attach(it) } },
                 modifier = Modifier.size(width, height),
                 update = { it.cornerRadius = cornerPx },
-                onRelease = { feed.detach(it) })
+                onRelease = { feed.detach(it); if (renderer === it) renderer = null })
+            if (onArTap != null && displayed != null) {
+                val density = androidx.compose.ui.platform.LocalDensity.current
+                val viewportWidth = with(density) { width.toPx() }
+                val viewportHeight = with(density) { height.toPx() }
+                Box(Modifier.size(width, height).pointerInput(displayed, viewportWidth, viewportHeight) {
+                    detectTapGestures { offset ->
+                        val point = com.lazydoglab.zisee.ar.annotation.VideoPointMapper.fromViewport(
+                            offset.x, offset.y, viewportWidth, viewportHeight,
+                            displayed.geometry, displayed.mirrored,
+                            com.lazydoglab.zisee.ar.annotation.VideoPointMapper.Scale.FIT)
+                        if (point != null) onArTap(displayed, point)
+                    }
+                }.semantics { contentDescription = "AR 现场，可轻点放置所选标记" })
+            }
         }
     }
 }

@@ -17,6 +17,7 @@ import java.util.UUID
 class ArDataChannel(
     private val channel: DataChannel,
     private val dispatcher: CoroutineDispatcher,
+    localWinsFieldConflict: Boolean,
     private val onFailure: () -> Unit,
 ) {
     private sealed interface Input {
@@ -29,7 +30,7 @@ class ArDataChannel(
     private val budget = ArReceiveBudget()
     @Volatile private var stopping = false
     @Volatile private var failed = false
-    private val collaboration = ArCollaboration(::send)
+    private val collaboration = ArCollaboration(localWinsFieldConflict, ::send)
     val state = collaboration.state
 
     private fun send(message: ArMessage): Boolean {

@@ -58,6 +58,9 @@ data class CallUiState(
     val speakerOn: Boolean = true, val showMeHint: Boolean = false,
     val arState: com.lazydoglab.zisee.ar.session.ArSessionState = com.lazydoglab.zisee.ar.session.ArSessionState.IDLE,
     val arNotice: String = "",
+    val arCollaboration: com.lazydoglab.zisee.ar.collaboration.ArCollaborationState =
+        com.lazydoglab.zisee.ar.collaboration.ArCollaborationState(),
+    val arOwnMarkerCount: Int = 0,
     val remotePresentation: com.lazydoglab.zisee.rtc.CameraPresentation = com.lazydoglab.zisee.rtc.CameraPresentation(com.lazydoglab.zisee.rtc.CameraMode.FACE, true),
 )
 
@@ -73,6 +76,8 @@ class CallViewModel(application: Application, private val container: AppContaine
     private var idleJob: Job? = null
     private var cameraJob: Job? = null
     private val arActivation = com.lazydoglab.zisee.ar.session.ArActivationGate()
+    private val arOwnMarkers = ArrayDeque<Pair<java.util.UUID, java.util.UUID>>()
+    private var lastArResult: Pair<java.util.UUID, java.util.UUID>? = null
     private val removals = Channel<String>(4)
     private var showMeHintSeen = true
 
@@ -179,7 +184,8 @@ class CallViewModel(application: Application, private val container: AppContaine
     }
 
     fun beginArRequest(): Long? {
-        if (!foreground || rtc == null || !state.value.cameraEnabled || cameraJob?.isActive == true) return null
+        if (!foreground || rtc == null || !state.value.cameraEnabled || cameraJob?.isActive == true ||
+            state.value.arCollaboration.remote != null) return null
         return arActivation.begin()
     }
 
@@ -217,6 +223,57 @@ class CallViewModel(application: Application, private val container: AppContaine
                 container.logger.error(AppEvent.AR_CHANNEL_FAILED)
                 if (rtc === media) { arNotice("AR 显示方向更新失败，已退出 AR。"); stopAr() }
             }
+        }
+    }
+
+    fun joinRemoteAr() {
+        val media = rtc ?: return
+        val session = state.value.arCollaboration.remote?.sessionId ?: return
+        viewModelScope.launch {
+            if (!media.joinRemoteAr(session) && rtc === media) arNotice("暂时无法加入对方现场，请重试。")
+        }
+    }
+
+    fun leaveRemoteAr() {
+        val media = rtc ?: return
+        viewModelScope.launch { media.leaveRemoteAr() }
+    }
+
+    fun createArMarker(frame: com.lazydoglab.zisee.rtc.TextureViewRenderer.DisplayedArFrame,
+        point: com.lazydoglab.zisee.ar.annotation.VideoPoint,
+        kind: com.lazydoglab.zisee.ar.session.MarkerKind = com.lazydoglab.zisee.ar.session.MarkerKind.PIN) {
+        val media = rtc ?: return
+        val id = java.util.UUID.randomUUID()
+        val remote = state.value.arCollaboration.remote?.sessionId == frame.identity.sessionId
+        viewModelScope.launch {
+            if (media.createArMarker(frame.identity, id, kind, point) && rtc === media) {
+                arOwnMarkers.addLast(frame.identity.sessionId to id)
+                mutable.update { it.copy(arOwnMarkerCount = arOwnMarkers.size,
+                    arNotice = if (remote) "正在确认标记…" else "标记已确认。") }
+            } else if (rtc === media) arNotice("暂时无法固定在这里，请让画面对准表面后重试。")
+        }
+    }
+
+    fun undoArMarker() {
+        val media = rtc ?: return
+        val marker = arOwnMarkers.removeLastOrNull() ?: return
+        mutable.update { it.copy(arOwnMarkerCount = arOwnMarkers.size) }
+        viewModelScope.launch {
+            if (!media.removeArMarker(marker.first, marker.second) && rtc === media)
+                arNotice("这个标记已不存在或现场已经变化。")
+        }
+    }
+
+    fun clearOwnArMarkers() {
+        val current = rtc ?: return
+        val markers = arOwnMarkers.toList()
+        if (markers.isEmpty()) return
+        arOwnMarkers.clear()
+        mutable.update { it.copy(arOwnMarkerCount = 0) }
+        viewModelScope.launch {
+            var complete = true
+            markers.forEach { (session, id) -> if (!current.removeArMarker(session, id)) complete = false }
+            if (!complete && rtc === current) arNotice("部分标记已不在当前现场，其余标记已清除。")
         }
     }
     fun toggleSpeaker() {
@@ -267,6 +324,7 @@ class CallViewModel(application: Application, private val container: AppContaine
         val enabled = !mutable.value.cameraEnabled
         viewModelScope.launch {
             try {
+                if (!enabled && mutable.value.showMe.mode == com.lazydoglab.zisee.rtc.CameraMode.AR) current.stopAr()
                 current.setTrackEnabled(com.lazydoglab.zisee.media.MediaTrack.FRONT_CAMERA, enabled)
                 if (rtc === current) mutable.update { it.copy(cameraEnabled = enabled) }
             } catch (error: CancellationException) { throw error }
@@ -404,7 +462,8 @@ class CallViewModel(application: Application, private val container: AppContaine
                                     // Relay credentials are short lived, so fetch them per call rather
                                     // than at login. Losing TURN degrades to direct-only, never fatal here.
                                     val ice = iceServers(session)
-                                    val media = NativeRtcSession(getApplication<Application>(), container.logger)
+                                    val media = NativeRtcSession(getApplication<Application>(), container.logger,
+                                        current.caller == identity.identityId)
                                     rtc = media // Assign before start so partial initialization is always released.
                                     media.start(ice)
                                     candidateObservation = launch {
@@ -431,11 +490,40 @@ class CallViewModel(application: Application, private val container: AppContaine
                                             }
                                     }
                                     cameraObservation = launch {
-                                        combine(media.showMe, media.remotePresentation, media.arState) { local, remote, ar -> Triple(local, remote, ar) }.collect { (local, remote, ar) ->
+                                        combine(media.showMe, media.remotePresentation, media.arState,
+                                            media.arCollaborationState) { local, remote, ar, collaboration ->
+                                            arrayOf(local, remote, ar, collaboration)
+                                        }.collect { values ->
+                                            val local = values[0] as com.lazydoglab.zisee.rtc.ShowMeState
+                                            val remote = values[1] as com.lazydoglab.zisee.rtc.CameraPresentation
+                                            val ar = values[2] as com.lazydoglab.zisee.ar.session.ArSessionState
+                                            val collaboration = values[3] as com.lazydoglab.zisee.ar.collaboration.ArCollaborationState
                                             // The hint explains swapping the main view, so it waits for a
                                             // second remote view to actually exist.
                                             val hint = !showMeHintSeen && remote.mode == com.lazydoglab.zisee.rtc.CameraMode.DUAL
-                                            mutable.update { it.copy(showMe = local, remotePresentation = remote, showMeHint = it.showMeHint || hint, arState = ar) }
+                                            val validSessions = setOfNotNull(collaboration.localSession, collaboration.remote?.sessionId)
+                                            if (arOwnMarkers.any { it.first !in validSessions }) {
+                                                arOwnMarkers.removeAll { it.first !in validSessions }
+                                            }
+                                            collaboration.lastResult?.let { result ->
+                                                val key = result.sessionId to result.id
+                                                if (lastArResult != key) {
+                                                    lastArResult = key
+                                                    if (result.rejection != null) arOwnMarkers.remove(key)
+                                                    arNotice(if (result.rejection == null) "标记已确认。" else when (result.rejection) {
+                                                        com.lazydoglab.zisee.ar.spatial.SpatialRejection.TRACKING_UNAVAILABLE ->
+                                                            "对方正在重新识别环境，请稍后再试。"
+                                                        com.lazydoglab.zisee.ar.spatial.SpatialRejection.FRAME_MISSING ->
+                                                            "画面已变化，请重新点选。"
+                                                        com.lazydoglab.zisee.ar.spatial.SpatialRejection.LIMIT_REACHED ->
+                                                            "标记已满，请先清除一些。"
+                                                        else -> "暂时无法固定在这里，请换个位置后重试。"
+                                                    })
+                                                }
+                                            }
+                                            mutable.update { it.copy(showMe = local, remotePresentation = remote,
+                                                showMeHint = it.showMeHint || hint, arState = ar,
+                                                arCollaboration = collaboration, arOwnMarkerCount = arOwnMarkers.size) }
                                         }
                                     }
                                     mutable.update { it.copy(local = media.localFeed, remote = media.remoteFeed, localBack = media.localBackFeed, remoteBack = media.remoteBackFeed) }
@@ -511,8 +599,12 @@ class CallViewModel(application: Application, private val container: AppContaine
                     mediaObservation?.cancelAndJoin()
                     arActivation.invalidate()
                     val media = rtc; rtc = null
+                    arOwnMarkers.clear()
+                    lastArResult = null
                     mutable.update { it.copy(local = null, remote = null, localBack = null, remoteBack = null, invite = "",
-                        arState = com.lazydoglab.zisee.ar.session.ArSessionState.IDLE, arNotice = "") }
+                        arState = com.lazydoglab.zisee.ar.session.ArSessionState.IDLE, arNotice = "",
+                        arCollaboration = com.lazydoglab.zisee.ar.collaboration.ArCollaborationState(),
+                        arOwnMarkerCount = 0) }
                     try { media?.release() } catch (error: Exception) { container.logger.error(AppEvent.RTC_RELEASE_FAILED) }
                     val token = session
                     if (token != null) {

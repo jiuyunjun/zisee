@@ -141,6 +141,34 @@ class ArCollaborationTest {
         assertFalse(local.attach(Field(UUID.randomUUID())))
     }
 
+    @Test fun `simultaneous fields keep the call coordinators scene`() = runBlocking {
+        val low = UUID.fromString("00000000-0000-0000-0000-000000000001")
+        val high = UUID.fromString("00000000-0000-0000-0000-000000000002")
+        val lowSide = ArCollaboration(true) { true }
+        val highSide = ArCollaboration(false) { true }
+        lowSide.connected(); highSide.connected()
+        assertTrue(lowSide.attach(Field(low)))
+        assertTrue(highSide.attach(Field(high)))
+        lowSide.receive(ArMessage.Ready(high, true))
+        highSide.receive(ArMessage.Ready(low, true))
+        assertNull(lowSide.state.value.remote)
+        assertFalse(lowSide.state.value.ownershipLost)
+        assertEquals(low, highSide.state.value.remote?.sessionId)
+        assertTrue(highSide.state.value.ownershipLost)
+        lowSide.close(); highSide.close()
+    }
+
+    @Test fun `non coordinator cannot attach over a remote scene`() = runBlocking {
+        val low = UUID.fromString("00000000-0000-0000-0000-000000000001")
+        val high = UUID.fromString("00000000-0000-0000-0000-000000000002")
+        val collaboration = ArCollaboration(false) { true }
+        collaboration.connected()
+        collaboration.receive(ArMessage.Ready(low, true))
+        assertFalse(collaboration.attach(Field(high)))
+        assertEquals(low, collaboration.state.value.remote?.sessionId)
+        collaboration.close()
+    }
+
     @Test fun `session lifecycle messages round trip and reject extra fields`() {
         listOf(ArMessage.Join(epoch), ArMessage.Joined(epoch), ArMessage.Leave(epoch), ArMessage.Ended(epoch)).forEach {
             assertEquals(ArDecodeResult.Message(it), ArProtocol.decode(ArProtocol.encode(it)))

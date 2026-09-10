@@ -8,6 +8,13 @@ import android.opengl.GLES20
 import android.view.Surface
 import com.lazydoglab.zisee.ar.render.ArCameraRenderer
 import com.lazydoglab.zisee.ar.render.CameraTextureMapping
+import com.lazydoglab.zisee.ar.render.ProjectedMarker
+import com.lazydoglab.zisee.ar.annotation.VideoPoint
+import com.lazydoglab.zisee.ar.session.MarkerKind
+import com.lazydoglab.zisee.ar.session.SpatialMarker
+import com.lazydoglab.zisee.ar.spatial.ArTracking
+import com.lazydoglab.zisee.ar.spatial.Vec3
+import com.lazydoglab.zisee.ar.spatial.WorldPose
 import org.webrtc.EglBase
 import org.webrtc.GlUtil
 import java.nio.ByteBuffer
@@ -56,6 +63,15 @@ internal object ArCameraRenderSmoke {
                             val want = listOf(Color.red(expected), Color.green(expected), Color.blue(expected))
                             check(actual.zip(want).all { (a, b) -> kotlin.math.abs(a - b) < 8 })
                         }
+                        val pin = SpatialMarker(java.util.UUID.randomUUID(), MarkerKind.PIN,
+                            WorldPose(Vec3(0f, 0f, -1f)), ArTracking.TRACKING)
+                        renderer.drawMarkers(listOf(ProjectedMarker(pin, VideoPoint(.5f, .5f))), 32, 32)
+                        GlUtil.checkNoGLES2Error("AR marker draw")
+                        pixels.clear()
+                        GLES20.glReadPixels(0, 0, 32, 32, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, pixels)
+                        val centre = ((16 * 32 + 16) * 4)
+                        val cyan = (0..2).map { pixels.get(centre + it).toInt() and 255 }
+                        check(cyan[0] in 80..120 && cyan[1] > 190 && cyan[2] > 190)
                     }
                 } finally { surface.release() }
             } finally {

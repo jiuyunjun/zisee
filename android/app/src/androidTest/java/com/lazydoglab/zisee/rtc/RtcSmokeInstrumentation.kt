@@ -17,6 +17,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.flow.first
 import org.webrtc.*
 
 /** Explicit local media smoke, no account/server/TURN or extra test dependency required. */
@@ -95,7 +96,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
             }
             if (arCameraRender) {
                 ArCameraRenderSmoke.run()
-                output.putString("stream", "PASS: synthetic OES camera GPU rendering and CPU-image corner orientation; no ARCore camera validation\n")
+                output.putString("stream", "PASS: synthetic OES camera GPU rendering, marker overlay and CPU-image corner orientation; no ARCore camera validation\n")
                 finish(Activity.RESULT_OK, output)
                 return
             }
@@ -275,7 +276,9 @@ class RtcSmokeInstrumentation : Instrumentation() {
                 while (true) session.addRemoteCandidate(candidates.poll() ?: break)
                 delay(100)
             }
-            check(session.iceState.value == IceState.CONNECTED)
+            output.putString("arIceStateBeforeWait", session.iceState.value.name)
+            // Frame delivery can beat the StateFlow assignment posted by the native ICE callback.
+            withTimeout(2_000) { session.iceState.first { it == IceState.CONNECTED } }
             check(AppEvent.RTC_QUALITY_CHANGED in events && AppEvent.RTC_QUALITY_REJECTED !in events)
             expectedQuality?.let { check(session.mediaStats.value.quality.name == it) }
             check(session.mediaStats.value.audioProcessing.fallback != com.lazydoglab.zisee.rtc.audio.processing.AudioFallback.FORMAT)
