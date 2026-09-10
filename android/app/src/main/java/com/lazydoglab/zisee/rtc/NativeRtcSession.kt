@@ -163,6 +163,30 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var videoSender: RtpSender? = null
     private var qualityPolicy = VideoQualityPolicy(false)
     private var appliedQuality: VideoQuality? = null
+    // VIDEO_ADAPTATION.md §12.3: read once per call. OFF runs none of the code below; SHADOW runs
+    // cameraPolicy alongside the old path and only logs; ACTIVE lets cameraPolicy write senders and
+    // makes applyQuality/thumbnail early-return so only one path ever touches a camera sender.
+    private val adaptationMode = VideoAdaptationMode.parse(BuildConfig.VIDEO_ADAPTATION)
+    private var cameraPolicy = CameraAdaptationPolicy(false)
+    private var appliedCameraRevision = -1
+    /** Set once an ACTIVE setParameters call is rejected; from then on this call falls back to the
+     * old path for good, exactly like [adaptationEnabled] does for it. */
+    private var cameraActiveFallback = false
+    private var appliedMainCamera: TrackPlan? = null
+    private var appliedAuxCamera: TrackPlan? = null
+    /** The (front-is-main, dual-is-active) pair the last camera write assumed. Any change means
+     * "main"/"aux" now name different senders (or capture is single vs. dual), so the cached
+     * [appliedMainCamera]/[appliedAuxCamera] must not be trusted to decide whether a write is a
+     * no-op. */
+    private var cameraMappingFrontIsMain: Boolean? = null
+    private var cameraMappingDual: Boolean? = null
+    /** Width/height/fps last actually passed to the single camera's startCapture/changeCaptureFormat
+     * — the real HAL state, unlike [appliedMainCamera] which is only this session's bookkeeping and
+     * gets cleared on every force=true reapply. A forced event-path reapply (swap, restart,
+     * handover, audio-mode transition, startup) must still skip changeCaptureFormat when the plan's
+     * dimensions already match what the capturer is running, or it reconfigures the HAL every time
+     * one of those events fires even though nothing about the picture actually changed. */
+    private var captureFormat: Triple<Int, Int, Int>? = null
     /** How the peer says it is showing this device's cameras, and what was last encoded for it. */
     private var remoteView = ViewRequest.Default
     private var appliedView: ViewRequest? = null
@@ -295,6 +319,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             showMe.value = ShowMeState(CameraMode.BACK_ONLY, "此设备仅有后摄")
         }
         qualityPolicy = VideoQualityPolicy(supportsFullHd, preferFullHd = true, supports60 = supports60)
+        cameraPolicy = CameraAdaptationPolicy(supportsFullHd, preferFullHd = true, supports60 = supports60)
         localFeed = VideoFeed(shared, enumerator.isFrontFacing(name))
         remoteFeed = VideoFeed(shared, false) {
             logger.info(AppEvent.RTC_FIRST_FRAME_MS, ((System.nanoTime() - startedNanos) / 1_000_000).toString())
@@ -401,6 +426,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         // Open the supported quality ceiling immediately; native congestion control adapts output.
         val initialQuality = qualityPolicy.current.quality
         requireNotNull(camera).startCapture(initialQuality.width, initialQuality.height, initialQuality.fps)
+        captureFormat = Triple(initialQuality.width, initialQuality.height, initialQuality.fps)
         startedNanos = System.nanoTime()
         applyQuality(qualityPolicy.current, changeCapture = false)
         statsJob = scope.launch {
@@ -412,8 +438,19 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 try {
                     val thermal = if (Build.VERSION.SDK_INT >= 29) powerManager.currentThermalStatus else null
                     // Thermal protection must keep running even when RTCStats is unavailable.
-                    if ((thermal ?: 0) >= 3 && !changingCamera)
-                        applyQuality(QualityDecision(VideoQuality.ECONOMY, QualityReason.THERMAL))
+                    if ((thermal ?: 0) >= 3 && !changingCamera) {
+                        // §12.3: force cameraPolicy's own plan to C0 first (SHADOW logs it, ACTIVE's
+                        // applyQuality branch below then applies exactly that plan) — this fast lane
+                        // cannot wait for a stats sample that may never arrive.
+                        val severePlan = if (adaptationMode != VideoAdaptationMode.OFF)
+                            cameraPolicy.severe(System.nanoTime() / 1_000_000, CameraAdaptationReason.THERMAL)
+                                .also { logCameraPlanIfChanged(it) } else null
+                        // Runs every tick while hot: ACTIVE must not force-rewrite (and restart capture)
+                        // each second, so it applies the unchanged C0 plan through the normal diff.
+                        if (severePlan != null && adaptationMode == VideoAdaptationMode.ACTIVE && !cameraActiveFallback)
+                            applyCameraPlan(severePlan)
+                        else applyQuality(QualityDecision(VideoQuality.ECONOMY, QualityReason.THERMAL))
+                    }
                     audioProcessing.setThermal(thermal ?: 0)
                     val result = stats()
                     val observed = result.copy(thermalStatus = thermal)
@@ -421,7 +458,21 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                     if (iceState.value == IceState.CONNECTED && videoTrack?.enabled() == true && adaptationEnabled && !changingCamera &&
                         audioBandwidth.mode != com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.AUDIO_ONLY &&
                         audioBandwidth.mode != com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.VIDEO_PROBE) {
-                        applyQuality(qualityPolicy.update(observed, System.nanoTime() / 1_000_000))
+                        // qualityPolicy keeps running every tick regardless of mode — its state is
+                        // the ACTIVE fallback target and the SHADOW/ACTIVE log comparison — but in
+                        // ACTIVE (and not yet fallen back) applying its decision every second is
+                        // exactly the old writer this switch exists to replace; cameraPolicy's own
+                        // per-sample plan (below) is what actually reaches the sender.
+                        val decision = qualityPolicy.update(observed, System.nanoTime() / 1_000_000)
+                        if (!(adaptationMode == VideoAdaptationMode.ACTIVE && !cameraActiveFallback)) applyQuality(decision)
+                    }
+                    // VIDEO_ADAPTATION.md §12.3: OFF runs none of this. SHADOW/ACTIVE mirror the old
+                    // path's guards exactly (probe/audio-only/AR/screen keep camera senders alone).
+                    if (adaptationMode != VideoAdaptationMode.OFF && iceState.value == IceState.CONNECTED &&
+                        videoTrack?.enabled() == true && !changingCamera && !screenSharing && arLeaseId == null &&
+                        audioBandwidth.mode != com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.AUDIO_ONLY &&
+                        audioBandwidth.mode != com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.VIDEO_PROBE) {
+                        runCameraAdaptation(cameraPolicy.update(cameraAdaptationInput(observed, System.nanoTime() / 1_000_000)))
                     }
                     if (iceState.value == IceState.CONNECTED && !changingCamera) applyAudioBandwidth(observed)
                     if (iceState.value == IceState.CONNECTED && screenSharing && screenAdaptationEnabled) {
@@ -657,6 +708,10 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                     lastRouteChangeMs?.let { result.sampledAtMs - it <= HANDOVER_WINDOW_MS } == true
                 if (handingOver) {
                     qualityPolicy.routeChanged(result.sampledAtMs)
+                    if (adaptationMode != VideoAdaptationMode.OFF) {
+                        cameraPolicy.routeChanged(result.sampledAtMs)
+                        if (adaptationMode == VideoAdaptationMode.ACTIVE) applyCameraPlan(cameraPolicy.lastPlan)
+                    }
                     seedBitrate(result.sampledAtMs)
                     // Push the smaller frame out now rather than a tick later, and without
                     // restarting the camera: this key frame is the one the viewer is waiting on.
@@ -740,6 +795,16 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     }
 
     private fun applyQuality(decision: QualityDecision, changeCapture: Boolean = true) {
+        // VIDEO_ADAPTATION.md §12.3: ACTIVE means the new applier owns camera senders. Every old
+        // trigger that calls applyQuality — startup, a remoteView main/aux swap, the AUDIO_ONLY
+        // transition, camera restart/share end/AR end, a handover — still lands here, so route all
+        // of them to the new applier's current plan instead of writing nothing. force=true because
+        // any of those triggers may have just changed which sender is main/aux, or restarted
+        // capture, making the applier's own "nothing changed" cache stale.
+        if (adaptationMode == VideoAdaptationMode.ACTIVE && !cameraActiveFallback) {
+            applyCameraPlan(cameraPolicy.lastPlan, force = true)
+            return
+        }
         if (arLeaseId != null) return // AR preserves the full image; sender congestion control remains active.
         // With every camera paused this would adapt a dead sender; the screen has its own encoding.
         if (screenSharing) return
@@ -776,8 +841,11 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 videoSource?.adaptOutputFormat(640, 360, 15)
             } else {
                 videoSource?.adaptOutputFormat(decision.quality.width, decision.quality.height, decision.quality.fps)
-                if (changeCapture) requireNotNull(camera).changeCaptureFormat(
-                    decision.quality.width, decision.quality.height, decision.quality.fps)
+                if (changeCapture) {
+                    requireNotNull(camera).changeCaptureFormat(
+                        decision.quality.width, decision.quality.height, decision.quality.fps)
+                    captureFormat = Triple(decision.quality.width, decision.quality.height, decision.quality.fps)
+                }
             }
             appliedQuality = decision.quality
             appliedView = remoteView
@@ -786,6 +854,108 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             // Native defaults remain usable if an OEM rejects parameter changes.
             adaptationEnabled = false
             logger.error(AppEvent.RTC_QUALITY_REJECTED)
+        }
+    }
+
+    /** Which physical camera is "main" mirrors [applyQuality]'s own frontIsMain choice, so SHADOW's
+     * plan and ACTIVE's writes always describe the same sender the old path would have touched. */
+    private fun cameraAdaptationInput(stats: MediaStats, nowMs: Long): CameraAdaptationInput {
+        val frontIsMain = dualCapture != null && remoteView.front == ViewSize.LARGE && remoteView.back == ViewSize.SMALL
+        val mainId = if (dualCapture == null || frontIsMain) "video_front" else "video_back"
+        val auxId = if (dualCapture != null) (if (frontIsMain) "video_back" else "video_front") else null
+        fun observation(id: String?) = stats.outboundVideo[id]?.let {
+            CameraTrackObservation(it.encodeMs, it.sendDelayMs, it.outboundLoss, it.outboundReportFresh,
+                it.qualityLimitation, it.retransmittedKbps)
+        } ?: CameraTrackObservation()
+        return CameraAdaptationInput(nowMs, stats.availableOutgoingKbps, stats.thermalStatus, observation(mainId),
+            auxId?.let { observation(it) }, mainViewedSmall = dualCapture == null && remoteView.front == ViewSize.SMALL)
+    }
+
+    /** Logs a changed plan (SHADOW and ACTIVE both want this, including the severe-thermal fast
+     * lane), keyed on [CameraPlan.revision] so an unchanged plan never repeats the line. */
+    private fun logCameraPlanIfChanged(plan: CameraPlan) {
+        if (plan.revision == appliedCameraRevision) return
+        appliedCameraRevision = plan.revision
+        val aux = plan.aux?.let { "${it.tier}/${it.maxBitrateBps / 1_000}k" } ?: "-"
+        logger.info(AppEvent.RTC_ADAPTATION_PLAN,
+            "mode=${adaptationMode.name} main=${plan.main.tier}/${plan.main.maxBitrateBps / 1_000}k aux=$aux " +
+                // appliedQuality is the old writer's applied-cache and stays null for the whole
+                // call in ACTIVE (it never writes); qualityPolicy.current is kept running every
+                // tick specifically so this comparison field is meaningful in every mode.
+                "reason=${plan.reason.name} pool=${plan.poolKbps} bwe=${plan.bweKbps ?: -1} old=${qualityPolicy.current.quality.name}")
+    }
+
+    /** SHADOW: log a changed plan only, never touch a sender. ACTIVE: write the plan; on rejection
+     * fall back to the old path for the rest of this call, exactly as [adaptationEnabled] does. */
+    private fun runCameraAdaptation(plan: CameraPlan) {
+        logCameraPlanIfChanged(plan)
+        if (adaptationMode == VideoAdaptationMode.ACTIVE) applyCameraPlan(plan)
+    }
+
+    /** [force] means "do not trust what was last applied" — the sender mapping or capture device
+     * may have just changed (startup, a remoteView swap, camera restart/share end/AR end, a
+     * handover), so both tracks are rewritten and, for the single-camera path, [CameraVideoCapturer]
+     * is told to reformat even if the tier's dimensions happen to match the stale cache. */
+    private fun applyCameraPlan(plan: CameraPlan, force: Boolean = false) {
+        if (cameraActiveFallback) return
+        // Same skip conditions as applyQuality/thumbnail: a dead or foreign sender must not be adapted.
+        if (arLeaseId != null) return
+        if (screenSharing) return
+        if (audioBandwidth.mode == com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.VIDEO_PROBE ||
+            audioBandwidth.mode == com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.AUDIO_ONLY) return
+        val frontIsMain = dualCapture != null && remoteView.front == ViewSize.LARGE && remoteView.back == ViewSize.SMALL
+        val dualActive = dualCapture != null
+        // "main"/"aux" now name different senders (or single vs. dual capture changed): the cached
+        // applied plans describe a sender this call is no longer about to write.
+        if (force || frontIsMain != cameraMappingFrontIsMain || dualActive != cameraMappingDual) {
+            appliedMainCamera = null; appliedAuxCamera = null
+            cameraMappingFrontIsMain = frontIsMain; cameraMappingDual = dualActive
+        }
+        val mainSender = (if (dualCapture == null || frontIsMain) videoSender else backSender) ?: return
+        val mainSource = if (dualCapture == null || frontIsMain) videoSource else backSource
+        val auxSender = if (dualCapture != null) (if (frontIsMain) backSender else videoSender) else null
+        val auxSource = if (dualCapture != null) (if (frontIsMain) backSource else videoSource) else null
+
+        fun write(sender: RtpSender, track: TrackPlan): Boolean {
+            val parameters = sender.parameters
+            if (parameters.encodings.isEmpty()) return true // Retry once negotiation produces encodings.
+            parameters.degradationPreference = RtpParameters.DegradationPreference.BALANCED
+            parameters.encodings.forEach {
+                it.maxBitrateBps = track.maxBitrateBps; it.maxFramerate = track.fps; it.minBitrateBps = null
+            }
+            return sender.setParameters(parameters)
+        }
+        fun fallback() {
+            cameraActiveFallback = true
+            logger.error(AppEvent.RTC_QUALITY_REJECTED)
+            appliedQuality = null
+            applyQuality(qualityPolicy.current, changeCapture = false)
+        }
+        try {
+            // §8: lower whichever sender is giving up budget first, then raise the other — never
+            // both drawing their old ceilings for a transition instant.
+            val loweringMain = plan.main.maxBitrateBps < (appliedMainCamera?.maxBitrateBps ?: Int.MAX_VALUE)
+            for (isMain in if (loweringMain || auxSender == null) listOf(true, false) else listOf(false, true)) {
+                val sender = if (isMain) mainSender else auxSender ?: continue
+                val track = if (isMain) plan.main else plan.aux ?: continue
+                if (!write(sender, track)) { fallback(); return }
+                if (isMain) {
+                    mainSource?.adaptOutputFormat(track.width, track.height, track.fps)
+                    // Compare against the format actually last given to the capturer, not the
+                    // applied-plan cache: force=true clears that cache on every event-path reapply
+                    // (swap, restart, handover, audio-mode transition, startup), and a per-second
+                    // "nothing changed" reapply must not reconfigure the HAL every tick either.
+                    val target = Triple(track.width, track.height, track.fps)
+                    if (dualCapture == null && captureFormat != target) {
+                        requireNotNull(camera).changeCaptureFormat(track.width, track.height, track.fps)
+                        captureFormat = target
+                    }
+                } else auxSource?.adaptOutputFormat(track.width, track.height, track.fps)
+            }
+            appliedMainCamera = plan.main
+            appliedAuxCamera = plan.aux
+        } catch (error: Exception) {
+            fallback()
         }
     }
 
@@ -993,7 +1163,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 dual.start(requireNotNull(videoSource), requireNotNull(backSource))
                 dual.setTargetRotation(deviceOrientation.rotation)
                 backTrack?.setEnabled(true)
-            } else requireNotNull(camera).startCapture(1280, 720, 30)
+            } else { requireNotNull(camera).startCapture(1280, 720, 30); captureFormat = Triple(1280, 720, 30) }
             presentationMode = previous
             videoTrack?.setEnabled(true)
             showMe.value = ShowMeState(previous)
@@ -1180,7 +1350,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 dual.start(requireNotNull(videoSource), requireNotNull(backSource))
                 dual.setTargetRotation(deviceOrientation.rotation)
                 backTrack?.setEnabled(cameraEnabled)
-            } else requireNotNull(camera).startCapture(1280, 720, 30)
+            } else { requireNotNull(camera).startCapture(1280, 720, 30); captureFormat = Triple(1280, 720, 30) }
             presentationMode = previous
             videoTrack?.setEnabled(cameraEnabled)
             showMe.value = ShowMeState(previous)
@@ -1213,7 +1383,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 backTrack?.setEnabled(false)
                 videoSource?.adaptOutputFormat(1920, 1080, 30)
                 if (presentationMode == CameraMode.BACK_ONLY) switchSingle(requireNotNull(frontName))
-                else requireNotNull(camera).startCapture(1280, 720, 30)
+                else { requireNotNull(camera).startCapture(1280, 720, 30); captureFormat = Triple(1280, 720, 30) }
                 localFeed?.setMirrored(true)
                 qualityPolicy = VideoQualityPolicy(frontSupportsFullHd, preferFullHd = true, supports60 = frontSupports60)
                 presentationMode = CameraMode.FACE
@@ -1252,7 +1422,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 if (!started) {
                     logger.info(AppEvent.RTC_SHOW_ME_FALLBACK, fallback)
                     dual.close(); dualCapture = null
-                    if (stopped) requireNotNull(camera).startCapture(1280, 720, 30)
+                    if (stopped) { requireNotNull(camera).startCapture(1280, 720, 30); captureFormat = Triple(1280, 720, 30) }
                     videoSource?.adaptOutputFormat(1920, 1080, 30)
                     switchSingle(requireNotNull(backName))
                     localFeed?.setMirrored(false)
@@ -1328,6 +1498,10 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         val nowMs = System.nanoTime() / 1_000_000
         handoverStatsUntilMs = nowMs + recoveryConfig.handoverStatsDurationMs
         qualityPolicy.routeChanged(nowMs)
+        if (adaptationMode != VideoAdaptationMode.OFF) {
+            cameraPolicy.routeChanged(nowMs)
+            if (adaptationMode == VideoAdaptationMode.ACTIVE) applyCameraPlan(cameraPolicy.lastPlan)
+        }
         applyQuality(qualityPolicy.current, changeCapture = false)
         statsWake.trySend(Unit)
         Unit
@@ -1341,6 +1515,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         // on the old path must not outlive it.
         audioBandwidth.routeChanged(nowMs)
         qualityPolicy.routeChanged(nowMs)
+        if (adaptationMode != VideoAdaptationMode.OFF) cameraPolicy.routeChanged(nowMs)
         handover.routeChanged(nowMs, appliedQuality)
         statsWake.trySend(Unit)
         Unit

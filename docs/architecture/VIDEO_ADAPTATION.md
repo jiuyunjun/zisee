@@ -1,11 +1,11 @@
 ---
 title: 视频通话与屏幕共享参数自适应专项设计
 document_id: ARCH-VIDEO-ADAPTATION-001
-version: 1.2.0
+version: 1.3.0
 status: Review
 created: 2026-09-10
 updated: 2026-09-10
-applies_to: "M3 屏幕质量补齐与 M6 自适应演进；代码基线 5381c97"
+applies_to: "M3 屏幕质量补齐与 M6 自适应演进；代码基线 e61f189"
 owners:
   - android
   - rtc
@@ -328,6 +328,16 @@ V3 自动模式初始可试：持续运动证据 2 s 才转 Motion，连续静�
 
 尚未验证：以上全部时序常数（2 s/5 s/15 s/3 s 中断阈值）只在 JVM fake 时钟下验证过分支，未在真机网络与内容素材上标定；`MAINTAIN_RESOLUTION`/`MAINTAIN_FRAMERATE` 是否被各设备编码器实际接受、降低屏幕 fps 是否确实降低编码负荷、连续翻页/滚动下降档节奏是否符合可读性目标，均无真机数据支持；「文字清晰 / 动态流畅」UI 只做过 Compose 层走查，未做真机可用性或无障碍验证。
 
+### 12.3 当前交付：V2 第一步（摄像头策略开关）
+
+新增 `CameraAdaptationPolicy`（纯 Kotlin，无 Android/WebRTC 依赖）实现 §5.2 预算、§5.3 双 Track 分配与 §6.2/§7 档位迟滞，由三态开关 `VideoAdaptationMode { OFF, SHADOW, ACTIVE }` 挑选生效路径；旧 `VideoQualityPolicy`/`applyQuality`/`thumbnail` 保持不变且默认生效。开关来自 `BuildConfig.VIDEO_ADAPTATION`（debug 为 `"ACTIVE"`，便于真机试用新策略；release 为 `"OFF"`），每次通话在 `NativeRtcSession` 构造时解析一次，本轮不支持运行期切换；未知或缺失值一律解析为 `OFF`。
+
+三态语义：`OFF` 时新代码完全不运行（不调用 `cameraPolicy.update`，不订阅 `routeChanged`），与今天行为逐字节一致；`SHADOW` 时新策略每个 stats 采样都会运行并维护自己的迟滞状态，但只在 `CameraPlan.revision` 变化时记录一条 `AppEvent.RTC_ADAPTATION_PLAN` 诊断日志（同时带上旧策略当前档位便于比对），从不写 sender 参数或源输出格式；`ACTIVE` 时新执行器 `applyCameraPlan` 接管主/辅摄像头 sender 的 `maxBitrateBps`/`maxFramerate`/`adaptOutputFormat`（单摄仍调用 `changeCaptureFormat`），旧 `applyQuality`/`thumbnail` 在其入口直接提前返回，避免同一 sender 出现两个写者；`setParameters` 被拒绝时记录 `RTC_QUALITY_REJECTED`，本次通话永久回退到旧路径（镜像 `adaptationEnabled` 的语义）并立即用 `applyQuality(qualityPolicy.current)` 补一次旧路径写入。音频保护（`applyAudioBandwidth` 的 `active`/VIDEO_PROBE 上限）不受开关影响，新执行器在 `screenSharing`、`arLeaseId != null`、`VIDEO_PROBE`、`AUDIO_ONLY` 时整段跳过，与旧路径保持相同的跳过条件。`qualityPolicy.update` 在任何模式下都持续运行，为旧路径回退保留可用状态。
+
+`CameraAdaptationPolicy` 内部：预算 `pool = max(0, h·B − 64kbps − 16kbps − repair)`，`h` 起测 0.90，一旦本次样本的降档原因是 BANDWIDTH/QUEUE 即转为 0.80 直至下一次升档；`repair` 优先取该 sender 在 `MediaStats.outboundVideo` 暴露的 `retransmittedKbps`，缺失时按 `B` 的 10% 估计并在 `CameraPlan.repairEstimated` 标注。双摄时辅摄份额为 `min(20% pool, 450kbps)`，低于 C0 下界（150kbps）时钉在下界并标记 `AUX_PAUSED`（不翻转 `encoding.active`，只把码率压到地板）。档位迟滞每次只移动一级：普通降档需连续 2 s，严重热（≥3）或 CPU limitation 立即降到 C0，编码耗时超过目标帧间隔 70% 持续 2 s 也降一级；普通升档需连续 8 s 的新鲜健康证据（下一档下界 ≤ 80% 视频池、丢包 <2%、发送延迟 ≤30 ms、`qualityLimitation=none`、热 <2），若上一次降档原因是 THERMAL/ENCODER 则升档窗口改为 15 s；档位切换之间另加 5 s 冷却，严重条件绕过；采样间隙 >3 s 或时钟回退只清空迟滞计时，不强制降档；`availableOutgoingKbps` 缺失时保持当前档并中断升档窗口，不推导任何新档位。`routeChanged` 落到 C1 并记录进入前的档位为 30 s 内、2 s 一级的恢复上限（镜像 `VideoQualityPolicy.routeChanged`），调用后立即反映到 `lastPlan`，不等下一次采样。档位起点沿用旧策略的开机选择（支持 1080p30 且 `preferFullHd` 时为 C3，否则 C2），因此 ACTIVE 不改变开局清晰度。同一档位内码率变化 <15% 不产生新 `CameraPlan`（`revision` 不递增），用于抑制过于频繁的参数写入。
+
+尚未验证：本节全部时序常数与预算系数只在 JVM 假时钟单测下验证过分支（`CameraAdaptationPolicyTest`），未做真机联调；`availableOutgoingBitrate` 与 `retransmittedBytesSent` 的跨设备/跨 Android 版本可用性仍待 §13 的核实；ACTIVE 路径从未在真实设备上跑过，双摄场景下主辅同时调参的失败序列（`setParameters` 部分成功）尚无实机证据；SHADOW 日志尚未与真实通话的旧策略输出做过对比分析；开机瞬间的严重热直读快速通道（stats 采样失败但 `currentThermalStatus` 已达到 3）仍只保护旧路径，尚未把等效保护接入新执行器，留待下一步与真机验证一起处理。
+
 ## 13. 待验证问题与外部依据
 
 V0/V1 必须回答：锁定 AAR 的 BWE 和 RTX/FEC 计数口径是什么；三路 sender 能否稳定映射；MAINTAIN_RESOLUTION 是否被各设备接受且达到预期；降低屏幕 FPS 是否确实降低编码负荷；系统 resize 是否始终保持输出边界。V2 再回答预算安全系数是否过度限制探测、摄像头新上限是否损失高细节价值、源切换是否引发明显关键帧突发。
@@ -340,6 +350,10 @@ V0/V1 必须回答：锁定 AAR 的 BWE 和 RTX/FEC 计数口径是什么；三�
 - [Android MediaProjection 指南](https://developer.android.com/media/grow/media-projection)：一次性授权、VirtualDisplay、尺寸变化与清理边界。
 
 ## Changelog
+
+### 1.3.0 - 2026-09-10
+
+- 落地 V2 第一步：`CameraAdaptationPolicy`（预算、双 Track 分配、档位迟滞）与三态开关 `VideoAdaptationMode`（OFF/SHADOW/ACTIVE，debug 默认 ACTIVE，release 默认 OFF）；旧摄像头策略保持默认且行为不变，SHADOW 只记录诊断日志，ACTIVE 写 sender 参数并在拒绝时永久回退旧路径。全部时序常数与预算系数仅 JVM 假时钟验证，ACTIVE 未做真机测试。
 
 ### 1.2.0 - 2026-09-10
 

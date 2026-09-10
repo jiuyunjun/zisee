@@ -26,6 +26,9 @@ android {
         versionName = "0.1.0-dev"
         testInstrumentationRunner = "com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation"
         buildConfigField("String", "BACKEND_URL", "\"$backendUrl\"")
+        // VIDEO_ADAPTATION.md §12.3: SHADOW/ACTIVE are the new camera adaptation policy; unset or
+        // any unrecognized value parses to OFF, i.e. today's behaviour.
+        buildConfigField("String", "VIDEO_ADAPTATION", "\"OFF\"")
     }
     signingConfigs {
         // Checked into the repo on purpose: every developer and every CI run must
@@ -43,10 +46,12 @@ android {
             applicationIdSuffix = ".dev"
             signingConfig = signingConfigs.getByName("debug")
             if (localBackend) buildConfigField("String", "BACKEND_URL", "\"http://127.0.0.1:8080\"")
+            buildConfigField("String", "VIDEO_ADAPTATION", "\"ACTIVE\"")
         }
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            buildConfigField("String", "VIDEO_ADAPTATION", "\"OFF\"")
         }
     }
     compileOptions {
