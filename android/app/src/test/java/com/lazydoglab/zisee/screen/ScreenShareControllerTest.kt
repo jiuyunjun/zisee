@@ -8,6 +8,8 @@ import java.util.concurrent.atomic.AtomicReference
 class ScreenShareControllerTest {
     private val portrait = ScreenSize(1080, 1920)
     private val landscape = ScreenSize(1920, 1080)
+    private val portraitOutput = ScreenCaptureSize.of(portrait.width, portrait.height)
+    private val landscapeOutput = ScreenCaptureSize.of(landscape.width, landscape.height)
 
     private class Backend : ScreenProjection {
         lateinit var events: ScreenProjectionEvents
@@ -118,12 +120,33 @@ class ScreenShareControllerTest {
         backend.events.resized(landscape)
         backend.events.resized(landscape)
         backend.events.visibilityChanged(false)
-        assertEquals(listOf(portrait, landscape), backend.sizes)
-        assertEquals(landscape, controller.state.value.size)
+        assertEquals(listOf(portraitOutput, landscapeOutput), backend.sizes)
+        assertEquals(landscapeOutput, controller.state.value.size)
         assertEquals(false, controller.state.value.contentVisible)
         assertEquals(ScreenSharePhase.ACTIVE, controller.state.value.phase)
         assertEquals(1, backend.starts)
         controller.close()
+    }
+
+    @Test fun everyResizeEntryUsesOneAspectPreservingCeiling() {
+        val controller = ScreenShareController("call")
+        val backend = Backend()
+        controller.start(controller.request(), ScreenSize(1440, 3120)) { backend }
+        controller.resize(ScreenSize(2208, 1840))
+        assertEquals(ScreenCaptureSize.of(2208, 1840), controller.state.value.size)
+        assertEquals(controller.state.value.size, backend.sizes.last())
+        assertTrue(backend.sizes.all { maxOf(it.width, it.height) <= ScreenCaptureSize.MAX_LONG_EDGE })
+    }
+
+    @Test fun contentSizeIsKeptRawOnStartAndResize() {
+        val controller = ScreenShareController("call")
+        val backend = Backend()
+        controller.start(controller.request(), ScreenSize(1440, 3120)) { backend }
+        assertEquals(ScreenSize(1440, 3120), controller.state.value.contentSize)
+        assertEquals(ScreenCaptureSize.of(1440, 3120), controller.state.value.size)
+        controller.resize(ScreenSize(2208, 1840))
+        assertEquals(ScreenSize(2208, 1840), controller.state.value.contentSize)
+        assertEquals(ScreenCaptureSize.of(2208, 1840), controller.state.value.size)
     }
 
     @Test fun lateCallbacksAfterStopDoNotResurrectCapture() {

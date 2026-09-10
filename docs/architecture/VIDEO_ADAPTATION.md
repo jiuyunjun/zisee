@@ -1,7 +1,7 @@
 ---
 title: 视频通话与屏幕共享参数自适应专项设计
 document_id: ARCH-VIDEO-ADAPTATION-001
-version: 1.1.0
+version: 1.2.0
 status: Review
 created: 2026-09-10
 updated: 2026-09-10
@@ -322,6 +322,12 @@ V3 自动模式初始可试：持续运动证据 2 s 才转 Motion，连续静�
 
 这一交付尚不等于 V0 全部退出：实际 AAR 的跨设备字段覆盖、FEC/BWE 计量边界和双真机基线仍待验证；没有启用精细预算或新摄像头档位。
 
+### 12.2 当前交付：V1 屏幕质量
+
+`ScreenQualityPolicy` 已实现文字/动态两条独立档位链：Text 档 1600×10fps/2.0→1600×5fps/1.0→1280×3fps/0.4 Mbps，Motion 档 1280×30fps/2.5→960×15fps/1 Mbps；`current`/`mode` 只在同一档位链内升降，不跨链比较序号。降档区分严重（热 ≥3 或编码器过载，立即生效）与普通（带宽/丢包/发送延迟连续 2 s）；升档要求连续 15 s 健康证据，证据中断（采样间隙 >3 s 或一次不新鲜/未知样本）后升档窗口从中断点之后的样本重新计时，不沿用中断前已经过的时长。普通降档与升档之间追加至少 5 s 的档位切换冷却，严重条件与模式切换绕过冷却。`NativeRtcSession.setScreenContentMode` 在 RTC 执行器上切换模式，不重启投影、不重新申请系统同意；新的一次共享总是从 Text 档开始，选择只在本次共享内有效。`ScreenShareState` 新增 `contentSize`（start/resize 传入的原始尺寸），`applyScreenQuality` 始终从 `contentSize` 重新按档位上限缩放，不对已经缩放过的 `size` 二次缩放；只在档位或 `contentSize` 实际变化时才重写 sender 参数和源输出格式，可见性变化等其它状态更新不再重复下发。纯语音结束共享（`ScreenShareReason.AUDIO_ONLY`）在 `CallViewModel` 侧已接入通知文案"网络不足，已结束共享，语音继续"，通过既有 `arNotice` 通道展示,只在从非终止状态进入该终止状态时触发一次。每次档位实际变化记录 `AppEvent.RTC_QUALITY_CHANGED`，内容形如 `screen:TEXT_CONSTRAINED:BANDWIDTH`（原因枚举取 THERMAL/ENCODER/BANDWIDTH/QUEUE/LOSS/RECOVERY/MODE 之一），不含画面、SDP 或地址信息。
+
+尚未验证：以上全部时序常数（2 s/5 s/15 s/3 s 中断阈值）只在 JVM fake 时钟下验证过分支，未在真机网络与内容素材上标定；`MAINTAIN_RESOLUTION`/`MAINTAIN_FRAMERATE` 是否被各设备编码器实际接受、降低屏幕 fps 是否确实降低编码负荷、连续翻页/滚动下降档节奏是否符合可读性目标，均无真机数据支持；「文字清晰 / 动态流畅」UI 只做过 Compose 层走查，未做真机可用性或无障碍验证。
+
 ## 13. 待验证问题与外部依据
 
 V0/V1 必须回答：锁定 AAR 的 BWE 和 RTX/FEC 计数口径是什么；三路 sender 能否稳定映射；MAINTAIN_RESOLUTION 是否被各设备接受且达到预期；降低屏幕 FPS 是否确实降低编码负荷；系统 resize 是否始终保持输出边界。V2 再回答预算安全系数是否过度限制探测、摄像头新上限是否损失高细节价值、源切换是否引发明显关键帧突发。
@@ -334,6 +340,10 @@ V0/V1 必须回答：锁定 AAR 的 BWE 和 RTX/FEC 计数口径是什么；三�
 - [Android MediaProjection 指南](https://developer.android.com/media/grow/media-projection)：一次性授权、VirtualDisplay、尺寸变化与清理边界。
 
 ## Changelog
+
+### 1.2.0 - 2026-09-10
+
+- 落地 V1 屏幕质量：Text/Motion 独立档位链、升降档迟滞与格式冷却、`contentSize`/`size` 分离、按需重应用、纯语音结束共享提示、屏幕质量变化诊断事件；时序常数与设备接受度仍待真机验证。
 
 ### 1.1.0 - 2026-09-10
 

@@ -111,6 +111,7 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
     onArClearOwn: () -> Unit = {},
     onSelectVideo: (String) -> Unit = {},
     onStartShare: () -> Unit = {}, onStopShare: () -> Unit = {},
+    onSetScreenContentMode: (com.lazydoglab.zisee.rtc.ScreenContentMode) -> Unit = {},
     arControls: @Composable () -> Unit = {}) {
     var controls by remember { mutableStateOf(true) }
     var interaction by remember { mutableLongStateOf(0L) }
@@ -362,8 +363,20 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                 .background(DockInk.copy(alpha = 0.88f))
                 .border(1.dp, CallAccent.copy(alpha = .25f), RoundedCornerShape(22.dp))
                 .padding(start = 14.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(if (state.screenShare.phase == com.lazydoglab.zisee.screen.ScreenSharePhase.ACTIVE)
-                    "你正在共享屏幕 · 摄像头已暂停" else "正在准备共享…", fontSize = 12.5.sp, color = CallText)
+                val shareActive = state.screenShare.phase == com.lazydoglab.zisee.screen.ScreenSharePhase.ACTIVE
+                Text(if (shareActive) "你正在共享屏幕 · 摄像头已暂停" else "正在准备共享…",
+                    fontSize = 12.5.sp, color = CallText)
+                // §6.1: manual, always-available choice; no automatic classification in V1.
+                if (shareActive) Row(verticalAlignment = Alignment.CenterVertically) {
+                    listOf(com.lazydoglab.zisee.rtc.ScreenContentMode.TEXT to "文字清晰",
+                        com.lazydoglab.zisee.rtc.ScreenContentMode.MOTION to "动态流畅").forEach { (mode, label) ->
+                        TextButton(onClick = { interaction++; onSetScreenContentMode(mode) },
+                            colors = ButtonDefaults.textButtonColors(
+                                contentColor = if (state.screenContentMode == mode) CallAccent else CallMuted)) {
+                            Text(label, fontSize = 12.sp)
+                        }
+                    }
+                }
                 TextButton(onClick = { interaction++; onStopShare() },
                     colors = ButtonDefaults.textButtonColors(contentColor = CallDanger)) { Text("停止共享") }
             }

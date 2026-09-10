@@ -38,7 +38,7 @@ class ScreenShareSession(
     private val eglContext: EglBase.Context,
     private val source: VideoSource,
     private val logger: AppLogger,
-    private val onActive: (Boolean) -> Unit,
+    private val onActive: (ScreenShareRequest, Boolean) -> Unit,
 ) : AutoCloseable {
     private val thread = HandlerThread("ZiseeScreen").apply { start() }
     private val handler = Handler(thread.looper)
@@ -58,11 +58,11 @@ class ScreenShareSession(
                 val current = controller.state.value
                 mutableState.value = current
                 when (event) {
-                    ScreenShareEvent.FIRST_FRAME -> onActive(true)
-                    ScreenShareEvent.STOPPED -> onActive(false)
+                    ScreenShareEvent.FIRST_FRAME -> current.request?.let { onActive(it, true) }
+                    ScreenShareEvent.STOPPED -> current.request?.let { onActive(it, false) }
                     ScreenShareEvent.FAILED -> {
                         logger.error(AppEvent.SCREEN_SHARE_FAILED, current.reason?.name)
-                        onActive(false)
+                        current.request?.let { onActive(it, false) }
                     }
                     ScreenShareEvent.CLEANUP_FAILED -> logger.error(AppEvent.SCREEN_SHARE_FAILED, "CLEANUP")
                     else -> Unit

@@ -5,7 +5,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.util.UUID
 
 enum class ScreenSharePhase { IDLE, AWAITING_CONSENT, STARTING, ACTIVE, STOPPING, STOPPED, FAILED, CLOSED }
-enum class ScreenShareReason { USER, CONSENT_DENIED, SYSTEM_STOPPED, CALL_ENDED, LOCKED, START_FAILED, CAPTURE_FAILED, FIRST_FRAME_TIMEOUT }
+enum class ScreenShareReason { USER, CONSENT_DENIED, SYSTEM_STOPPED, CALL_ENDED, LOCKED, AUDIO_ONLY, START_FAILED, CAPTURE_FAILED, FIRST_FRAME_TIMEOUT }
 enum class ScreenShareEvent { REQUESTED, STARTING, FIRST_FRAME, RESIZED, VISIBILITY_CHANGED, STOPPED, FAILED, CLEANUP_FAILED }
 
 data class ScreenSize(val width: Int, val height: Int) {
@@ -20,6 +20,9 @@ data class ScreenShareState(
     val phase: ScreenSharePhase = ScreenSharePhase.IDLE,
     val request: ScreenShareRequest? = null,
     val size: ScreenSize? = null,
+    /** The raw size passed to start/resize, before the capture ceiling is applied. §6.3: output
+     * size is always computed from this, never by re-scaling an already-scaled [size]. */
+    val contentSize: ScreenSize? = null,
     val contentVisible: Boolean? = null,
     val reason: ScreenShareReason? = null,
 )
@@ -79,13 +82,14 @@ class ScreenShareController(
     fun start(request: ScreenShareRequest, size: ScreenSize, factory: () -> ScreenProjection): Boolean {
         checkThread()
         if (!awaiting(request)) return false
-        mutableState.value = state.value.copy(phase = ScreenSharePhase.STARTING, size = size)
+        val output = ScreenCaptureSize.of(size.width, size.height)
+        mutableState.value = state.value.copy(phase = ScreenSharePhase.STARTING, size = output, contentSize = size)
         onEvent(ScreenShareEvent.STARTING)
         try {
             projection = factory()
-            requireNotNull(projection).start(size, object : ScreenProjectionEvents {
+            requireNotNull(projection).start(output, object : ScreenProjectionEvents {
                 override fun stopped() = stop(ScreenShareReason.SYSTEM_STOPPED)
-                override fun resized(size: ScreenSize) = resize(size)
+                override fun resized(size: ScreenSize) = resize(ScreenCaptureSize.of(size.width, size.height))
                 override fun visibilityChanged(visible: Boolean) {
                     checkThread()
                     if (!capturing()) return
@@ -119,11 +123,12 @@ class ScreenShareController(
     /** Also used by the display/orientation owner on versions without captured-content callbacks. */
     fun resize(size: ScreenSize) {
         checkThread()
-        if (!capturing() || state.value.size == size) return
+        val output = ScreenCaptureSize.of(size.width, size.height)
+        if (!capturing() || state.value.size == output) return
         try {
-            requireNotNull(projection).resize(size)
+            requireNotNull(projection).resize(output)
             if (!capturing()) return
-            mutableState.value = state.value.copy(size = size)
+            mutableState.value = state.value.copy(size = output, contentSize = size)
             onEvent(ScreenShareEvent.RESIZED)
         } catch (_: Exception) { stop(ScreenShareReason.CAPTURE_FAILED) }
     }

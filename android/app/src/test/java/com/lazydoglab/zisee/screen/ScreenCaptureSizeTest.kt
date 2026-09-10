@@ -37,6 +37,14 @@ class ScreenCaptureSizeTest {
         assertEquals(480, size.height)
     }
 
+    @Test fun `policy ceiling is aligned and never exceeded`() {
+        val size = ScreenCaptureSize.of(1599, 1001, 1280)
+        assertEquals(0, size.width % ScreenCaptureSize.ALIGNMENT)
+        assertEquals(0, size.height % ScreenCaptureSize.ALIGNMENT)
+        assertTrue(maxOf(size.width, size.height) <= 1280)
+        assertThrows(IllegalArgumentException::class.java) { ScreenCaptureSize.of(1920, 1080, 1279) }
+    }
+
     /** A display smaller than one alignment step still has to produce a legal capture size. */
     @Test fun `tiny and degenerate displays stay legal`() {
         for ((width, height) in listOf(1 to 1, 1 to 4000, 4000 to 1, 8 to 9)) {

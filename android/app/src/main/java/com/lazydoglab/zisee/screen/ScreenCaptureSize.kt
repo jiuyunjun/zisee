@@ -13,14 +13,15 @@ object ScreenCaptureSize {
     const val MAX_LONG_EDGE = 1600
     const val ALIGNMENT = 16
 
-    fun of(width: Int, height: Int): ScreenSize {
+    fun of(width: Int, height: Int, maxLongEdge: Int = MAX_LONG_EDGE): ScreenSize {
         require(width > 0 && height > 0)
+        require(maxLongEdge in ALIGNMENT..MAX_LONG_EDGE && maxLongEdge % ALIGNMENT == 0)
         val longEdge = maxOf(width, height)
-        val scale = if (longEdge > MAX_LONG_EDGE) MAX_LONG_EDGE.toDouble() / longEdge else 1.0
+        val scale = if (longEdge > maxLongEdge) maxLongEdge.toDouble() / longEdge else 1.0
         return ScreenSize(align(width * scale), align(height * scale))
     }
 
     /** Never rounds an edge away to zero, and never rounds one back above the source dimension. */
     private fun align(value: Double): Int =
-        (Math.round(value / ALIGNMENT).toInt() * ALIGNMENT).coerceAtLeast(ALIGNMENT)
+        (kotlin.math.floor(value / ALIGNMENT).toInt() * ALIGNMENT).coerceAtLeast(ALIGNMENT)
 }

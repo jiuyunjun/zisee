@@ -75,6 +75,15 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var screenSource: VideoSource? = null
     private var screenTrack: VideoTrack? = null
     private var screenSender: RtpSender? = null
+    private var screenQualityPolicy = ScreenQualityPolicy()
+    private var appliedScreenQuality: ScreenQuality? = null
+    private var appliedScreenContentSize: com.lazydoglab.zisee.screen.ScreenSize? = null
+    private val mutableScreenContentMode = MutableStateFlow(ScreenContentMode.TEXT)
+    /** UI-facing "文字清晰 / 动态流畅" choice. Survives only for the current share; a new share
+     * always restarts in [ScreenContentMode.TEXT]. */
+    val screenContentMode = mutableScreenContentMode.asStateFlow()
+    private var screenAdaptationEnabled = true
+    private var stoppingScreenShare: com.lazydoglab.zisee.screen.ScreenShareSession? = null
     var localScreenFeed: VideoFeed? = null; private set
     var remoteScreenFeed: VideoFeed? = null; private set
     private var screenShare: com.lazydoglab.zisee.screen.ScreenShareSession? = null
@@ -415,6 +424,9 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                         applyQuality(qualityPolicy.update(observed, System.nanoTime() / 1_000_000))
                     }
                     if (iceState.value == IceState.CONNECTED && !changingCamera) applyAudioBandwidth(observed)
+                    if (iceState.value == IceState.CONNECTED && screenSharing && screenAdaptationEnabled) {
+                        applyScreenQuality(screenQualityPolicy.update(observed, observed.sampledAtMs))
+                    }
                     sampledStats.value = observed.copy(quality = appliedQuality ?: VideoQuality.HD,
                         audioProcessing = audioProcessing.stats(), audioDevice = callAudio.state.value,
                         audioBandwidth = audioBandwidth.mode)
@@ -473,8 +485,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         if (!sender.setParameters(parameters)) logger.error(AppEvent.RTC_QUALITY_REJECTED)
     }
 
-    private fun applyAudioBandwidth(stats: MediaStats) {
-        videoSending.keys.retainAll(listOfNotNull(videoSender, backSender).toSet())
+    private suspend fun applyAudioBandwidth(stats: MediaStats) {
+        videoSending.keys.retainAll(listOfNotNull(videoSender, backSender, screenSender).toSet())
         val previous = audioBandwidth.mode
         val mode = audioBandwidth.update(stats.availableOutgoingKbps, stats.audio.outboundLoss, stats.sampledAtMs,
             stats.audio.outboundReportTimestampUs)
@@ -482,6 +494,9 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             logger.info(AppEvent.RTC_VIDEO_BANDWIDTH_MODE, "${previous.name}->${mode.name}")
             appliedQuality = null
             applyQuality(qualityPolicy.current, changeCapture = false)
+        }
+        if (mode == com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.AUDIO_ONLY && screenShare != null) {
+            stopScreenShare(com.lazydoglab.zisee.screen.ScreenShareReason.AUDIO_ONLY)
         }
         val frontMain = dualCapture == null || (remoteView.front == ViewSize.LARGE && remoteView.back == ViewSize.SMALL)
         for ((sender, primary) in listOf(videoSender to frontMain, backSender to !frontMain)) {
@@ -506,6 +521,47 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             }
             else logger.error(AppEvent.RTC_QUALITY_REJECTED)
         }
+    }
+
+    /** §6.3: output size is always a fresh scale of the raw [ScreenShareState.contentSize], never a
+     * re-scale of the already-capped [ScreenShareState.size]. §7/item4: re-applies only when the
+     * tier or the content size actually changed, not on every share-state emission (visibility,
+     * resize echoes of the same size, ...). */
+    private fun applyScreenQuality(quality: ScreenQuality) {
+        if (!screenAdaptationEnabled) return
+        val sender = screenSender ?: return
+        val contentSize = screenShareState.value.contentSize ?: return
+        if (appliedScreenQuality == quality && appliedScreenContentSize == contentSize) return
+        val qualityChanged = appliedScreenQuality != quality
+        val parameters = sender.parameters
+        if (parameters.encodings.isEmpty()) return
+        parameters.degradationPreference = if (quality.mode == ScreenContentMode.MOTION)
+            RtpParameters.DegradationPreference.MAINTAIN_FRAMERATE
+        else RtpParameters.DegradationPreference.MAINTAIN_RESOLUTION
+        parameters.encodings.forEach {
+            it.maxBitrateBps = quality.maxBitrateBps
+            it.maxFramerate = quality.fps
+            it.minBitrateBps = null
+        }
+        if (!sender.setParameters(parameters)) {
+            screenAdaptationEnabled = false
+            logger.error(AppEvent.RTC_QUALITY_REJECTED)
+            return
+        }
+        val output = com.lazydoglab.zisee.screen.ScreenCaptureSize.of(contentSize.width, contentSize.height, quality.longEdge)
+        screenSource?.adaptOutputFormat(output.width, output.height, quality.fps)
+        appliedScreenQuality = quality
+        appliedScreenContentSize = contentSize
+        // No screen content, SDP or addresses: only the enum tier and reason.
+        if (qualityChanged) logger.info(AppEvent.RTC_QUALITY_CHANGED, "screen:${quality.name}:${screenQualityPolicy.lastReason.name}")
+    }
+
+    /** §6.1: switching text/motion never restarts projection or re-consents. */
+    suspend fun setScreenContentMode(mode: ScreenContentMode) = withContext(dispatcher) {
+        if (released) return@withContext
+        mutableScreenContentMode.value = mode
+        screenQualityPolicy.setMode(mode, System.nanoTime() / 1_000_000)
+        if (screenSharing) applyScreenQuality(screenQualityPolicy.current)
     }
 
     suspend fun setNoiseSuppression(mode: com.lazydoglab.zisee.rtc.audio.processing.NoiseSuppressionMode) = withContext(dispatcher) {
@@ -789,12 +845,40 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         if (ownership.state.value.phase != CollaborationOwnership.Phase.HELD) return@withContext null
         val source = screenSource ?: return@withContext null
         val shared = egl?.eglBaseContext ?: return@withContext null
-        val session = com.lazydoglab.zisee.screen.ScreenShareSession(
+        lateinit var session: com.lazydoglab.zisee.screen.ScreenShareSession
+        screenQualityPolicy = ScreenQualityPolicy()
+        mutableScreenContentMode.value = ScreenContentMode.TEXT
+        screenAdaptationEnabled = true
+        appliedScreenQuality = null
+        appliedScreenContentSize = null
+        session = com.lazydoglab.zisee.screen.ScreenShareSession(
             context, mediaCallId, shared, source, logger,
-        ) { active -> scope.launch { if (!released) applyScreenSending(active) } }
+        ) { request, active -> scope.launch {
+            if (!released && screenShare === session && session.state.value.request == request) {
+                if (active && stoppingScreenShare !== session &&
+                    session.state.value.phase == com.lazydoglab.zisee.screen.ScreenSharePhase.ACTIVE) {
+                    applyScreenSending(true)
+                } else if (!active && session.state.value.phase in TERMINAL_SCREEN_PHASES) {
+                    closeScreenShare(session, restoreCameras = audioBandwidth.mode !=
+                        com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.AUDIO_ONLY &&
+                        session.state.value.reason != com.lazydoglab.zisee.screen.ScreenShareReason.AUDIO_ONLY)
+                    ownership.release()
+                }
+            }
+        } }
         screenShare = session
         screenStateJob?.cancel()
-        screenStateJob = scope.launch { session.state.collect { if (!released) screenShareState.value = it } }
+        screenStateJob = scope.launch { session.state.collect {
+            if (!released && screenShare === session) {
+                screenShareState.value = it
+                // applyScreenQuality re-applies on its own only when the tier or the content size
+                // actually changed, so a visibility-only or duplicate-size emission is a no-op here.
+                if (it.phase in setOf(com.lazydoglab.zisee.screen.ScreenSharePhase.STARTING,
+                        com.lazydoglab.zisee.screen.ScreenSharePhase.ACTIVE)) {
+                    applyScreenQuality(screenQualityPolicy.current)
+                }
+            }
+        } }
         val request = session.request()
         if (request == null) { session.close(); screenShare = null }
         request
@@ -806,7 +890,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         val session = screenShare ?: return@withContext false
         if (released) return@withContext false
         val started = session.start(request, resultCode, data)
-        if (!started) closeScreenShare()
+        if (!started) closeScreenShare(session)
         started
     }
 
@@ -815,8 +899,13 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         claimTimeout?.cancel(); claimTimeout = null
         val session = screenShare
         if (session != null) {
+            // Privacy stop wins before projection cleanup or any callback can run.
+            stoppingScreenShare = session
+            screenTrack?.setEnabled(false)
+            if (reason == com.lazydoglab.zisee.screen.ScreenShareReason.AUDIO_ONLY) cameraEnabled = false
             session.stop(reason)
-            closeScreenShare()
+            closeScreenShare(session, restoreCameras = reason !=
+                com.lazydoglab.zisee.screen.ScreenShareReason.AUDIO_ONLY)
         }
         // The slot is given back whether or not capture ever started: a denied or cancelled consent
         // must not leave the peer believing this end still owns it.
@@ -824,11 +913,17 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     }
 
     /** One controller per attempt: a stopped share can never be resumed on its consumed token. */
-    private suspend fun closeScreenShare() {
-        applyScreenSending(false)
+    private suspend fun closeScreenShare(expected: com.lazydoglab.zisee.screen.ScreenShareSession? = screenShare,
+        restoreCameras: Boolean = true) {
+        if (expected == null || screenShare !== expected) return
+        applyScreenSending(false, restoreCameras)
+        screenShareState.value = expected.state.value
         screenStateJob?.cancel(); screenStateJob = null
-        try { screenShare?.close() } catch (_: Exception) { logger.error(AppEvent.SCREEN_SHARE_FAILED) }
+        try { expected.close() } catch (_: Exception) { logger.error(AppEvent.SCREEN_SHARE_FAILED) }
         screenShare = null
+        if (stoppingScreenShare === expected) stoppingScreenShare = null
+        appliedScreenQuality = null
+        appliedScreenContentSize = null
     }
 
     /**
@@ -840,14 +935,20 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
      * hardware is released, so nothing competes with the screen for the uplink or the thermal
      * budget, and the peer is never left choosing between a screen and a stale face.
      */
-    private suspend fun applyScreenSending(active: Boolean) {
+    private suspend fun applyScreenSending(active: Boolean, restoreCameras: Boolean = true) {
         if (active == screenSharing) {
             screenTrack?.setEnabled(active)
             return
         }
         screenSharing = active
         screenTrack?.setEnabled(active)
-        if (active) pauseCamerasForShare() else restoreCamerasAfterShare()
+        if (active) {
+            applyScreenQuality(screenQualityPolicy.current)
+            pauseCamerasForShare()
+        } else if (restoreCameras) restoreCamerasAfterShare() else {
+            shareSuspendedMode = null
+            showMe.value = ShowMeState(presentationMode)
+        }
         localShare = if (!active) SharePresentation.None
             else SharePresentation(true, java.util.UUID.randomUUID().toString()
                 .replace("-", "").take(SharePresentation.MAX_SESSION))
@@ -1397,6 +1498,11 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         override fun onSetFailure(error: String) = Unit
     }
     companion object {
+        private val TERMINAL_SCREEN_PHASES = setOf(
+            com.lazydoglab.zisee.screen.ScreenSharePhase.STOPPED,
+            com.lazydoglab.zisee.screen.ScreenSharePhase.FAILED,
+            com.lazydoglab.zisee.screen.ScreenSharePhase.CLOSED,
+        )
         private const val MONITOR_TAG = "Zisee"
         private const val NETWORK_WAIT_MS = 2_000L
         private const val LOOPBACK_ADAPTER = 1 shl 4

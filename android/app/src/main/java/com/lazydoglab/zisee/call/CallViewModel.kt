@@ -67,6 +67,7 @@ data class CallUiState(
     val localScreen: VideoFeed? = null, val remoteScreen: VideoFeed? = null,
     /** What this end is publishing, and what the peer says it is publishing. */
     val screenShare: com.lazydoglab.zisee.screen.ScreenShareState = com.lazydoglab.zisee.screen.ScreenShareState(),
+    val screenContentMode: com.lazydoglab.zisee.rtc.ScreenContentMode = com.lazydoglab.zisee.rtc.ScreenContentMode.TEXT,
     val remoteShare: com.lazydoglab.zisee.rtc.SharePresentation = com.lazydoglab.zisee.rtc.SharePresentation.None,
     /** Set once when the system consent dialog should be shown, and cleared by the Activity that
      * shows it. It carries no consent data and grants nothing. */
@@ -233,7 +234,7 @@ class CallViewModel(application: Application, private val container: AppContaine
     fun startScreenShare() {
         val media = rtc ?: return
         val current = mutable.value
-        if (current.shareConsent != null || current.screenShare.phase != ScreenSharePhase.IDLE) return
+        if (current.shareConsent != null || current.screenShare.phase !in SCREEN_SHARE_RESTARTABLE) return
         if (current.showMe.mode == com.lazydoglab.zisee.rtc.CameraMode.AR) {
             arNotice("请先结束我的 AR 现场，再共享屏幕。"); return
         }
@@ -305,6 +306,12 @@ class CallViewModel(application: Application, private val container: AppContaine
             media.stopScreenShare(reason)
             releaseSharingType()
         }
+    }
+
+    /** §6.1: "文字清晰 / 动态流畅" — a compact runtime choice, not a restart or re-consent. */
+    fun setScreenContentMode(mode: com.lazydoglab.zisee.rtc.ScreenContentMode) {
+        val media = rtc ?: return
+        viewModelScope.launch { media.setScreenContentMode(mode) }
     }
 
     private fun releaseSharingType() {
@@ -701,10 +708,32 @@ class CallViewModel(application: Application, private val container: AppContaine
                                     screenLock = ScreenLockWatcher(getApplication()) {
                                         stopScreenShare(ScreenShareReason.LOCKED)
                                     }
+                                    var previousSharePhase = mutable.value.screenShare.phase
                                     shareObservation = launch {
+                                        launch { media.screenContentMode.collect { mode ->
+                                            mutable.update { it.copy(screenContentMode = mode) } } }
                                         combine(media.screenShareState, media.remoteShare) { local, remote -> local to remote }
                                             .collect { (local, remote) ->
-                                                mutable.update { it.copy(screenShare = local, remoteShare = remote) }
+                                                mutable.update {
+                                                    it.copy(screenShare = local, remoteShare = remote,
+                                                        shareConsent = it.shareConsent?.takeUnless { pending ->
+                                                            local.phase in SCREEN_SHARE_TERMINAL && local.request == pending
+                                                        })
+                                                }
+                                                // Projection may end through the system, timeout, capture failure, or
+                                                // audio protection without going through the UI stop button.
+                                                if (local.phase in SCREEN_SHARE_TERMINAL) releaseSharingType()
+                                                // §7/§10: audio protection ended the share locally; say so once, on the
+                                                // transition into it, not on every terminal-state re-emission.
+                                                if (local.phase in SCREEN_SHARE_TERMINAL &&
+                                                    previousSharePhase !in SCREEN_SHARE_TERMINAL &&
+                                                    local.reason == ScreenShareReason.AUDIO_ONLY) {
+                                                    // The session dropped camera intent too; mirror it so a later
+                                                    // foreground change cannot quietly re-enable the camera.
+                                                    mutable.update { it.copy(cameraEnabled = false) }
+                                                    arNotice("网络不足，已结束共享，语音继续")
+                                                }
+                                                previousSharePhase = local.phase
                                             }
                                     }
                                     mutable.update { it.copy(local = media.localFeed, remote = media.remoteFeed,
@@ -793,6 +822,7 @@ class CallViewModel(application: Application, private val container: AppContaine
                         arOwnMarkerCount = 0,
                         localScreen = null, remoteScreen = null, shareConsent = null,
                         screenShare = com.lazydoglab.zisee.screen.ScreenShareState(),
+                        screenContentMode = com.lazydoglab.zisee.rtc.ScreenContentMode.TEXT,
                         remoteShare = com.lazydoglab.zisee.rtc.SharePresentation.None) }
                     try { media?.release() } catch (error: Exception) { container.logger.error(AppEvent.RTC_RELEASE_FAILED) }
                     val token = session
@@ -817,6 +847,10 @@ class CallViewModel(application: Application, private val container: AppContaine
     }
 
     companion object {
+        private val SCREEN_SHARE_RESTARTABLE = setOf(ScreenSharePhase.IDLE, ScreenSharePhase.STOPPED,
+            ScreenSharePhase.FAILED)
+        private val SCREEN_SHARE_TERMINAL = setOf(ScreenSharePhase.STOPPED, ScreenSharePhase.FAILED,
+            ScreenSharePhase.CLOSED)
         // The server issues these for an hour; half of that leaves room for a slow call to renew.
         private const val ICE_REUSE_MS = 30 * 60 * 1000L
     }
