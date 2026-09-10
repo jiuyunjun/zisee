@@ -8,6 +8,8 @@ import com.lazydoglab.zisee.rtc.CameraMode
 import com.lazydoglab.zisee.ui.theme.ZiseeTheme
 import androidx.lifecycle.lifecycleScope
 import com.lazydoglab.zisee.rtc.VideoFeed
+import com.lazydoglab.zisee.ar.session.ArSessionState
+import com.lazydoglab.zisee.screen.ScreenSharePhase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -53,10 +55,24 @@ class CallPreviewActivity : ComponentActivity() {
             } finally { buffers.forEach { it.release() } }
         }
         val interactive = intent.getBooleanExtra("interactive", false)
+        val scenarioName = intent.getStringExtra("callUiScenario") ?: "normal"
+        val scenario = when (scenarioName) {
+            "muted-camera-off" -> PreviewScenario(localMode = localMode, remoteMode = remoteMode,
+                muted = true, cameraEnabled = false)
+            "long-name" -> PreviewScenario(localMode = localMode, remoteMode = remoteMode,
+                peerName = "一位名字非常非常长需要省略显示的远方协作者")
+            "sharing-starting" -> PreviewScenario(localMode = localMode, remoteMode = remoteMode,
+                sharePhase = ScreenSharePhase.STARTING)
+            "sharing-active" -> PreviewScenario(localMode = localMode, remoteMode = remoteMode,
+                sharePhase = ScreenSharePhase.ACTIVE)
+            "ar-notice" -> PreviewScenario(localMode = CameraMode.AR, remoteMode = remoteMode,
+                arState = ArSessionState.TRACKING, arNotice = "对方已加入，可以共同放置标记。", ownMarkers = 2)
+            "more" -> PreviewScenario(localMode = localMode, remoteMode = remoteMode, openMore = true)
+            else -> PreviewScenario(localMode = localMode, remoteMode = remoteMode)
+        }
         setContent {
             ZiseeTheme {
-                CallUiPreview(feeds, PreviewScenario(localMode = localMode, remoteMode = remoteMode,
-                    showMeHint = scene), interactive) { finish() }
+                CallUiPreview(feeds, scenario.copy(showMeHint = scene), interactive) { finish() }
             }
         }
     }

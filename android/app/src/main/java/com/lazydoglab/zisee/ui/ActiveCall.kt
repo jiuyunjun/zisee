@@ -3,13 +3,16 @@ package com.lazydoglab.zisee.ui
 import android.app.Activity
 import android.content.pm.ActivityInfo
 import android.os.SystemClock
+import android.view.accessibility.AccessibilityManager
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -32,10 +35,12 @@ import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -43,6 +48,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.view.WindowInsetsControllerCompat
 import com.lazydoglab.zisee.BuildConfig
 import com.lazydoglab.zisee.call.CallUiState
@@ -98,6 +104,7 @@ private val HandleLeftShape = RoundedCornerShape(topEnd = 7.dp, bottomEnd = 7.dp
 private val HandleRightShape = RoundedCornerShape(topStart = 7.dp, bottomStart = 7.dp)
 
 /** FaceCall.dc.html / ShowMe.dc.html: content first, translucent controls, lower-right PiP. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> Unit,
     onShowMe: () -> Unit, onSwitch: () -> Unit, onSpeaker: () -> Unit, onEnd: () -> Unit,
@@ -112,10 +119,12 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
     onSelectVideo: (String) -> Unit = {},
     onStartShare: () -> Unit = {}, onStopShare: () -> Unit = {},
     onSetScreenContentMode: (com.lazydoglab.zisee.rtc.ScreenContentMode) -> Unit = {},
-    arControls: @Composable () -> Unit = {}) {
+    initialMore: Boolean = false,
+    arControls: @Composable () -> Unit = {},
+    debugControls: @Composable () -> Unit = {}) {
     var controls by remember { mutableStateOf(true) }
     var interaction by remember { mutableLongStateOf(0L) }
-    var more by remember { mutableStateOf(false) }
+    var more by remember(initialMore) { mutableStateOf(initialMore) }
     var stableLocalMode by remember { mutableStateOf(CameraMode.FACE) }
     var arKind by remember { mutableStateOf(com.lazydoglab.zisee.ar.session.MarkerKind.PIN) }
     var confirmArClear by remember { mutableStateOf(false) }
@@ -127,7 +136,17 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
     var parked by remember { mutableStateOf(mapOf<String, Boolean>()) }
     var duration by remember { mutableLongStateOf(0L) }
     var tipInset by remember { mutableStateOf(0.dp) }
+    var bottomControlsHeight by remember { mutableStateOf(0.dp) }
+    var arToolsHeight by remember { mutableStateOf(0.dp) }
+    var topControlsHeight by remember { mutableStateOf(0.dp) }
     val density = LocalDensity.current
+    val accessibilityManager = LocalContext.current.getSystemService(AccessibilityManager::class.java)
+    var touchExploration by remember { mutableStateOf(accessibilityManager?.isTouchExplorationEnabled == true) }
+    DisposableEffect(accessibilityManager) {
+        val listener = AccessibilityManager.TouchExplorationStateChangeListener { touchExploration = it }
+        accessibilityManager?.addTouchExplorationStateChangeListener(listener)
+        onDispose { accessibilityManager?.removeTouchExplorationStateChangeListener(listener) }
+    }
     val remoteDual = state.remotePresentation.mode == CameraMode.DUAL
     val scene = state.remotePresentation.mode in setOf(CameraMode.DUAL, CameraMode.BACK_ONLY, CameraMode.AR)
     val localScene = localMode in setOf(CameraMode.DUAL, CameraMode.BACK_ONLY, CameraMode.AR)
@@ -174,14 +193,23 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
         val start = SystemClock.elapsedRealtime()
         while (true) { duration = (SystemClock.elapsedRealtime() - start) / 1000; delay(1_000) }
     }
-    LaunchedEffect(controls, interaction, more, state.machine.phase, state.showMe.mode) {
-        if (controls && !more && state.machine.phase == CallPhase.CONNECTED && !starting) {
+    LaunchedEffect(controls, interaction, more, confirmArClear, state.machine.phase, state.showMe.mode,
+        state.stats.audioDevice.state, touchExploration) {
+        if (controls && !more && !confirmArClear && !touchExploration &&
+            state.stats.audioDevice.state != com.lazydoglab.zisee.rtc.audio.AudioState.INTERRUPTED &&
+            state.machine.phase == CallPhase.CONNECTED && !starting) {
             delay(5_000); controls = false
         }
     }
     // The hint has taught its gesture once it has been read, whether or not it was used.
     LaunchedEffect(hint) { if (hint) { delay(8_000); onHintSeen() } }
     LaunchedEffect(tip) { if (tip == null) tipInset = 0.dp }
+    LaunchedEffect(controls) {
+        if (!controls) {
+            bottomControlsHeight = 0.dp
+            topControlsHeight = 0.dp
+        }
+    }
     Surface(color = CallInk, contentColor = CallText, modifier = Modifier.fillMaxSize()) {
         BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().clickable { controls = !controls; interaction++ }) {
             val order = CallVideoLayout.sources(localMode, state.remotePresentation.mode,
@@ -191,6 +219,10 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                 state.arState == com.lazydoglab.zisee.ar.session.ArSessionState.TRACKING
             val remoteArMarking = main == PeerScene && state.remotePresentation.mode == CameraMode.AR &&
                 state.arCollaboration.joined
+            val compactHeight = maxHeight < 420.dp
+            LaunchedEffect(localArMarking, remoteArMarking) {
+                if (!localArMarking && !remoteArMarking) arToolsHeight = 0.dp
+            }
             val thumbs = order.filter { it != main }
             // Report the resolved main view, including the automatic Show Me choice.
             LaunchedEffect(main, state.remotePresentation.mode) {
@@ -206,7 +238,8 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                 PeerScreen to videoAspect(state.remoteScreen),
             )
             val positions = CallVideoLayout.thumbnails(maxWidth.value.coerceAtLeast(1f),
-                maxHeight.value.coerceAtLeast(1f), thumbs.map { aspects.getValue(it) }, 140f + tipInset.value)
+                maxHeight.value.coerceAtLeast(1f), thumbs.map { aspects.getValue(it) },
+                (bottomControlsHeight + arToolsHeight + tipInset + 12.dp).value)
             val tiles = thumbs.zip(positions).toMap()
             // Pixel drag offsets belong to one geometry. Rotation/stream changes reset them before
             // they can strand a thumbnail outside the resized window.
@@ -348,8 +381,9 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                     }
                 }
             }
-            if (tip != null) Box(Modifier.align(Alignment.BottomEnd).safeDrawingPadding()
-                .padding(end = 16.dp, bottom = 132.dp).widthIn(max = 208.dp)
+            if (tip != null && !(compactHeight && (localArMarking || remoteArMarking))) Box(Modifier.align(Alignment.BottomEnd).safeDrawingPadding()
+                .zIndex(2f)
+                .padding(end = 16.dp, bottom = bottomControlsHeight + arToolsHeight + 12.dp).widthIn(max = 240.dp)
                 .onSizeChanged { tipInset = with(density) { it.height.toDp() } + 8.dp }
                 .clip(RoundedCornerShape(16.dp)).background(DockInk.copy(alpha = 0.82f))
                 .border(1.dp, CallText.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
@@ -358,42 +392,67 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
             }
             // §3.2: stopping a collaboration is a permanent control, never hidden behind "更多",
             // and it stays on screen while the auto-hiding call controls are away.
-            if (sharing) Row(Modifier.align(Alignment.TopCenter).safeDrawingPadding()
-                .padding(top = 68.dp).clip(RoundedCornerShape(22.dp))
+            if (sharing) Column(Modifier.align(if (compactHeight) Alignment.BottomCenter else Alignment.TopCenter)
+                .safeDrawingPadding().zIndex(2f).padding(horizontal = 16.dp)
+                .then(if (compactHeight) Modifier.padding(bottom = bottomControlsHeight + 8.dp)
+                    else Modifier.padding(top = topControlsHeight + 8.dp))
+                .widthIn(max = 440.dp)
+                .clip(RoundedCornerShape(20.dp))
                 .background(DockInk.copy(alpha = 0.88f))
-                .border(1.dp, CallAccent.copy(alpha = .25f), RoundedCornerShape(22.dp))
-                .padding(start = 14.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                .border(1.dp, CallAccent.copy(alpha = .25f), RoundedCornerShape(20.dp))
+                .padding(horizontal = 14.dp, vertical = if (compactHeight) 0.dp else 10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 val shareActive = state.screenShare.phase == com.lazydoglab.zisee.screen.ScreenSharePhase.ACTIVE
-                Text(if (shareActive) "你正在共享屏幕 · 摄像头已暂停" else "正在准备共享…",
-                    fontSize = 12.5.sp, color = CallText)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text(if (shareActive) "正在共享屏幕" else "正在准备共享…",
+                        fontSize = 13.sp, color = CallText, fontWeight = FontWeight.Medium)
+                    TextButton(onClick = { interaction++; onStopShare() },
+                        colors = ButtonDefaults.textButtonColors(contentColor = CallDanger)) { Text("停止共享") }
+                }
                 // §6.1: manual, always-available choice; no automatic classification in V1.
-                if (shareActive) Row(verticalAlignment = Alignment.CenterVertically) {
+                if (shareActive && !compactHeight) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     listOf(com.lazydoglab.zisee.rtc.ScreenContentMode.TEXT to "文字清晰",
                         com.lazydoglab.zisee.rtc.ScreenContentMode.MOTION to "动态流畅").forEach { (mode, label) ->
                         TextButton(onClick = { interaction++; onSetScreenContentMode(mode) },
+                            modifier = Modifier.semantics { selected = state.screenContentMode == mode },
                             colors = ButtonDefaults.textButtonColors(
                                 contentColor = if (state.screenContentMode == mode) CallAccent else CallMuted)) {
                             Text(label, fontSize = 12.sp)
                         }
                     }
                 }
-                TextButton(onClick = { interaction++; onStopShare() },
-                    colors = ButtonDefaults.textButtonColors(contentColor = CallDanger)) { Text("停止共享") }
             }
-            if (localArMarking || remoteArMarking) Row(Modifier.align(Alignment.BottomCenter)
-                .safeDrawingPadding().padding(bottom = 118.dp).clip(RoundedCornerShape(22.dp))
-                .background(DockInk.copy(alpha = 0.88f)).border(1.dp, CallAccent.copy(alpha = .25f), RoundedCornerShape(22.dp))
-                .padding(horizontal = 10.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (localArMarking || remoteArMarking) {
+                val toolModifier = Modifier.align(Alignment.BottomCenter).zIndex(2f).safeDrawingPadding()
+                    .padding(horizontal = 16.dp).padding(bottom = bottomControlsHeight + 8.dp)
+                    .onSizeChanged { arToolsHeight = with(density) { it.height.toDp() } }
+                    .clip(RoundedCornerShape(22.dp)).background(DockInk.copy(alpha = 0.88f))
+                    .border(1.dp, CallAccent.copy(alpha = .25f), RoundedCornerShape(22.dp))
+                    .then(if (compactHeight) Modifier.horizontalScroll(rememberScrollState()) else Modifier)
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
+                val tools: @Composable () -> Unit = {
                 listOf(
                     com.lazydoglab.zisee.ar.session.MarkerKind.PIN to "钉住",
                     com.lazydoglab.zisee.ar.session.MarkerKind.ARROW to "箭头",
                     com.lazydoglab.zisee.ar.session.MarkerKind.CIRCLE to "圈",
                 ).forEach { (kind, label) ->
-                    TextButton(onClick = { arKind = kind }, colors = ButtonDefaults.textButtonColors(
-                        contentColor = if (arKind == kind) CallAccent else CallMuted)) { Text(label) }
+                    TextButton(onClick = { interaction++; arKind = kind },
+                        modifier = Modifier.semantics { selected = arKind == kind },
+                        colors = ButtonDefaults.textButtonColors(
+                            contentColor = if (arKind == kind) CallAccent else CallMuted)) { Text(label) }
                 }
-                TextButton(enabled = state.arOwnMarkerCount > 0, onClick = onArUndo) { Text("撤销") }
-                TextButton(enabled = state.arOwnMarkerCount > 0, onClick = { confirmArClear = true }) { Text("清除我的") }
+                TextButton(enabled = state.arOwnMarkerCount > 0, onClick = { interaction++; onArUndo() },
+                    colors = ButtonDefaults.textButtonColors(contentColor = CallAccent)) { Text("撤销") }
+                TextButton(enabled = state.arOwnMarkerCount > 0, onClick = { interaction++; confirmArClear = true },
+                    colors = ButtonDefaults.textButtonColors(contentColor = CallDanger)) { Text("清除我的") }
+                if (compactHeight && tip != null) Text(tip, Modifier.padding(horizontal = 8.dp),
+                    fontSize = 12.sp, color = CallMuted)
+                }
+                if (compactHeight) Row(toolModifier, verticalAlignment = Alignment.CenterVertically) { tools() }
+                else FlowRow(toolModifier, horizontalArrangement = Arrangement.Center,
+                    verticalArrangement = Arrangement.Center) { tools() }
             }
             if (controls) {
                 Box(Modifier.fillMaxWidth().height(190.dp)
@@ -401,10 +460,19 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                 Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(260.dp)
                     .background(Brush.verticalGradient(listOf(Color.Transparent, CallScrim.copy(alpha = 0.78f)))))
                 Row(Modifier.align(Alignment.TopCenter).fillMaxWidth().safeDrawingPadding()
-                    .padding(horizontal = 20.dp, vertical = 14.dp),
+                    .zIndex(3f).padding(horizontal = 20.dp, vertical = 14.dp)
+                    .onSizeChanged { topControlsHeight = with(density) { it.height.toDp() } },
                     horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Column(verticalArrangement = Arrangement.spacedBy(if (scene) 8.dp else 5.dp)) {
-                        Text(state.peerName, fontSize = 19.sp, fontWeight = FontWeight.Medium)
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text(state.peerName, fontSize = 19.sp, fontWeight = FontWeight.Medium,
+                            maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                        Row(verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                            if (state.machine.phase == CallPhase.CONNECTED) Box(Modifier.size(6.dp).clip(CircleShape).background(CallAccent))
+                            Text(if (state.machine.phase == CallPhase.CONNECTED)
+                                "%02d:%02d".format(duration / 60, duration % 60) else state.status,
+                                fontSize = 13.sp, color = CallMuted, maxLines = 1)
+                        }
                         if (scene) Row(Modifier.height(28.dp).clip(RoundedCornerShape(14.dp))
                             .background(CallAccent.copy(alpha = 0.16f))
                             .border(1.dp, CallAccent.copy(alpha = 0.30f), RoundedCornerShape(14.dp))
@@ -414,19 +482,11 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                             Canvas(Modifier.size(14.dp)) {
                                 scale(size.width / 24f, size.width / 24f, Offset.Zero) { callIcon("show", CallAccent, knockout = CallInk) }
                             }
-                            Text("Show Me · 现场", fontSize = 12.sp, color = CallAccent, fontWeight = FontWeight.Medium)
-                        } else Row(verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                            if (state.machine.phase == CallPhase.CONNECTED) {
-                                Box(Modifier.size(6.dp).clip(CircleShape).background(CallAccent))
-                            }
-                            Text(if (state.machine.phase == CallPhase.CONNECTED)
-                                "%02d:%02d".format(duration / 60, duration % 60) else state.status,
-                                fontSize = 13.sp, color = CallMuted)
+                            Text("对方现场", fontSize = 12.sp, color = CallAccent, fontWeight = FontWeight.Medium)
                         }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Box(Modifier.size(44.dp).clip(CircleShape).background(Color(0xFF0C1216).copy(alpha = 0.5f))
+                        Box(Modifier.size(48.dp).clip(CircleShape).background(Color(0xFF0C1216).copy(alpha = 0.5f))
                             .border(1.dp, CallText.copy(alpha = 0.10f), CircleShape)
                             .clickable { interaction++; onMinimize() }
                             .semantics { role = Role.Button; contentDescription = "最小化通话" },
@@ -435,44 +495,55 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                                 scale(size.width / 24f, size.width / 24f, Offset.Zero) { callIcon("minimize", CallText) }
                             }
                         }
-                        Box(Modifier.size(44.dp).clip(CircleShape).background(Color(0xFF0C1216).copy(alpha = 0.5f))
+                        Box(Modifier.size(48.dp).clip(CircleShape)
+                            .background(if (state.speakerOn) CallAccent else Color(0xFF0C1216).copy(alpha = 0.5f))
                             .border(1.dp, CallText.copy(alpha = 0.10f), CircleShape)
                             .clickable { interaction++; onSpeaker() }
                             .semantics { role = Role.Button; contentDescription = if (state.speakerOn) "免提已开启" else "免提已关闭" },
                             contentAlignment = Alignment.Center) {
                             Canvas(Modifier.size(20.dp)) {
                                 scale(size.width / 24f, size.width / 24f, Offset.Zero) {
-                                    callIcon(if (state.speakerOn) "speaker" else "speaker-off", CallText)
+                                    callIcon(if (state.speakerOn) "speaker" else "speaker-off",
+                                        if (state.speakerOn) CallAccentInk else CallText)
                                 }
                             }
                         }
                     }
                 }
                 Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().safeDrawingPadding()
-                    .padding(bottom = 10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    .zIndex(3f).padding(bottom = 10.dp)
+                    .onSizeChanged { bottomControlsHeight = with(density) { it.height.toDp() } },
+                    horizontalAlignment = Alignment.CenterHorizontally) {
                     Row(Modifier.widthIn(max = 440.dp).fillMaxWidth().padding(horizontal = 12.dp).clip(DockShape)
                         .background(DockInk.copy(alpha = 0.66f))
                         .border(1.dp, CallText.copy(alpha = 0.08f), DockShape).padding(10.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically) {
-                        DockButton(if (state.muted) "取消静音" else "静音", "mic", off = state.muted) { interaction++; onMute() }
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.Top) {
+                        DockButton(if (state.muted) "已静音" else "静音", "mic", off = state.muted,
+                            modifier = Modifier.weight(1f),
+                            showLabel = true, description = if (state.muted) "麦克风已静音，点按取消静音" else "点按静音") { interaction++; onMute() }
                         // A share owns every camera, so both camera controls wait for it to end
                         // rather than offering an action that cannot take effect.
-                        DockButton(if (sharing) "已暂停" else if (state.cameraEnabled) "关闭画面" else "开启画面",
+                        DockButton(if (sharing) "已暂停" else if (state.cameraEnabled) "摄像头" else "已关闭",
                             "camera", off = sharing || !state.cameraEnabled,
-                            enabled = !sharing) { interaction++; onCamera() }
+                            modifier = Modifier.weight(1f),
+                            enabled = !sharing, showLabel = true,
+                            description = if (sharing) "屏幕共享期间摄像头已暂停" else if (state.cameraEnabled) "点按关闭摄像头" else "摄像头已关闭，点按开启") { interaction++; onCamera() }
                         DockButton(if (localScene) "看我" else "给你看", "show", active = localScene && !sharing,
-                            available = !localScene, enabled = state.cameraEnabled && !starting && !sharing) { interaction++; onShowMe() }
-                        DockButton("更多", "more") { interaction++; more = true }
-                        DockButton("挂断", "end", danger = true, width = 74.dp, action = onEnd)
+                            modifier = Modifier.weight(1f),
+                            available = !localScene, enabled = state.cameraEnabled && !starting && !sharing,
+                            showLabel = true, description = if (sharing) "屏幕共享期间无法开启现场" else "点按${if (localScene) "切回人像" else "展示现场"}") { interaction++; onShowMe() }
+                        DockButton("更多", "more", modifier = Modifier.weight(1f), showLabel = true) { interaction++; more = true }
+                        DockButton("挂断", "end", modifier = Modifier.weight(1f), danger = true, showLabel = true, action = onEnd)
                     }
-                    Text("轻点画面可隐藏控制", Modifier.padding(top = 6.dp), fontSize = 11.sp, color = CallCaption)
                 }
             }
         }
         if (more) CallOptions(state, onDismiss = { more = false; interaction++ }, onSwitch = onSwitch,
             onNoiseMode = onNoiseMode, sharing = sharing,
-            onStartShare = onStartShare, onStopShare = onStopShare, arControls = arControls)
+            onStartShare = onStartShare, onStopShare = onStopShare,
+            onSetScreenContentMode = onSetScreenContentMode,
+            arControls = arControls, debugControls = debugControls)
         if (confirmArClear) AlertDialog(onDismissRequest = { confirmArClear = false },
             title = { Text("清除我的标记？") },
             text = { Text("双方都将看不到你在这个现场放置的 ${state.arOwnMarkerCount} 个标记。此操作不能撤销。") },
@@ -481,59 +552,82 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun CallOptions(state: CallUiState, onDismiss: () -> Unit, onSwitch: () -> Unit,
     onNoiseMode: (com.lazydoglab.zisee.rtc.audio.processing.NoiseSuppressionMode) -> Unit,
     sharing: Boolean, onStartShare: () -> Unit, onStopShare: () -> Unit,
-    arControls: @Composable () -> Unit) {
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Color(0xFF12181D), contentColor = CallText) {
+    onSetScreenContentMode: (com.lazydoglab.zisee.rtc.ScreenContentMode) -> Unit,
+    arControls: @Composable () -> Unit, debugControls: @Composable () -> Unit) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    MaterialTheme(colorScheme = darkColorScheme(primary = CallAccent, onPrimary = CallAccentInk,
+        surface = CallPanel, onSurface = CallText)) {
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState,
+        containerColor = CallPanel, contentColor = CallText) {
+        DarkSheetSystemBars()
         Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp).padding(bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("通话选项", style = MaterialTheme.typography.titleMedium)
-            arControls()
-            Text("展示与协作", style = MaterialTheme.typography.titleSmall)
-            // §5.2: one collaboration per call, so the entry says which one is in the way rather
-            // than opening a system prompt that has to be undone.
-            val shareBlocker = when {
-                state.showMe.mode == CameraMode.AR -> "请先结束我的 AR 现场"
-                state.remoteShare.sharing -> "对方正在共享屏幕"
-                else -> null
-            }
-            TextButton(onClick = { onDismiss(); if (sharing) onStopShare() else onStartShare() },
-                enabled = sharing || shareBlocker == null,
-                colors = ButtonDefaults.textButtonColors(
-                    contentColor = if (sharing) CallDanger else CallAccent)) {
-                Text(if (sharing) "停止共享屏幕" else "共享我的屏幕")
-            }
-            Text(shareBlocker ?: "共享期间只发送屏幕：所有摄像头会暂停，停止后自动恢复。" +
-                "你仍可以说话，停止共享不会挂断；标注只表达位置，不会让对方操作你的手机。",
-                style = MaterialTheme.typography.bodySmall, color = CallMuted)
-            TextButton(onClick = { onDismiss(); onSwitch() },
-                enabled = state.cameraEnabled && state.showMe.mode !in setOf(CameraMode.STARTING, CameraMode.AR),
-                colors = ButtonDefaults.textButtonColors(contentColor = CallAccent)) { Text("切换前后摄像头") }
-            Text("「给你看」在支持双摄的设备上同时展示人像与现场，否则改用单后摄。",
-                style = MaterialTheme.typography.bodySmall, color = CallMuted)
-            Text("麦克风降噪", style = MaterialTheme.typography.titleSmall)
-            for (mode in com.lazydoglab.zisee.rtc.audio.processing.NoiseSuppressionMode.entries) {
-                Row(Modifier.fillMaxWidth().clickable { onNoiseMode(mode) }, verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(selected = state.stats.audioProcessing.mode == mode, onClick = { onNoiseMode(mode) })
-                    Text(mode.label)
+            OptionGroup("画面与共享") {
+                val shareBlocker = when {
+                    state.showMe.mode == CameraMode.AR -> "请先结束我的 AR 现场"
+                    state.remoteShare.sharing -> "对方正在共享屏幕"
+                    else -> null
+                }
+                FullWidthAction(if (sharing) "停止共享屏幕" else "共享我的屏幕",
+                    enabled = sharing || shareBlocker == null, danger = sharing) {
+                    onDismiss(); if (sharing) onStopShare() else onStartShare()
+                }
+                Text(shareBlocker ?: "共享期间摄像头会暂停，停止后自动恢复；对方不能操作你的手机。",
+                    style = MaterialTheme.typography.bodySmall, color = CallMuted)
+                FullWidthAction("切换前后摄像头",
+                    enabled = !sharing && state.cameraEnabled && state.showMe.mode !in setOf(CameraMode.STARTING, CameraMode.AR)) {
+                    onDismiss(); onSwitch()
+                }
+                Text(if (sharing) "停止共享后才能切换摄像头。" else
+                    "支持双摄时「给你看」会同时展示人像与现场，否则使用后摄。",
+                    style = MaterialTheme.typography.bodySmall, color = CallMuted)
+                if (sharing && state.screenShare.phase == com.lazydoglab.zisee.screen.ScreenSharePhase.ACTIVE) {
+                    Text("共享画面质量", style = MaterialTheme.typography.titleSmall)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(com.lazydoglab.zisee.rtc.ScreenContentMode.TEXT to "文字清晰",
+                            com.lazydoglab.zisee.rtc.ScreenContentMode.MOTION to "动态流畅").forEach { (mode, label) ->
+                            TextButton(onClick = { onSetScreenContentMode(mode) },
+                                modifier = Modifier.semantics { selected = state.screenContentMode == mode },
+                                colors = ButtonDefaults.textButtonColors(
+                                    contentColor = if (state.screenContentMode == mode) CallAccent else CallMuted)) {
+                                Text(label)
+                            }
+                        }
+                    }
                 }
             }
-            Text(if (state.stats.audioProcessing.state == com.lazydoglab.zisee.rtc.audio.processing.AiState.DEGRADED)
-                "当前使用标准降噪，以保持语音连续。" else "AI 在本机处理语音。自动模式会根据设备状态降级。",
-                style = MaterialTheme.typography.bodySmall, color = CallMuted)
+            OptionGroup("AR 现场协作") { arControls() }
+            OptionGroup("声音") {
+                Text("麦克风降噪", style = MaterialTheme.typography.titleSmall)
+                for (mode in com.lazydoglab.zisee.rtc.audio.processing.NoiseSuppressionMode.entries) {
+                    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                        .selectable(selected = state.stats.audioProcessing.mode == mode,
+                            role = Role.RadioButton, onClick = { onNoiseMode(mode) }),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = state.stats.audioProcessing.mode == mode, onClick = null)
+                        Text(mode.label)
+                    }
+                }
+                Text(if (state.stats.audioProcessing.state == com.lazydoglab.zisee.rtc.audio.processing.AiState.DEGRADED)
+                    "当前使用标准降噪，以保持语音连续。" else "AI 在本机处理语音。自动模式会根据设备状态降级。",
+                    style = MaterialTheme.typography.bodySmall, color = CallMuted)
+            }
             if (BuildConfig.DEBUG) {
                 val stats = state.stats
-                Text("连接详情", Modifier.padding(top = 8.dp), style = MaterialTheme.typography.titleSmall)
-                Text("${stats.candidateType} → ${stats.remoteCandidateType} · RTT ${stats.measuredRttMs ?: "—"} ms\n" +
+                OptionGroup("调试详情") {
+                    Text("${stats.candidateType} → ${stats.remoteCandidateType} · RTT ${stats.measuredRttMs ?: "—"} ms\n" +
                     "接收 ${stats.videoWidth} × ${stats.videoHeight} · ${stats.videoFps} fps\n" +
                     "发送 ${stats.sentWidth} × ${stats.sentHeight} · ${stats.sentFps} fps\n" +
                     "收/发 ${stats.receiveKbps}/${stats.sendKbps} kbps · 上行估计 ${stats.availableOutgoingKbps ?: "—"} kbps\n" +
                     "${stats.codec} · ${stats.encoder}\n限制 ${stats.qualityLimitation} · 热状态 ${stats.thermalStatus ?: "—"}",
-                    style = MaterialTheme.typography.bodySmall, color = CallMuted)
+                        style = MaterialTheme.typography.bodySmall, color = CallMuted)
                 val audio = stats.audio
                 val processing = stats.audioProcessing
                 Text("音频 ${stats.audioDevice.state} · 输入 ${stats.audioDevice.input} · 输出 ${stats.audioDevice.output}\n" +
@@ -543,9 +637,48 @@ private fun CallOptions(state: CallUiState, onDismiss: () -> Unit, onSwitch: () 
                     "NetEq ${audio.jitterBufferMs?.toLong() ?: "—"} ms · PLC ${audio.concealmentRatio ?: "—"}\n" +
                     "AI avg/p95/p99/max ${processing.averageUs}/${processing.p95Us}/${processing.p99Us}/${processing.maxUs} µs\n" +
                     "超时 ${processing.deadlineMisses} · 回退 ${processing.fallbackCount} ${processing.fallback}",
-                    style = MaterialTheme.typography.bodySmall, color = CallMuted)
+                        style = MaterialTheme.typography.bodySmall, color = CallMuted)
+                }
             }
+            debugControls()
         }
+    }
+    }
+}
+
+@Composable
+private fun DarkSheetSystemBars() {
+    val view = LocalView.current
+    DisposableEffect(view) {
+        val window = (view.parent as? DialogWindowProvider)?.window
+        val bars = window?.let { WindowInsetsControllerCompat(it, view) }
+        val previousStatus = bars?.isAppearanceLightStatusBars
+        val previousNavigation = bars?.isAppearanceLightNavigationBars
+        bars?.isAppearanceLightStatusBars = false
+        bars?.isAppearanceLightNavigationBars = false
+        onDispose {
+            previousStatus?.let { bars?.isAppearanceLightStatusBars = it }
+            previousNavigation?.let { bars?.isAppearanceLightNavigationBars = it }
+        }
+    }
+}
+
+@Composable
+private fun OptionGroup(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Column(Modifier.fillMaxWidth().clip(StandardCardShape)
+        .background(CallText.copy(alpha = 0.06f)).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(title, style = MaterialTheme.typography.titleSmall, color = CallText)
+        content()
+    }
+}
+
+@Composable
+private fun FullWidthAction(label: String, enabled: Boolean = true, danger: Boolean = false,
+    onClick: () -> Unit) {
+    TextButton(onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+        colors = ButtonDefaults.textButtonColors(contentColor = if (danger) CallDanger else CallAccent)) {
+        Text(label, modifier = Modifier.fillMaxWidth())
     }
 }
 
@@ -583,8 +716,9 @@ private fun VideoTile(feed: com.lazydoglab.zisee.rtc.VideoFeed?, live: Boolean, 
 
 @Composable
 private fun BoxScope.PipLabel(text: String, compact: Boolean = false) {
-    Box(Modifier.align(Alignment.BottomStart).padding(if (compact) 2.dp else 8.dp).height(20.dp).clip(RoundedCornerShape(10.dp))
-        .background(BadgeInk.copy(alpha = 0.66f)).padding(horizontal = if (compact) 3.dp else 8.dp),
+    Box(Modifier.align(Alignment.BottomStart).padding(if (compact) 2.dp else 8.dp).heightIn(min = 20.dp)
+        .clip(RoundedCornerShape(10.dp)).background(BadgeInk.copy(alpha = 0.66f))
+        .padding(horizontal = if (compact) 3.dp else 8.dp, vertical = 2.dp),
         contentAlignment = Alignment.Center) {
         Text(text, fontSize = 11.sp, color = PipInk)
     }
@@ -597,7 +731,8 @@ private fun BoxScope.PipLabel(text: String, compact: Boolean = false) {
 @Composable
 internal fun DockButton(label: String, kind: String, off: Boolean = false, active: Boolean = false,
     available: Boolean = false, danger: Boolean = false, enabled: Boolean = true,
-    width: Dp = 56.dp, action: () -> Unit) {
+    width: Dp = 56.dp, modifier: Modifier = Modifier, showLabel: Boolean = false,
+    description: String = label, action: () -> Unit) {
     val background = when {
         danger -> CallDanger
         active -> CallAccent
@@ -615,17 +750,24 @@ internal fun DockButton(label: String, kind: String, off: Boolean = false, activ
     // The knockout fills the overlap inside the Show Me glyph, so it tracks the button surface.
     val knockout = if (off) CallText else if (active) CallAccent else DockInk
     val dim = if (enabled) 1f else 0.4f
-    Box(Modifier.size(width, 56.dp).clip(ButtonShape)
-        .background(background.copy(alpha = background.alpha * dim))
-        .border(1.dp, outline.copy(alpha = outline.alpha * dim), ButtonShape)
+    Column(modifier.then(Modifier.widthIn(min = if (showLabel) 48.dp else width).heightIn(min = 56.dp))
+        .clip(if (showLabel) RoundedCornerShape(22.dp) else ButtonShape)
         .clickable(enabled = enabled, onClick = action)
-        .semantics { role = Role.Button; contentDescription = label },
-        contentAlignment = Alignment.Center) {
-        Canvas(Modifier.size(23.dp)) {
-            scale(size.width / 24f, size.width / 24f, Offset.Zero) {
-                callIcon(kind, ink.copy(alpha = ink.alpha * dim), knockout, off)
+        .semantics { role = Role.Button; contentDescription = description },
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Box(Modifier.size(if (showLabel) 48.dp else 56.dp).clip(ButtonShape)
+            .background(background.copy(alpha = background.alpha * dim))
+            .border(1.dp, outline.copy(alpha = outline.alpha * dim), ButtonShape),
+            contentAlignment = Alignment.Center) {
+            Canvas(Modifier.size(23.dp)) {
+                scale(size.width / 24f, size.width / 24f, Offset.Zero) {
+                    callIcon(kind, ink.copy(alpha = ink.alpha * dim), knockout, off)
+                }
             }
         }
+        if (showLabel) Text(label, fontSize = 11.sp, lineHeight = 13.sp,
+            color = CallText.copy(alpha = dim), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
     }
 }
 

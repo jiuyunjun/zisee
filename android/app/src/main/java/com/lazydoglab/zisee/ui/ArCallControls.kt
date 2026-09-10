@@ -45,7 +45,9 @@ internal fun ArCallControls(state: CallUiState, model: CallViewModel) {
     val active = state.showMe.mode == CameraMode.AR || state.arState in setOf(
         ArSessionState.STARTING, ArSessionState.SCANNING, ArSessionState.TRACKING, ArSessionState.TRACKING_LOST)
     val collaboration = state.arCollaboration
-    Text("AR 现场协作")
+    val sharing = state.screenShare.phase in setOf(
+        com.lazydoglab.zisee.screen.ScreenSharePhase.STARTING,
+        com.lazydoglab.zisee.screen.ScreenSharePhase.ACTIVE)
     Text(when (state.arState) {
         ArSessionState.STARTING -> "正在接管摄像头…"
         ArSessionState.SCANNING -> "缓慢移动手机，扫描现场表面。"
@@ -76,9 +78,10 @@ internal fun ArCallControls(state: CallUiState, model: CallViewModel) {
             TextButton(enabled = collaboration.connected, onClick = model::joinRemoteAr) { Text("加入对方标记") }
         }
     } else {
-        TextButton(enabled = activity != null && state.cameraEnabled && state.showMe.mode != CameraMode.STARTING &&
+        TextButton(enabled = !sharing && activity != null && state.cameraEnabled && state.showMe.mode != CameraMode.STARTING &&
             availability in setOf(ArAvailability.READY, ArAvailability.INSTALL_REQUIRED),
             onClick = { explanation = true }) { Text("开启我的现场") }
+        if (sharing) Text("停止共享屏幕后才能开启 AR 现场。")
         if (availability in setOf(ArAvailability.UNAVAILABLE, ArAvailability.CHECKING)) {
             TextButton(onClick = {
                 ArCoreAvailability.check(context) { availability = it }

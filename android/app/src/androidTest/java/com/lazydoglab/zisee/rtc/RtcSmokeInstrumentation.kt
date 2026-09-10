@@ -26,6 +26,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
     private var preview = false
     private var capabilities = false
     private var orientationPreview = false
+    private var callUiPreview = false
     private var cameraTransform = false
     private var arChannel = false
     private var arCameraRender = false
@@ -42,6 +43,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
         preview = arguments?.getString("preview") == "true"
         capabilities = arguments?.getString("capabilities") == "true"
         orientationPreview = arguments?.getString("orientationPreview") == "true"
+        callUiPreview = arguments?.getString("callUiPreview") == "true"
         cameraTransform = arguments?.getString("cameraTransform") == "true"
         arChannel = arguments?.getString("arChannel") == "true"
         arCameraRender = arguments?.getString("arCameraRender") == "true"
@@ -115,6 +117,45 @@ class RtcSmokeInstrumentation : Instrumentation() {
             if (audio) {
                 AudioSmoke.run(targetContext, output)
                 output.putString("stream", "PASS: native model, finite output, repeated lifecycle; synthetic input only\n")
+                finish(Activity.RESULT_OK, output)
+                return
+            }
+            if (callUiPreview) {
+                val files = mutableListOf<String>()
+                val scenarios = listOf("normal", "muted-camera-off", "long-name", "sharing-starting",
+                    "sharing-active", "ar-notice", "more")
+                try {
+                    for ((rotation, orientation) in listOf(
+                        android.app.UiAutomation.ROTATION_FREEZE_0 to android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,
+                        android.app.UiAutomation.ROTATION_FREEZE_90 to android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)) {
+                        check(uiAutomation.setRotation(rotation))
+                        val suffix = if (orientation == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT) "portrait" else "landscape"
+                        for (scenario in scenarios) {
+                            val activity = startActivitySync(android.content.Intent().setClassName(targetContext.packageName,
+                                "com.lazydoglab.zisee.ui.CallPreviewActivity")
+                                .putExtra("callUiScenario", scenario)
+                                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+                            try {
+                                waitForIdleSync()
+                                runOnMainSync { activity.requestedOrientation = orientation }
+                                waitForIdleSync()
+                                android.os.SystemClock.sleep(700)
+                                val screenshot = requireNotNull(uiAutomation.takeScreenshot())
+                                val name = "call-ui-$scenario-$suffix.png"
+                                try {
+                                    check(if (orientation == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
+                                        screenshot.height > screenshot.width else screenshot.width > screenshot.height)
+                                    java.io.File(targetContext.getExternalFilesDir(null), name).outputStream().use {
+                                        check(screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it))
+                                    }
+                                    files += name
+                                } finally { screenshot.recycle() }
+                            } finally { runOnMainSync { activity.finish() } }
+                        }
+                    }
+                } finally { uiAutomation.setRotation(android.app.UiAutomation.ROTATION_UNFREEZE) }
+                output.putString("stream", "PASS: synthetic call UI captures; no media or ARCore\n" +
+                    files.joinToString("\n") { "  $it" } + "\n")
                 finish(Activity.RESULT_OK, output)
                 return
             }

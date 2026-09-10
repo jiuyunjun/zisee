@@ -38,6 +38,8 @@ import com.lazydoglab.zisee.rtc.CameraPresentation
 import com.lazydoglab.zisee.rtc.MediaStats
 import com.lazydoglab.zisee.rtc.ShowMeState
 import com.lazydoglab.zisee.rtc.VideoFeed
+import com.lazydoglab.zisee.screen.ScreenSharePhase
+import com.lazydoglab.zisee.screen.ScreenShareState
 import com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode
 import com.lazydoglab.zisee.rtc.audio.AudioDeviceState
 import com.lazydoglab.zisee.rtc.audio.AudioState
@@ -67,6 +69,9 @@ internal data class PreviewScenario(
     val audioInterrupted: Boolean = false,
     val audioOnly: Boolean = false,
     val selectedVideoSource: String? = null,
+    val peerName: String = "林然",
+    val sharePhase: ScreenSharePhase = ScreenSharePhase.IDLE,
+    val openMore: Boolean = false,
 ) {
     val localScene: Boolean get() = localMode in setOf(CameraMode.DUAL, CameraMode.BACK_ONLY, CameraMode.AR)
 }
@@ -80,7 +85,7 @@ private val PreviewPeerSession: UUID = UUID.fromString("00000000-0000-4000-8000-
  * order — the same four tiles a real call can carry.
  */
 internal fun PreviewScenario.toUiState(feeds: List<VideoFeed>) = CallUiState(
-    visible = true, busy = true, peerName = "林然", status = "通话中",
+    visible = true, busy = true, peerName = peerName, status = "通话中",
     // A non-IDLE phase requires a session, so the fixture supplies a complete one.
     machine = CallState(CallPhase.CONNECTED, CallSession("preview", "peer")),
     local = feeds[0], remote = feeds[1], localBack = feeds[2], remoteBack = feeds[3],
@@ -91,6 +96,7 @@ internal fun PreviewScenario.toUiState(feeds: List<VideoFeed>) = CallUiState(
         audioBandwidth = if (audioOnly) AudioBandwidthMode.AUDIO_ONLY else AudioBandwidthMode.ALL_VIDEO),
     arState = arState, arNotice = arNotice, arOwnMarkerCount = ownMarkers,
     selectedVideoSource = selectedVideoSource,
+    screenShare = ScreenShareState(phase = sharePhase),
     arCollaboration = ArCollaborationState(connected = true,
         localSession = if (localMode == CameraMode.AR) PreviewFieldSession else null,
         fieldPeerJoined = localMode == CameraMode.AR && fieldPeerJoined,
@@ -122,7 +128,15 @@ internal fun CallUiPreview(feeds: List<VideoFeed>, initial: PreviewScenario, int
         onArUndo = { scenario = scenario.copy(ownMarkers = (scenario.ownMarkers - 1).coerceAtLeast(0)) },
         onArClearOwn = { scenario = scenario.copy(ownMarkers = 0) },
         onSelectVideo = { scenario = scenario.copy(selectedVideoSource = it) },
-        arControls = { if (interactive) PreviewControls(scenario, onExit) { scenario = it } })
+        onStartShare = { scenario = scenario.copy(sharePhase = ScreenSharePhase.STARTING) },
+        onStopShare = { scenario = scenario.copy(sharePhase = ScreenSharePhase.STOPPED) },
+        initialMore = initial.openMore,
+        arControls = {
+            Text("使用后置摄像头进行现场跟踪。", fontSize = 13.sp, color = CallMuted)
+            TextButton(enabled = scenario.cameraEnabled && scenario.sharePhase !in setOf(
+                ScreenSharePhase.STARTING, ScreenSharePhase.ACTIVE), onClick = {}) { Text("开启我的现场") }
+        },
+        debugControls = { if (interactive) PreviewControls(scenario, onExit) { scenario = it } })
 }
 
 /** Debug-only scenario switches. Deliberately plain: this panel is a fixture, not a design surface. */
