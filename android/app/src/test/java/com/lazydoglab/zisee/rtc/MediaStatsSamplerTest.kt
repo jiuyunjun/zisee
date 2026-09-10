@@ -10,7 +10,7 @@ class MediaStatsSamplerTest {
             "packetsSent" to count * 20, "totalPacketSendDelay" to count * 0.4, "remoteId" to "remote")),
         StatsEntry("in", "inbound-rtp", mapOf("kind" to "video", "bytesReceived" to count * 2000,
             "packetsLost" to 999, "jitterBufferDelay" to count * 0.5, "jitterBufferEmittedCount" to count * 10)),
-        StatsEntry("remote", "remote-inbound-rtp", mapOf("fractionLost" to 0.01)),
+        StatsEntry("remote", "remote-inbound-rtp", mapOf("fractionLost" to 0.01), count * 1_000.0),
         StatsEntry("transport", "transport", mapOf("selectedCandidatePairId" to "pair")),
         StatsEntry("pair", "candidate-pair", mapOf("currentRoundTripTime" to 0.05, "availableOutgoingBitrate" to 4_000_000)),
     )

@@ -19,10 +19,26 @@ data class MediaStats(
     val codec: String = "unknown", val encoder: String = "unknown", val powerEfficientEncoder: Boolean? = null,
     val qualityLimitation: String = "unknown", val thermalStatus: Int? = null,
     val quality: VideoQuality = VideoQuality.HD,
+    /** Only unambiguously identified local sources; never infer identity from report order. */
+    val outboundVideo: Map<String, VideoSendStats> = emptyMap(),
     val audio: com.lazydoglab.zisee.rtc.audio.quality.AudioStats = com.lazydoglab.zisee.rtc.audio.quality.AudioStats(),
     val audioProcessing: com.lazydoglab.zisee.rtc.audio.processing.AudioProcessingStats = com.lazydoglab.zisee.rtc.audio.processing.AudioProcessingStats(),
     val audioDevice: com.lazydoglab.zisee.rtc.audio.AudioDeviceState = com.lazydoglab.zisee.rtc.audio.AudioDeviceState(),
     val audioBandwidth: com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode = com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.ALL_VIDEO,
+)
+
+data class VideoSendStats(
+    val trackId: String,
+    val statsId: String,
+    val sampledAtMs: Long,
+    val active: Boolean?,
+    val width: Int?, val height: Int?, val fps: Double?,
+    val sendKbps: Double?,
+    /** Subset of sendKbps, not additional traffic to add to it. */
+    val retransmittedKbps: Double?,
+    val encodeMs: Double?, val sendDelayMs: Double?,
+    val outboundLoss: Double?, val outboundReportFresh: Boolean,
+    val qualityLimitation: String,
 )
 
 /** Framework-free input makes direction, missing values and counter resets testable on the JVM. */
@@ -34,6 +50,8 @@ data class StatsEntry(val id: String, val type: String, val members: Map<String,
 class MediaStatsSampler {
     private var previous = emptyMap<String, StatsEntry>()
     private var previousMs: Long? = null
+    private data class RemoteReport(val timestampUs: Double, val seenMs: Long, val pairId: String?)
+    private val remoteReports = mutableMapOf<String, RemoteReport>()
 
     /**
      * [remoteTrackId] is the id the peer's track actually arrived with. It cannot be assumed to be
@@ -41,12 +59,19 @@ class MediaStatsSampler {
      * matching on the expected name instead selected an arbitrary inbound stream. Picking the
      * peer's idle camera that way left framesDecoded at zero for the whole call.
      */
-    fun sample(entries: List<StatsEntry>, nowMs: Long, localBack: Boolean = false, remoteTrackId: String? = null): MediaStats {
+    fun sample(entries: List<StatsEntry>, nowMs: Long, localBack: Boolean = false, remoteTrackId: String? = null,
+               localTrackId: String = if (localBack) "video_back" else "video_front"): MediaStats {
         val byId = entries.associateBy { it.id }
-        val elapsed = previousMs?.let { nowMs - it }?.takeIf { it in 1..5_000 }
+        val elapsed = previousMs?.let { nowMs - it }?.takeIf { it in 1..3_000 }
         fun delta(entry: StatsEntry?, key: String): Double? {
             if (entry == null || elapsed == null) return null
-            val before = previous[entry.id]?.number(key) ?: return null
+            val old = previous[entry.id] ?: return null
+            if (old.type != entry.type || listOf("ssrc", "mediaSourceId", "trackIdentifier").any {
+                    old.members[it] != entry.members[it]
+                }) return null
+            val sourceId = entry.members["mediaSourceId"]
+            if (byId[sourceId]?.members?.get("trackIdentifier") != previous[sourceId]?.members?.get("trackIdentifier")) return null
+            val before = old.number(key) ?: return null
             val after = entry.number(key) ?: return null
             return (after - before).takeIf { it >= 0 }
         }
@@ -74,11 +99,53 @@ class MediaStatsSampler {
         val lost = delta(audio, "packetsLost")
         val received = delta(audio, "packetsReceived")
         val outboundVideos = entries.filter { it.type == "outbound-rtp" && it.kind == "video" && it.number("framesEncoded") != null }
-        val outbound = outboundVideos.firstOrNull { byId[it.members["mediaSourceId"]]?.members?.get("trackIdentifier") == if (localBack) "video_back" else "video_front" }
-            ?: outboundVideos.firstOrNull()
+        fun trackId(entry: StatsEntry): String? {
+            val direct = entry.members["trackIdentifier"] as? String
+            val source = byId[entry.members["mediaSourceId"]]?.members?.get("trackIdentifier") as? String
+            if (direct != null && source != null && direct != source) return null
+            return (source ?: direct)?.takeIf { it in setOf("video_front", "video_back", "video_screen") }
+        }
+        val identified = outboundVideos.mapNotNull { entry -> trackId(entry)?.let { it to entry } }
+            .groupBy({ it.first }, { it.second }).mapNotNull { (id, streams) ->
+                streams.singleOrNull()?.let { id to it }
+            }.toMap()
+        // Keep legacy single-stream diagnostics when identifiers are absent, but never pick an
+        // arbitrary camera while a different source (especially the screen) is being sent.
+        val outbound = identified[localTrackId] ?: outboundVideos.singleOrNull()?.takeIf {
+            it.members["trackIdentifier"] == null && byId[it.members["mediaSourceId"]]?.members?.get("trackIdentifier") == null
+        }
         val remote = byId[outbound?.members?.get("remoteId")]
         val transport = entries.firstOrNull { it.type == "transport" && it.members["selectedCandidatePairId"] != null }
         val pair = byId[transport?.members?.get("selectedCandidatePairId")]
+        remoteReports.keys.retainAll(entries.filter { it.type == "remote-inbound-rtp" }.map { it.id }.toSet())
+        fun fresh(report: StatsEntry?): Boolean {
+            if (report == null || report.type != "remote-inbound-rtp") return false
+            val stamp = report.timestampUs?.takeIf { it.isFinite() && it >= 0 } ?: return false
+            val old = remoteReports[report.id]
+            if (old == null || old.timestampUs != stamp) remoteReports[report.id] = RemoteReport(stamp, nowMs, pair?.id)
+            val seen = requireNotNull(remoteReports[report.id])
+            return seen.pairId == pair?.id && nowMs - seen.seenMs in 0..3_000
+        }
+        val remoteFresh = fresh(remote)
+        val videoStats = identified.mapValues { (id, entry) ->
+            val feedback = byId[entry.members["remoteId"]]
+            val feedbackFresh = fresh(feedback)
+            VideoSendStats(
+                trackId = id, statsId = entry.id, sampledAtMs = nowMs,
+                active = entry.members["active"] as? Boolean,
+                width = entry.number("frameWidth")?.takeIf { it > 0 }?.toInt(),
+                height = entry.number("frameHeight")?.takeIf { it > 0 }?.toInt(),
+                fps = entry.number("framesPerSecond")?.takeIf { it >= 0 },
+                sendKbps = delta(entry, "bytesSent")?.let { it * 8 / requireNotNull(elapsed) },
+                retransmittedKbps = delta(entry, "retransmittedBytesSent")?.let { it * 8 / requireNotNull(elapsed) },
+                encodeMs = average(entry, "totalEncodeTime", "framesEncoded"),
+                sendDelayMs = average(entry, "totalPacketSendDelay", "packetsSent"),
+                outboundLoss = feedback?.number("fractionLost")?.takeIf { feedbackFresh && it in 0.0..1.0 },
+                outboundReportFresh = feedbackFresh,
+                qualityLimitation = (entry.members["qualityLimitationReason"] as? String)
+                    ?.takeIf { it in setOf("none", "cpu", "bandwidth", "other") } ?: "unknown",
+            )
+        }
         val localCandidate = byId[pair?.members?.get("localCandidateId")]
         fun candidate(key: String) = (byId[pair?.members?.get(key)]?.members?.get("candidateType") as? String)
             ?.takeIf { it in setOf("host", "srflx", "prflx", "relay") } ?: "—"
@@ -121,7 +188,8 @@ class MediaStatsSampler {
             jitterMs = ((audio ?: inbound)?.number("jitter")?.times(1000))?.toLong() ?: 0,
             packetsLost = total("inbound-rtp", null, "packetsLost"), receiveKbps = rate("inbound-rtp"), sendKbps = rate("outbound-rtp"),
             availableOutgoingKbps = pair?.number("availableOutgoingBitrate")?.takeIf { it > 0 }?.div(1000)?.toLong(),
-            outboundLoss = remote?.number("fractionLost")?.takeIf { it in 0.0..1.0 },
+            outboundLoss = remote?.number("fractionLost")?.takeIf { remoteFresh && it in 0.0..1.0 },
+            outboundVideo = videoStats,
             encodeMs = average(outbound, "totalEncodeTime", "framesEncoded"),
             sendDelayMs = average(outbound, "totalPacketSendDelay", "packetsSent"),
             jitterBufferMs = average(inbound, "jitterBufferDelay", "jitterBufferEmittedCount"),

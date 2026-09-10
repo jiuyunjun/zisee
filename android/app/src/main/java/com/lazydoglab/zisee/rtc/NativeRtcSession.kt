@@ -554,7 +554,11 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         // Native callback only delivers a report. Mutable sampling state stays on the RTC executor.
         val result = sampler.sample(report.statsMap.values.map { StatsEntry(it.id, it.type, it.members, it.timestampUs) },
             System.nanoTime() / 1_000_000, localBack = dualCapture != null,
-            remoteTrackId = (if (remotePresentation.value.mode == CameraMode.DUAL) remoteBackTrack else remoteTrack)?.id())
+            remoteTrackId = (if (remoteShare.value.sharing) remoteScreenTrack
+                else if (remotePresentation.value.mode == CameraMode.DUAL) remoteBackTrack else remoteTrack)?.id(),
+            localTrackId = if (screenSharing) MediaTrack.SCREEN.wireId
+                else if (dualCapture != null && !(remoteView.front == ViewSize.LARGE && remoteView.back == ViewSize.SMALL))
+                    MediaTrack.BACK_CAMERA.wireId else MediaTrack.FRONT_CAMERA.wireId)
         // Which interfaces this call has actually gathered on, and when. A handover can only be
         // fast if the other interface was already gathered and checked before it happened; the
         // trickled candidate's adapter type is reported as UNKNOWN, so read it from the stats.
