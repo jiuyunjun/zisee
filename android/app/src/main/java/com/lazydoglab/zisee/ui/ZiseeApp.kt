@@ -45,6 +45,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -125,7 +126,10 @@ fun ZiseeApp(
                         Page.SETTINGS -> Column(verticalArrangement = Arrangement.spacedBy(26.dp)) {
                             PageHeader(stringResource(R.string.settings)) { page = Page.HOME }
                             SettingsScreen(identityState.identity, saveState, onSaveName)
-                            if (BuildConfig.DEBUG) BackendPanel(connection, onConnect, onDisconnect)
+                            if (BuildConfig.DEBUG) {
+                                BackendPanel(connection, onConnect, onDisconnect)
+                                DebugToolsPanel()
+                            }
                         }
                     }
                 }
@@ -156,6 +160,39 @@ private fun BackendPanel(state: ConnectionState, onConnect: () -> Unit, onDiscon
             SecondaryPill(stringResource(if (active) R.string.backend_disconnect else R.string.backend_connect),
                 onClick = if (active) onDisconnect else onConnect)
         }
+    }
+}
+
+/**
+ * Debug builds only. The call and AR surface is otherwise reachable only from a real call, so this
+ * opens the same surface on synthetic frames — the on-device way to check its layout and AR states
+ * without a peer, a camera or ARCore. The fixture lives in the debug source set, so it is launched
+ * by class name and the row reports it instead of crashing if a build ever ships without it.
+ */
+@Composable
+private fun DebugToolsPanel() {
+    val context = LocalContext.current
+    var missing by remember { mutableStateOf(false) }
+    Column(Modifier.padding(top = 26.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        SectionLabel(stringResource(R.string.debug_tools))
+        SettingsGroup {
+            val label = stringResource(R.string.debug_call_preview)
+            Box(Modifier.fillMaxWidth().clickable {
+                val intent = android.content.Intent()
+                    .setClassName(context, "com.lazydoglab.zisee.ui.CallPreviewActivity")
+                    .putExtra("interactive", true)
+                missing = try {
+                    context.startActivity(intent)
+                    false
+                } catch (error: android.content.ActivityNotFoundException) {
+                    true
+                }
+            }.semantics { role = Role.Button; contentDescription = label }) {
+                SettingsRow(label, stringResource(R.string.debug_call_preview_body))
+            }
+        }
+        if (missing) Text(stringResource(R.string.debug_call_preview_missing),
+            fontSize = 12.5.sp, color = MaterialTheme.colorScheme.error)
     }
 }
 

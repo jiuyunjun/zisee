@@ -55,4 +55,8 @@
     <string name="calls_incoming_channel_desc">有人向你发起咫尺通话时响铃提醒。</string>
     <string name="calls_incoming_text">邀请你视频通话</string>
     <string name="calls_incoming_unknown_caller">咫尺来电</string>
+    <string name="debug_tools">调试工具</string>
+    <string name="debug_call_preview">通话与 AR 界面预览</string>
+    <string name="debug_call_preview_body">用本机合成画面打开真实通话界面，可切换 Show Me、AR 会话状态与标记数量。不使用摄像头、麦克风、ARCore 或网络。</string>
+    <string name="debug_call_preview_missing">此构建不包含界面预览。</string>
 </resources>

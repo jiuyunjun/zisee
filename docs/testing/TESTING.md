@@ -1,10 +1,10 @@
 ---
 title: Zisee M0 验证指南
 document_id: TEST-GUIDE-001
-version: 1.2.0
+version: 1.3.0
 status: Active
 created: 2026-09-08
-updated: 2026-09-08
+updated: 2026-09-10
 applies_to: "0.1.0-dev"
 owners:
   - android
@@ -38,6 +38,27 @@ GitHub Actions 使用相同任务；上传报告，不上传用户数据或签�
 5. 系统返回键回到首页；旋转保留当前页面和正在编辑的姓名。
 6. 深浅色、TalkBack 检查；触控区域至少 48dp。
 7. 通话／邀请码入口说明暂未开放，不显示假连接或成功分享。
+
+## 通话与 AR 界面真机预览（Debug）
+
+Debug 构建的「设置 → 调试工具 → 通话与 AR 界面预览」直接打开真实的通话界面 `ActiveCall`，画面由本机合成的测试图驱动，不使用摄像头、麦克风、ARCore、后端或网络，也不需要第二台设备或一次真实通话。
+
+场景开关放在通话界面自身的「更多 → 通话选项」面板里，被测界面因此与线上完全一致。可切换：
+
+- 我方与对方的摄像头模式（FACE / STARTING / DUAL / BACK_ONLY / AR）。
+- AR 会话状态（IDLE / STARTING / SCANNING / TRACKING / TRACKING_LOST / PAUSED / FAILED / CLOSED）。
+- 对方是否开启画面、是否已收到对方画面。
+- 对方是否已加入我的现场、我是否已加入对方现场。
+- 小窗切换提示、音频中断、弱网仅保语音、AR 提示语。
+- 我的标记数（同时可用界面上的撤销与「清除我的」）。
+
+用它验收：主画面与小窗布局、小窗拖动与停靠、横竖屏、标记工具条、AR 文案与提示优先级、控件自动隐藏、深色系统栏、TalkBack 描述与触控区域。
+
+界面预览不能替代的部分：合成帧不带 `ArFrameIdentity`，所以画面上的点击不会产生真实标记，标记落点、位姿投影与 GPU 渲染仍必须在真实 ARCore 通话中验证；音频、编解码、网络与权限流程同样不在覆盖范围内。
+
+Activity 未导出，`adb am start` 会被系统拒绝；请从设置进入，或由 `RtcSmokeInstrumentation` 用 extras 启动截图。
+
+2026-09-10 Pixel 9a 实机验证：设置入口、合成画面通话界面、场景面板、切到「我的摄像头 = AR + TRACKING」后出现标记工具条，均正常。
 
 ## 验证边界
 
@@ -138,3 +159,7 @@ try {
 双真机需先升级后端和双方 APK，分别由 caller、callee 和双方同时执行 Wi-Fi→蜂窝→Wi-Fi，以及 Wi-Fi A→Wi-Fi B。记录网络变化、重启次数、选中候选、恢复首帧和音频中断时长；验证旧代候选不污染新代、静音／画面开关状态保持、挂断可取消恢复。关闭所有网络超过预算应明确结束，不无限重试；断网 1 秒恢复应优先自恢复。通话超过 2 分钟后重复上述测试，验证每代投递窗口。TURN 和真实移动网络仍必须双真机验收。
 
 本轮验证：47 项 Android JVM 测试全部通过，assembleDebug／assembleDebugAndroidTest／lintDebug 通过；Go 全套在 PostgreSQL 与 Firestore Emulator 下通过。原生模拟器测试确认未应答 offer rollback 后可再次重启、新 ICE 凭据生效、继续解码。未部署线上；真实 Wi-Fi↔蜂窝恢复仍待双真机验收。
+
+## 1.3.0 - 2026-09-10
+
+- 增加 Debug 构建的通话与 AR 界面真机预览入口及其覆盖范围与边界。

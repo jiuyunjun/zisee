@@ -4,14 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import com.lazydoglab.zisee.call.CallUiState
-import com.lazydoglab.zisee.call.state.CallPhase
-import com.lazydoglab.zisee.call.state.CallSession
-import com.lazydoglab.zisee.call.state.CallState
 import com.lazydoglab.zisee.rtc.CameraMode
-import com.lazydoglab.zisee.rtc.CameraPresentation
-import com.lazydoglab.zisee.rtc.MediaStats
-import com.lazydoglab.zisee.rtc.ShowMeState
 import com.lazydoglab.zisee.ui.theme.ZiseeTheme
 import androidx.lifecycle.lifecycleScope
 import com.lazydoglab.zisee.rtc.VideoFeed
@@ -24,7 +17,13 @@ import org.webrtc.JavaI420Buffer
 import org.webrtc.PeerConnectionFactory
 import org.webrtc.VideoFrame
 
-/** Non-exported debug-only layout fixture. No identity, network, camera, or microphone access. */
+/**
+ * Non-exported debug-only layout fixture. No identity, network, camera, or microphone access.
+ *
+ * Instrumentation launches it with the scenario in extras and screenshots it. `interactive` is the
+ * entry from Settings: the same surface, with the scenario switches mounted in its own 通话选项
+ * sheet so a tester can walk the call and AR states by hand on a real device.
+ */
 class CallPreviewActivity : ComponentActivity() {
     private var egl: EglBase? = null
     private var feeds = emptyList<VideoFeed>()
@@ -53,14 +52,11 @@ class CallPreviewActivity : ComponentActivity() {
                 }
             } finally { buffers.forEach { it.release() } }
         }
+        val interactive = intent.getBooleanExtra("interactive", false)
         setContent {
             ZiseeTheme {
-                // A non-IDLE phase requires a session, so the fixture supplies a complete one.
-                ActiveCall(CallUiState(peerName = "林然", status = "通话中", stats = MediaStats(videoFrames = 1),
-                    local = feeds[0], remote = feeds[1], localBack = feeds[2], remoteBack = feeds[3],
-                    machine = CallState(CallPhase.CONNECTED, CallSession("preview", "peer")),
-                    showMe = ShowMeState(localMode), remotePresentation = CameraPresentation(remoteMode, true),
-                    showMeHint = scene), {}, {}, {}, {}, {}, { finish() })
+                CallUiPreview(feeds, PreviewScenario(localMode = localMode, remoteMode = remoteMode,
+                    showMeHint = scene), interactive) { finish() }
             }
         }
     }
