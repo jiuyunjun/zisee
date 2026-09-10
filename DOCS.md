@@ -767,7 +767,7 @@ Active
 
 [M3 通话多任务、屏幕共享与画面协作专项](./docs/product/CALL_MULTITASKING.md)
 
-`document_id`：`DESIGN-M3-001`；版本：1.1.0；状态：Draft。
+`document_id`：`DESIGN-M3-001`；版本：1.2.0；状态：Draft。
 
 用途：后台通话、应用内迷你通话、系统画中画、Show Me/共享/AR 组合、双端布局、定格 2D 协作与分步验收。设计不代表已实现。
 
@@ -814,6 +814,16 @@ Active
 ---
 
 ## docs/architecture
+
+### ACTIVE_CALL.md
+
+[M3 活动通话后台生命周期](./docs/architecture/ACTIVE_CALL.md)
+
+`document_id`：`ARCH-ACTIVE-CALL-001`；版本：1.0.0；状态：Active。
+
+M3-A 前台服务、通话通知、后台音频/视频策略、过渡 owner 与真机验收边界。
+
+---
 
 ### SCREEN_SHARE.md
 
@@ -1565,6 +1575,10 @@ Zisee 的文档遵循：
 ---
 
 # Changelog
+
+## M3-A 后台通话索引 - 2026-09-10
+
+- 增加 ACTIVE_CALL.md，同步 CALL_MULTITASKING.md 1.2.0 的代码进度与验收边界。
 
 ## M3 框架索引 - 2026-09-10
 

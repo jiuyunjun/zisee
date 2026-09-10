@@ -36,7 +36,7 @@
     <string name="call_contact">视频呼叫%1$s</string>
     <string name="remove_contact">移除%1$s</string>
     <string name="backend_missing_call">尚未配置通话服务器，暂时无法开始通话。</string>
-    <string name="call_permission_note">接听或呼叫时需要摄像头和麦克风权限。当前测试版离开前台会结束通话。</string>
+    <string name="call_permission_note">接听或呼叫时需要摄像头和麦克风权限。通话中离开应用后，可从常驻通知返回、静音或挂断。</string>
     <string name="local_only">仅此设备</string>
     <string name="local_identity_note">你的身份保存在这台设备上，尚未绑定账户。卸载应用或清除数据后，当前身份将无法恢复。</string>
     <string name="save_name">保存姓名</string>
@@ -55,6 +55,15 @@
     <string name="calls_incoming_channel_desc">有人向你发起咫尺通话时响铃提醒。</string>
     <string name="calls_incoming_text">邀请你视频通话</string>
     <string name="calls_incoming_unknown_caller">咫尺来电</string>
+    <string name="calls_active_channel">通话中</string>
+    <string name="calls_active_channel_desc">通话进行时显示控制和隐私状态。</string>
+    <string name="call_active_peer">对方</string>
+    <string name="call_active_title">正在与%1$s通话</string>
+    <string name="call_active_microphone_on">麦克风开启</string>
+    <string name="call_active_muted">麦克风已静音</string>
+    <string name="call_mute">静音</string>
+    <string name="call_unmute">取消静音</string>
+    <string name="call_hang_up">挂断</string>
     <string name="debug_tools">调试工具</string>
     <string name="debug_call_preview">通话与 AR 界面预览</string>
     <string name="debug_call_preview_body">用本机合成画面打开真实通话界面，可切换 Show Me、AR 会话状态与标记数量。不使用摄像头、麦克风、ARCore 或网络。</string>

@@ -6,30 +6,31 @@ M3 — Call multitasking, screen sharing and 2D collaboration.
 
 ## Task
 
-Build M3-F: the screen-sharing lifecycle and Android projection framework before wiring service/UI/RTC delivery.
+Build M3-A phase 1: keep established audio calls alive after Home with an ongoing-call foreground service, while video pauses until PiP exists.
 
 ## Scope
 
-Single-use request identity, consent/start/frame/stop state machine, observable immutable state, non-main-thread Android MediaProjection-to-Surface backend, resize and system callbacks, deterministic cleanup, tests and integration contracts.
+Foreground service permissions/types, quiet ongoing notification, return/mute/hang-up actions, safe process-local owner routing, established-call background policy, task-removal cleanup, tests and architecture docs.
 
 ## Delivered
 
-- ScreenShareController rejects duplicate/stale consent, distinguishes startup from the first screen frame, and terminates on stop/failure/first-frame timeout.
-- AndroidScreenProjection owns one projection and VirtualDisplay, borrows its output Surface, handles system resize/visibility/stop and attempts all cleanup steps.
-- Existing video_screen identity is retained for future independent RTC Track delivery.
-- Architecture and roadmap identify the integration dependencies and unverified device behavior.
+- Established RTC calls no longer end solely because MainActivity stops; idle/ringing flows still stop before media exists.
+- Home keeps audio/signaling alive and publishes camera-off state; returning restores video only when the user intended it enabled.
+- CallForegroundService exposes a private ongoing notification with return, mute/unmute and hang-up actions and ends calls on task removal.
+- ActiveCallActions routes notification actions only to the latest registered call owner; stale owners cannot clear replacements.
+- M3-F screen projection framework remains delivered and unchanged.
 
 ## Validation
 
-:app:testDebugUnitTest PASS (181 tests; 12 new screen framework tests), :app:assembleDebug PASS, :app:lintDebug PASS. No physical MediaProjection validation in this framework slice.
+:app:testDebugUnitTest PASS (183 tests; 2 new action-routing tests), :app:assembleDebug PASS, and :app:lintDebug PASS. The merged Debug manifest contains the camera/microphone foreground-service permissions and service types. No physical background-call validation yet; prior M3-F checks remain valid.
 
 ## State
 
-M3 ACTIVE — M3-F framework implementation; product screen sharing is not connected yet.
+M3 ACTIVE — M3-A phase 1 code implemented; device validation pending. Product screen sharing is not connected yet.
 
 ## Next
 
-M3-A service-owned active calls and notification/lifecycle; M3-B mini-call/PiP; M3-C explicit projection consent, service types, screen frame sink/RTC sender and bilateral state; then M3.1 annotations. The UI remains disabled until these prerequisites are implemented. Background calls currently still stop.
+Validate M3-A on two devices, then M3-B mini-call/PiP; M3-C explicit projection consent, mediaProjection service, screen frame sink/RTC sender and bilateral state; then M3.1 annotations. Media ownership still lives in CallViewModel during this transition and must later move to CallSessionCoordinator.
 
 ## Prior milestone checkpoint: M4/M5 AR (preserved)
 

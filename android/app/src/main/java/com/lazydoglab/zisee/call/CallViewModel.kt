@@ -64,7 +64,9 @@ data class CallUiState(
     val remotePresentation: com.lazydoglab.zisee.rtc.CameraPresentation = com.lazydoglab.zisee.rtc.CameraPresentation(com.lazydoglab.zisee.rtc.CameraMode.FACE, true),
 )
 
-/** Serial foreground call owner. Backgrounding cancels capture and ends the remote call. */
+/** Serial call owner. M3-A keeps established media alive behind a foreground service.
+ * A later slice moves ownership out of the Activity-scoped ViewModel entirely.
+ */
 class CallViewModel(application: Application, private val container: AppContainer) : AndroidViewModel(application) {
     private val mutable = MutableStateFlow(CallUiState())
     val state = mutable.asStateFlow()
@@ -83,6 +85,7 @@ class CallViewModel(application: Application, private val container: AppContaine
     private var showMeHintSeen = true
 
     init {
+        container.activeCallActions.register(this, ::stop, ::toggleMute)
         viewModelScope.launch { container.callPreferences.showMeHintSeen.collect { showMeHintSeen = it } }
     }
 
@@ -150,7 +153,33 @@ class CallViewModel(application: Application, private val container: AppContaine
         }
     }
 
-    fun setForeground(value: Boolean) { foreground = value; if (!value) { idleJob?.cancel(); stop() } else startIdle() }
+    fun setForeground(value: Boolean) {
+        foreground = value
+        if (!value) {
+            idleJob?.cancel()
+            // Only established native media has an ongoing-call service. Ringing and external
+            // authorization still stop, which prevents a background callback starting capture.
+            val media = rtc
+            if (media == null) stop()
+            else viewModelScope.launch {
+                // Until PiP lands, a background call is audio-only. The UI intent stays unchanged
+                // so returning may restore video, but the peer receives cameraEnabled=false now.
+                try { media.setTrackEnabled(com.lazydoglab.zisee.media.MediaTrack.FRONT_CAMERA, false) }
+                catch (error: CancellationException) { throw error }
+                catch (_: Exception) { container.logger.error(AppEvent.RTC_MEDIA_FAILED); stop() }
+            }
+        } else {
+            val media = rtc
+            if (media != null && mutable.value.cameraEnabled) viewModelScope.launch {
+                try {
+                    if (rtc === media && foreground)
+                        media.setTrackEnabled(com.lazydoglab.zisee.media.MediaTrack.FRONT_CAMERA, true)
+                } catch (error: CancellationException) { throw error }
+                catch (_: Exception) { container.logger.error(AppEvent.RTC_MEDIA_FAILED); stop() }
+            }
+            startIdle()
+        }
+    }
     fun close() { stop(); mutable.update { it.copy(visible = false) } }
     fun stop() { arActivation.invalidate(); job?.cancel() }
     fun accept() { commands.trySend("accept") }
@@ -331,7 +360,10 @@ class CallViewModel(application: Application, private val container: AppContaine
         viewModelScope.launch {
             try {
                 current.setTrackEnabled(com.lazydoglab.zisee.media.MediaTrack.MICROPHONE, enabled)
-                if (rtc === current) mutable.update { it.copy(muted = !enabled) }
+                if (rtc === current) {
+                    mutable.update { it.copy(muted = !enabled) }
+                    CallForegroundService.update(getApplication(), mutable.value.peerName, !enabled)
+                }
             } catch (error: CancellationException) { throw error }
             catch (error: Exception) { container.logger.error(AppEvent.RTC_MEDIA_FAILED); stop() }
         }
@@ -480,6 +512,13 @@ class CallViewModel(application: Application, private val container: AppContaine
                                     // Relay credentials are short lived, so fetch them per call rather
                                     // than at login. Losing TURN degrades to direct-only, never fatal here.
                                     val ice = iceServers(session)
+                                    try {
+                                        CallForegroundService.start(
+                                            getApplication(), mutable.value.peerName, mutable.value.muted)
+                                    } catch (error: RuntimeException) {
+                                        container.logger.error(AppEvent.CALL_SERVICE_FAILED, FailureReason.of(error))
+                                        throw IOException("call_service_failed", error)
+                                    }
                                     val media = NativeRtcSession(getApplication<Application>(), container.logger,
                                         current.caller == identity.identityId)
                                     rtc = media // Assign before start so partial initialization is always released.
@@ -646,10 +685,17 @@ class CallViewModel(application: Application, private val container: AppContaine
                 // The call surface has nothing left to show, so hand the screen back to the home
                 // it was opened from and let the outcome be read there.
                 mutable.update { it.copy(busy = false, visible = false, inviting = false, notice = it.status) }
+                CallForegroundService.stop(getApplication())
                 job = null
                 startIdle()
             }
         }
+    }
+
+    override fun onCleared() {
+        container.activeCallActions.clear(this)
+        CallForegroundService.stop(getApplication())
+        super.onCleared()
     }
 
     companion object {

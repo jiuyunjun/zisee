@@ -11,6 +11,7 @@ import com.lazydoglab.zisee.auth.remote.BackendApi
 import com.lazydoglab.zisee.auth.remote.BackendConnection
 import com.lazydoglab.zisee.auth.remote.KeystoreDeviceSigner
 import com.lazydoglab.zisee.call.CallPreferences
+import com.lazydoglab.zisee.call.ActiveCallActions
 import com.lazydoglab.zisee.auth.remote.backendHttpClient
 import com.lazydoglab.zisee.push.CallNotifications
 import com.lazydoglab.zisee.push.FcmPushProvider
@@ -26,6 +27,7 @@ private val Context.pushStore by preferencesDataStore(name = "push_state")
 
 /** Application-scoped composition root. Media resources must later have a call-scoped owner. */
 class AppContainer(context: Context) {
+    val activeCallActions = ActiveCallActions()
     val identityRepository: IdentityRepository =
         DataStoreIdentityRepository(context.applicationContext.identityStore)
     val callPreferences = CallPreferences(context.applicationContext.callStore)
