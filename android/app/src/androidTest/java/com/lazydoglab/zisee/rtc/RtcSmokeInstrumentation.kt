@@ -25,6 +25,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
     private var expectedQuality: String? = null
     private var preview = false
     private var thumbnailSwaps = false
+    private var arTap = false
     private var capabilities = false
     private var orientationPreview = false
     private var callUiPreview = false
@@ -43,6 +44,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
         expectedQuality = arguments?.getString("expectedQuality")
         preview = arguments?.getString("preview") == "true"
         thumbnailSwaps = arguments?.getString("thumbnailSwaps") == "true"
+        arTap = arguments?.getString("arTap") == "true"
         capabilities = arguments?.getString("capabilities") == "true"
         orientationPreview = arguments?.getString("orientationPreview") == "true"
         callUiPreview = arguments?.getString("callUiPreview") == "true"
@@ -62,6 +64,12 @@ class RtcSmokeInstrumentation : Instrumentation() {
     override fun onStart() {
         val output = Bundle()
         try {
+            if (arTap) {
+                val result = CallArTapSmoke.run(this)
+                output.putString("stream", "PASS: AR tap reached the marker layer\n$result\n")
+                finish(Activity.RESULT_OK, output)
+                return
+            }
             if (thumbnailSwaps) {
                 CallThumbnailSmoke.run(this)
                 output.putString("stream", "PASS: all four thumbnail swaps, outlines and dragged position across auto-hide; synthetic frames\n")

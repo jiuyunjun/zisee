@@ -50,6 +50,9 @@
   - 该通话开头只收集到 host，无 srflx/relay（01:14:00 RTC_BACKUP_PATH missing on=wifi origins=3），切网时无备用路径；01:15:14 起对端音频全为零帧，媒体完全中断。STUN/TURN 为何没结果未查明（01:16:02 有 Binding request timed out）。
   - 恢复评估在信令循环里、排在重建信令连接之后；切网 200ms 后旧信令被主动关闭，重启要等 4G 上 WebSocket 重连并收到 session.ready。naturalRecoveryMs 仅 2s，实际 4.5s 才决定重启，推断耗在信令重连。已加 RTC_SIGNALING_READY ms=… route=…（仅重连时记录）以证实。
   - 可能的改进（未做，涉及架构，需用户确认）：切网后若新网络无备用路径则尽快重启；或在 4G 待机网络上预热信令连接，避免重启等待重连。
+- 2026-09-11 01:36 AR 复测（A=c073b16f，最新代码已确认在 overlay 中）：用户在 A 上看到钉住/箭头/圈工具条，点击仍只切换菜单；A 日志 AR_TAP 为 0 条（连 shown 都没有），即主画面点击层从未组合。与代码矛盾：工具条与点击层同为 localArMarking 条件，只有主画面 VideoTile 走占位分支（live=false 或 feed=null）时才会出现“有工具条无点击层”。
+  - 模拟器复现（CallArTapSmoke，-e arTap true，ar-notice 场景）：PASS，AR_TAP shown + frame=none，点击到达点击层且不切菜单。说明 UI 逻辑正确，真机状态与预览场景不同。
+  - 下一步：用户在 A 上保持 AR+工具条画面时，用 uiautomator dump 查点击层（contentDescription “AR 现场，可轻点放置所选标记”）是否存在及尺寸。
 - 剩余：双机切网实测（需求 1）、系统浮窗横竖屏（需求 4，用户自测）、AR 现场跟踪/放置（需求 6）。
 - 改动内容：MainActivity 用选中远端 feed 的 VideoGeometry.displayWidth/displayHeight 更新 PiP，共享授权/启动/进行中禁用 auto-enter；CallVideoLayout 远端共享仅返回 PeerScreen，compact 也优先共享；ActiveCall 单摄右上角切前后摄，拖动位置保存为窗口归一坐标，取消随 controls 清空高度；TextureViewRenderer 尺寸变化重新 invalidateOutline。
 - 圆角真实根因：VideoRenderer 的 AndroidView.update 在 BoxWithConstraints 尺寸子组合中保留旧 cornerPx；交换后主画面仍圆角、旧主画面小窗无圆角。改为外部 SideEffect 更新保留 renderer，尺寸变化还会 invalidateOutline。四路真实触摸交换测试已 PASS，且审过 rounded-fixed.png；继续补拖动后自动隐藏位置不变测试。
