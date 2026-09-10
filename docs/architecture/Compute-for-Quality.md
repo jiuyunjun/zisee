@@ -1,5 +1,7 @@
 # 视频通话 Compute-for-Quality 专项设计
 
+> Android 实现进度（2026-09-11）：已落地 P0 控制器、GPU 面积缩放、因果时域降噪，以及基础场景/发送 FPS 策略。Debug 默认开启，可用 `-Pzisee.computeQuality=false` 构建对照组；Release 暂关闭。ROI、硬编 complexity、接收端 SR 等尚未实现，不将设计目标等同于已交付能力。持续状态、验证及下一步见 [专项 handoff](../development/COMPUTE_QUALITY_HANDOFF.md)。
+
 ## 1. 目标
 
 传统实时视频系统主要围绕三个变量做自适应：

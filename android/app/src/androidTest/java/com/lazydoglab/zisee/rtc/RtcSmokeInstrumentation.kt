@@ -26,6 +26,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
     private var preview = false
     private var thumbnailSwaps = false
     private var arTap = false
+    private var computeQuality = false
     private var capabilities = false
     private var orientationPreview = false
     private var callUiPreview = false
@@ -45,6 +46,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
         preview = arguments?.getString("preview") == "true"
         thumbnailSwaps = arguments?.getString("thumbnailSwaps") == "true"
         arTap = arguments?.getString("arTap") == "true"
+        computeQuality = arguments?.getString("computeQuality") == "true"
         capabilities = arguments?.getString("capabilities") == "true"
         orientationPreview = arguments?.getString("orientationPreview") == "true"
         callUiPreview = arguments?.getString("callUiPreview") == "true"
@@ -64,6 +66,13 @@ class RtcSmokeInstrumentation : Instrumentation() {
     override fun onStart() {
         val output = Bundle()
         try {
+            if (computeQuality) {
+                ComputeOesSmoke.run()
+                ComputeQualitySmoke.run(targetContext)
+                output.putString("stream", "PASS: synthetic GPU pixels/scaling/denoise, metadata, pool exhaustion, C0/AR bypass and retained cleanup; controlled clock verifies deadline fallback, not GPU performance\n")
+                finish(Activity.RESULT_OK, output)
+                return
+            }
             if (arTap) {
                 val result = CallArTapSmoke.run(this)
                 output.putString("stream", "PASS: AR tap reached the marker layer\n$result\n")
@@ -336,8 +345,17 @@ class RtcSmokeInstrumentation : Instrumentation() {
             output.putString("arIceStateBeforeWait", session.iceState.value.name)
             // Frame delivery can beat the StateFlow assignment posted by the native ICE callback.
             withTimeout(2_000) { session.iceState.first { it == IceState.CONNECTED } }
-            check(AppEvent.RTC_QUALITY_CHANGED in events && AppEvent.RTC_QUALITY_REJECTED !in events)
+            val qualityEvent = if (VideoAdaptationMode.parse(com.lazydoglab.zisee.BuildConfig.VIDEO_ADAPTATION) == VideoAdaptationMode.ACTIVE)
+                AppEvent.RTC_ADAPTATION_PLAN else AppEvent.RTC_QUALITY_CHANGED
+            check(qualityEvent in events && AppEvent.RTC_QUALITY_REJECTED !in events) {
+                "Expected $qualityEvent and no rejection; events=${events.distinct()}"
+            }
             expectedQuality?.let { check(session.mediaStats.value.quality.name == it) }
+            if (com.lazydoglab.zisee.BuildConfig.VIDEO_COMPUTE_QUALITY) {
+                val compute = requireNotNull(session.mediaStats.value.computeQuality["front"])
+                check((Regex("frames=(\\d+)").find(compute)?.groupValues?.get(1)?.toLongOrNull() ?: 0) > 0)
+                output.putString("computeQuality", compute)
+            }
             check(session.mediaStats.value.audioProcessing.fallback != com.lazydoglab.zisee.rtc.audio.processing.AudioFallback.FORMAT)
             output.putString("audioProcessing", session.mediaStats.value.audioProcessing.toString())
             output.putString("audioCodec", session.mediaStats.value.audio.codec)

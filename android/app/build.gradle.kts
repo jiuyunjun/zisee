@@ -10,6 +10,7 @@ plugins {
 
 val backendUrl = providers.gradleProperty("zisee.backendUrl").orElse("").get()
 val localBackend = providers.gradleProperty("zisee.localBackend").orElse("false").get().toBooleanStrict()
+val computeQuality = providers.gradleProperty("zisee.computeQuality").orElse("true").get().toBooleanStrict()
 require(backendUrl.isEmpty() || backendUrl.matches(Regex("https://[A-Za-z0-9.-]+(:[0-9]+)?/?"))) {
     "zisee.backendUrl must be an HTTPS origin without credentials, path or query"
 }
@@ -29,6 +30,7 @@ android {
         // VIDEO_ADAPTATION.md §12.3: SHADOW/ACTIVE are the new camera adaptation policy; unset or
         // any unrecognized value parses to OFF, i.e. today's behaviour.
         buildConfigField("String", "VIDEO_ADAPTATION", "\"OFF\"")
+        buildConfigField("boolean", "VIDEO_COMPUTE_QUALITY", "false")
     }
     signingConfigs {
         // Checked into the repo on purpose: every developer and every CI run must
@@ -47,6 +49,7 @@ android {
             signingConfig = signingConfigs.getByName("debug")
             if (localBackend) buildConfigField("String", "BACKEND_URL", "\"http://127.0.0.1:8080\"")
             buildConfigField("String", "VIDEO_ADAPTATION", "\"ACTIVE\"")
+            buildConfigField("boolean", "VIDEO_COMPUTE_QUALITY", computeQuality.toString())
         }
         release {
             isMinifyEnabled = true

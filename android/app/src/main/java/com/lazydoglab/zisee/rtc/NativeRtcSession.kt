@@ -32,6 +32,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import org.webrtc.*
 import org.webrtc.audio.JavaAudioDeviceModule
+import com.lazydoglab.zisee.rtc.compute.*
 
 /** One foreground call owns every native resource. All native operations use the RTC executor. */
 class NativeRtcSession(private val context: Context, private val logger: AppLogger,
@@ -46,6 +47,11 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var camera: CameraVideoCapturer? = null
     private var texture: SurfaceTextureHelper? = null
     private var videoSource: VideoSource? = null
+    private var frontQualityProcessor: CameraQualityProcessor? = null
+    private var backQualityProcessor: CameraQualityProcessor? = null
+    private val frontComputePolicy = ComputeQualityPolicy()
+    private val backComputePolicy = ComputeQualityPolicy()
+    private val computeTelemetry = ComputeTelemetry(context, logger)
     private var audioSource: AudioSource? = null
     private var videoTrack: VideoTrack? = null
     private var audioTrack: AudioTrack? = null
@@ -124,6 +130,11 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var changingCamera = false
     private var arCapture: com.lazydoglab.zisee.ar.session.ArVideoCapture? = null
     private var arLeaseId: java.util.UUID? = null
+        set(value) {
+            field = value
+            frontQualityProcessor?.setAllowed(value == null)
+            backQualityProcessor?.setAllowed(value == null)
+        }
     private var arStopRequested = false
     private var arStarting: CompletableDeferred<Unit>? = null
     private val mutableArState = MutableStateFlow(com.lazydoglab.zisee.ar.session.ArSessionState.IDLE)
@@ -335,6 +346,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         }) ?: throw IOException("camera_unavailable")
         texture = SurfaceTextureHelper.create("ZiseeCapture", shared)
         videoSource = requireNotNull(factory).createVideoSource(false)
+        frontQualityProcessor = installQualityProcessor(requireNotNull(videoSource), shared, "front")
         deviceOrientation.start()
         requireNotNull(camera).initialize(texture, context, requireNotNull(videoSource).capturerObserver)
         val cameraId = MediaTrack.FRONT_CAMERA // Primary single-camera slot, including back-only devices.
@@ -342,6 +354,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             it.addSink(localFeed); videoSender = requireNotNull(peer).addTrack(it, listOf("zisee"))
         }
         backSource = requireNotNull(factory).createVideoSource(false)
+        backQualityProcessor = installQualityProcessor(requireNotNull(backSource), shared, "back")
         localBackFeed = VideoFeed(shared, false)
         remoteBackFeed = VideoFeed(shared, false)
         backTrack = requireNotNull(factory).createVideoTrack(MediaTrack.BACK_CAMERA.wireId, backSource).also {
@@ -436,8 +449,15 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 val interval = if (System.nanoTime() / 1_000_000 < handoverStatsUntilMs)
                     recoveryConfig.handoverStatsIntervalMs else 1_000L
                 withTimeoutOrNull(interval) { statsWake.receive() }
+                var computeEnvironment: ComputeInput? = null
                 try {
                     val thermal = if (Build.VERSION.SDK_INT >= 29) powerManager.currentThermalStatus else null
+                    if (BuildConfig.VIDEO_COMPUTE_QUALITY) {
+                        computeEnvironment = computeTelemetry.read(System.nanoTime() / 1_000_000, thermal)
+                        if ((thermal ?: 0) >= 3 || (computeEnvironment.forecastHeadroom ?: 0f) >= 0.9f) {
+                            updateComputeQuality(null, computeEnvironment)
+                        }
+                    }
                     // Thermal protection must keep running even when RTCStats is unavailable.
                     if ((thermal ?: 0) >= 3 && !changingCamera) {
                         // §12.3: force cameraPolicy's own plan to C0 first (SHADOW logs it, ACTIVE's
@@ -455,6 +475,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                     audioProcessing.setThermal(thermal ?: 0)
                     val result = stats()
                     val observed = result.copy(thermalStatus = thermal)
+                    updateComputeQuality(observed, computeEnvironment)
                     // Never use idle/muted encoder statistics to make quality decisions.
                     if (iceState.value == IceState.CONNECTED && videoTrack?.enabled() == true && adaptationEnabled && !changingCamera &&
                         audioBandwidth.mode != com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.AUDIO_ONLY &&
@@ -480,15 +501,18 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                         applyScreenQuality(screenQualityPolicy.update(observed, observed.sampledAtMs))
                     }
                     sampledStats.value = observed.copy(quality = appliedQuality ?: VideoQuality.HD,
+                        computeQuality = computeDiagnostics(),
                         audioProcessing = audioProcessing.stats(), audioDevice = callAudio.state.value,
                         audioBandwidth = audioBandwidth.mode)
                     missing = false
                 } catch (error: kotlinx.coroutines.TimeoutCancellationException) {
+                    updateComputeQuality(null, computeEnvironment)
                     sampledStats.value = sampledStats.value.copy(sampleAvailable = false)
                     if (!missing) logger.error(AppEvent.RTC_STATS_UNAVAILABLE)
                     missing = true
                 } catch (error: CancellationException) { throw error }
                 catch (error: Exception) {
+                    updateComputeQuality(null, computeEnvironment)
                     sampledStats.value = sampledStats.value.copy(sampleAvailable = false)
                     if (!missing) logger.error(AppEvent.RTC_STATS_UNAVAILABLE)
                     missing = true
@@ -496,6 +520,43 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             }
         }
         Unit
+    }
+
+    private fun computeDiagnostics(): Map<String, String> = listOf(
+        "front" to frontQualityProcessor, "back" to backQualityProcessor).mapNotNull { (name, processor) ->
+        processor?.let {
+            val stats = it.stats
+            name to "${it.decision.level}/${it.decision.reason} ${it.scene.mode} p95=${stats.p95Ms?.toInt() ?: -1}ms frames=${stats.frames} bypass=${stats.bypassed} failed=${stats.failed}"
+        }
+    }.toMap()
+
+    private fun installQualityProcessor(source: VideoSource, shared: EglBase.Context, name: String): CameraQualityProcessor? {
+        if (!BuildConfig.VIDEO_COMPUTE_QUALITY) return null
+        return try { CameraQualityProcessor(shared, logger, name).also { source.setVideoProcessor(it) } }
+        catch (error: RuntimeException) { logger.error(AppEvent.RTC_COMPUTE_UNAVAILABLE); null }
+    }
+
+    private fun updateComputeQuality(stats: MediaStats?, environment: ComputeInput?) {
+        if (environment == null) return
+        // RTCStats is timestamped after its asynchronous callback, later than the thermal read.
+        val nowMs = System.nanoTime() / 1_000_000
+        fun update(processor: CameraQualityProcessor?, policy: ComputeQualityPolicy, id: String) {
+            processor ?: return
+            val track = stats?.outboundVideo?.get(id)
+            val old = processor.decision
+            val fresh = stats?.sampleAvailable == true && track != null && track.active != false &&
+                track.fps?.let { it > 0 } == true && nowMs - track.sampledAtMs in 0..3_000
+            val next = policy.update(environment.copy(nowMs = nowMs, encodeMs = track?.encodeMs,
+                fps = track?.fps?.toInt()?.coerceAtLeast(1) ?: 30,
+                cpuLimited = track?.qualityLimitation == "cpu" || processor.stats.failed,
+                preprocessP95Ms = processor.stats.p95Ms?.takeIf { processor.stats.frames >= 30 },
+                sampleFresh = fresh))
+            processor.decision = next
+            if (old != next) logger.info(AppEvent.RTC_COMPUTE_PLAN,
+                "$id:${next.level}:${next.reason}:p95us=${processor.stats.p95Ms?.times(1000)?.toLong() ?: -1}")
+        }
+        update(frontQualityProcessor, frontComputePolicy, MediaTrack.FRONT_CAMERA.wireId)
+        update(backQualityProcessor, backComputePolicy, MediaTrack.BACK_CAMERA.wireId)
     }
 
     suspend fun localDescription(offer: Boolean): SessionDescription = withContext(dispatcher) {
@@ -959,7 +1020,9 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             val loweringMain = plan.main.maxBitrateBps < (appliedMainCamera?.maxBitrateBps ?: Int.MAX_VALUE)
             for (isMain in if (loweringMain || auxSender == null) listOf(true, false) else listOf(false, true)) {
                 val sender = if (isMain) mainSender else auxSender ?: continue
-                val track = if (isMain) plan.main else plan.aux ?: continue
+                val baseTrack = if (isMain) plan.main else plan.aux ?: continue
+                val processor = if (sender === videoSender) frontQualityProcessor else backQualityProcessor
+                val track = baseTrack.copy(fps = minOf(baseTrack.fps, processor?.scene?.fpsLimit ?: baseTrack.fps))
                 if (!write(sender, track)) { fallback(); return }
                 if (isMain) {
                     mainSource?.adaptOutputFormat(track.width, track.height, track.fps)
@@ -1492,6 +1555,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     }
 
     private suspend fun switchSingle(name: String) = withTimeout(5_000) {
+        frontQualityProcessor?.resetHistory()
         suspendCancellableCoroutine<Unit> { continuation ->
             requireNotNull(camera).switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
                 override fun onCameraSwitchDone(isFrontCamera: Boolean) {
@@ -1592,6 +1656,10 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             cleanup { if (monitoring) { NetworkMonitor.getInstance().stopMonitoring(); monitoring = false } }
             cleanup { NetworkMonitor.removeNetworkObserver(networkObserver) }
             cleanup { camera?.stopCapture() }
+            cleanup { videoSource?.setVideoProcessor(null) }
+            cleanup { backSource?.setVideoProcessor(null) }
+            cleanup { frontQualityProcessor?.close() }; frontQualityProcessor = null
+            cleanup { backQualityProcessor?.close() }; backQualityProcessor = null
             cleanup { remoteTrack?.removeSink(remoteFeed) }
             cleanup { remoteBackTrack?.removeSink(remoteBackFeed) }
             cleanup { remoteScreenTrack?.removeSink(remoteScreenFeed) }

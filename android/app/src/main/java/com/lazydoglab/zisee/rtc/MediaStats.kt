@@ -19,6 +19,7 @@ data class MediaStats(
     val codec: String = "unknown", val encoder: String = "unknown", val powerEfficientEncoder: Boolean? = null,
     val qualityLimitation: String = "unknown", val thermalStatus: Int? = null,
     val quality: VideoQuality = VideoQuality.HD,
+    val computeQuality: Map<String, String> = emptyMap(),
     /** Only unambiguously identified local sources; never infer identity from report order. */
     val outboundVideo: Map<String, VideoSendStats> = emptyMap(),
     val audio: com.lazydoglab.zisee.rtc.audio.quality.AudioStats = com.lazydoglab.zisee.rtc.audio.quality.AudioStats(),

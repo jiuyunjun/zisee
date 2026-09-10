@@ -639,6 +639,9 @@ private fun CallOptions(state: CallUiState, onDismiss: () -> Unit, onSwitch: () 
                     "${stats.codec} · ${stats.encoder}\n限制 ${stats.qualityLimitation} · 热状态 ${stats.thermalStatus ?: "—"}",
                         style = MaterialTheme.typography.bodySmall, color = CallMuted)
                 val audio = stats.audio
+                stats.computeQuality.forEach { (track, detail) ->
+                    Text("视频计算 $track · $detail", style = MaterialTheme.typography.bodySmall, color = CallMuted)
+                }
                 val processing = stats.audioProcessing
                 Text("音频 ${stats.audioDevice.state} · 输入 ${stats.audioDevice.input} · 输出 ${stats.audioDevice.output}\n" +
                     "AEC 软件 · ${processing.engine} · ${processing.state}\n" +
