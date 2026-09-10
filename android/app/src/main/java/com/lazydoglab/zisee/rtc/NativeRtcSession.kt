@@ -945,8 +945,14 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                     // applied-plan cache: force=true clears that cache on every event-path reapply
                     // (swap, restart, handover, audio-mode transition, startup), and a per-second
                     // "nothing changed" reapply must not reconfigure the HAL every tick either.
+                    // Some OEM HALs (seen on Xiaomi) close and reopen the camera for every format
+                    // change, so a tier change would visibly restart it and the frame gap then reads
+                    // as QUEUE pressure. Only reformat when the capturer cannot already supply the
+                    // tier; adaptOutputFormat above scales down without touching the HAL.
                     val target = Triple(track.width, track.height, track.fps)
-                    if (dualCapture == null && captureFormat != target) {
+                    val covers = captureFormat?.let { (w, h, fps) ->
+                        w >= target.first && h >= target.second && fps >= target.third } == true
+                    if (dualCapture == null && !covers) {
                         requireNotNull(camera).changeCaptureFormat(track.width, track.height, track.fps)
                         captureFormat = target
                     }

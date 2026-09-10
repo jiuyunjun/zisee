@@ -25,6 +25,10 @@
 - PiP policy 本身按 width/height 算比例，需检查调用方是否传入旋转前尺寸。
 - 2026-09-11 按用户要求将需求 2/3/4/5/7 及升档健康条件合并为一个提交（含 CallThumbnailSmoke 专项测试）。升档健康条件现接受 qualityLimitation="bandwidth"：发送端被自身上限卡住时 WebRTC 报 bandwidth，原先只认 none 会永不升档；用户确认为有效改动。
 - 仪器测试：`adb -s emulator-5554 shell am instrument -w -r -e thumbnailSwaps true com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation`，2026-09-11 PASS。
+- 2026-09-11 第二轮实测（A 5G→Wi-Fi）：B 摄像头反复重置、画质爬升慢。B=65975249（小米 aurora，非 c073b16f），日志 00:44–00:48。
+  - 根因一（已修待复测）：B 每次档位变化（C1/C2/C3）后约 100ms 系统记录相机 close→open，8 次一一对应，纯码率变化不重开。applyCameraPlan 每次换档调 changeCaptureFormat，小米 HAL 会整机重开。改为仅当现有采集格式不能覆盖目标宽高/帧率时才 changeCaptureFormat，降档靠 adaptOutputFormat 缩放。
+  - 根因二（推断）：重开造成断帧+关键帧突发→sendDelay>60ms→QUEUE 降档（00:47:31 升 C2，00:47:33 在 bwe=4735 时 QUEUE 降回），再叠加 5s 冷却+8s 升档等待，形成慢爬循环。修复一后应缓解，须复测确认。
+  - 未解：同局域网却先走 TURN（relay/relay，RTC_RELAY_PINNED directSucceeded=0），00:46:56 才 srflx/srflx，全程无 host/host。需 A 端日志判断是否 host 候选未产生或路由器 AP 隔离。
 - 剩余：双机切网实测（需求 1）、系统浮窗横竖屏（需求 4，用户自测）、AR 现场跟踪/放置（需求 6）。
 - 改动内容：MainActivity 用选中远端 feed 的 VideoGeometry.displayWidth/displayHeight 更新 PiP，共享授权/启动/进行中禁用 auto-enter；CallVideoLayout 远端共享仅返回 PeerScreen，compact 也优先共享；ActiveCall 单摄右上角切前后摄，拖动位置保存为窗口归一坐标，取消随 controls 清空高度；TextureViewRenderer 尺寸变化重新 invalidateOutline。
 - 圆角真实根因：VideoRenderer 的 AndroidView.update 在 BoxWithConstraints 尺寸子组合中保留旧 cornerPx；交换后主画面仍圆角、旧主画面小窗无圆角。改为外部 SideEffect 更新保留 renderer，尺寸变化还会 invalidateOutline。四路真实触摸交换测试已 PASS，且审过 rounded-fixed.png；继续补拖动后自动隐藏位置不变测试。
