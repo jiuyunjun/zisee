@@ -32,6 +32,9 @@
 - 2026-09-11 AR 实测：A=c073b16f 开启现场，底部标记工具条出现，但轻点大画面只切换菜单显隐，无法放置。
   - 根因（已修待真机复测）：VideoRenderer 的 AR 点击层 pointerInput 以 displayed 为 key，而每个渲染帧都是新的 DisplayedArFrame，手势检测每秒被重启约 30 次，点击无法完成并落到外层 controls 切换；displayed 某帧为空时点击层还会整体消失。改为标记模式下常驻点击层，仅按视口尺寸重建，点击时用 rememberUpdatedState 读最新帧，无帧则吞掉点击。
   - A 日志无 AR 报错；AR 放置本身无应用日志，复测若仍失败需加调试日志。
+- 2026-09-11 局域网直连分析（A/B 日志）：通话开始 00:44:16 为 host/host wifi，排除 AP 隔离；A 在 4G 上 ICE 重启（00:45:39，新一代无 Wi-Fi 候选），00:46:53 回 Wi-Fi 判定路由恢复不重启，靠持续收集补发；此后 relay/relay→srflx/srflx，从未 host/host。srflx 被选中说明新 Wi-Fi 候选已到 B、两机互通。RTC_RELAY_PINNED 仅诊断不锁中继。现有日志只转发 native LS_ERROR，无法区分 host/host 对未形成还是检查失败。嫌疑：每代候选上限 32（CellularStandby + 双栈 + 多 TURN URL 易超），超限原先静默丢弃。
+  - 已加诊断（未装机）：RTC_CANDIDATE_OVERFLOW（首次超 32 时的候选类型）；RTC_ICE_PAIRS（非 host/host 路径稳定 5s 后一次：各 本地/远端类型:状态 的候选对数、两端候选按 网络/类型 计数、已信令数、是否溢出，不含 IP）。未加：90s 补发超时触发的重启日志（需改 MediaNegotiator 构造）。
+  - 用户复测旧版（A 安装于 09-10 21:21，早于 5196411/405c136），AR 点击仍只切换菜单、Wi-Fi 重连仍 prflx，均为旧代码表现。用户暂不同意装机，装新版前须再次确认。
 - 剩余：双机切网实测（需求 1）、系统浮窗横竖屏（需求 4，用户自测）、AR 现场跟踪/放置（需求 6）。
 - 改动内容：MainActivity 用选中远端 feed 的 VideoGeometry.displayWidth/displayHeight 更新 PiP，共享授权/启动/进行中禁用 auto-enter；CallVideoLayout 远端共享仅返回 PeerScreen，compact 也优先共享；ActiveCall 单摄右上角切前后摄，拖动位置保存为窗口归一坐标，取消随 controls 清空高度；TextureViewRenderer 尺寸变化重新 invalidateOutline。
 - 圆角真实根因：VideoRenderer 的 AndroidView.update 在 BoxWithConstraints 尺寸子组合中保留旧 cornerPx；交换后主画面仍圆角、旧主画面小窗无圆角。改为外部 SideEffect 更新保留 renderer，尺寸变化还会 invalidateOutline。四路真实触摸交换测试已 PASS，且审过 rounded-fixed.png；继续补拖动后自动隐藏位置不变测试。

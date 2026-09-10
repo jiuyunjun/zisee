@@ -203,6 +203,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var backupReady: Boolean? = null
     private var lastPairChangeMs: Long? = null
     private var relayReported = false
+    private var pairsReported = false
     private var sustainedSendKbps = 0L
     private val videoSending = mutableMapOf<RtpSender, Pair<Boolean, Boolean>>()
     private val powerManager = context.getSystemService(PowerManager::class.java)
@@ -719,7 +720,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 }
             }
             lastCandidate = route; lastSelectedPairId = result.selectedPairId
-            lastPairChangeMs = result.sampledAtMs; relayReported = false
+            lastPairChangeMs = result.sampledAtMs; relayReported = false; pairsReported = false
             // Log pair transitions even when both paths have the same candidate types. Never log IPs or SDP.
             logger.info(AppEvent.RTC_SELECTED_CANDIDATE, "$route atMs=${result.sampledAtMs}")
         } else if (result.sendKbps > 0 && audioBandwidth.mode == com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.ALL_VIDEO) {
@@ -742,6 +743,27 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             }
             relayReported = true
             logger.info(AppEvent.RTC_RELAY_PINNED, "directSucceeded=$direct")
+        }
+        // A same-LAN call that settles anywhere but host/host needs to say whether that pair was
+        // never formed (a candidate missing on one side) or formed and failed its checks. Types,
+        // networks and states only — never addresses.
+        if (!pairsReported && route != "host/host ${result.networkType}/${result.protocol}" &&
+            lastPairChangeMs?.let { result.sampledAtMs - it >= RELAY_CHECK_MS } == true) {
+            pairsReported = true
+            val candidatesById = report.statsMap.values
+                .filter { it.type == "local-candidate" || it.type == "remote-candidate" }
+                .associateBy { it.id }
+            fun kind(id: Any?) = candidatesById[id]?.members?.get("candidateType") as? String ?: "unknown"
+            val pairs = report.statsMap.values.filter { it.type == "candidate-pair" }
+                .groupingBy { "${kind(it.members["localCandidateId"])}/${kind(it.members["remoteCandidateId"])}:" +
+                    (it.members["state"] as? String ?: "unknown") }.eachCount()
+            fun counts(type: String) = candidatesById.values.filter { it.type == type }
+                .groupingBy { "${it.members["networkType"] ?: "remote"}/${it.members["candidateType"] ?: "unknown"}" }
+                .eachCount().entries.sortedBy { it.key }.joinToString(",") { "${it.key}=${it.value}" }
+            logger.info(AppEvent.RTC_ICE_PAIRS, "pairs=" +
+                pairs.entries.sortedBy { it.key }.joinToString(",") { "${it.key}=${it.value}" } +
+                " local=${counts("local-candidate")} remote=${counts("remote-candidate")} " +
+                "signaled=${candidates.size} overflow=$candidateOverflow")
         }
         handover.sample(result)?.let { logger.info(AppEvent.RTC_HANDOVER, it.encode()) }
         handover.videoResumed()?.let { logger.info(AppEvent.RTC_HANDOVER_VIDEO, "ms=$it") }
@@ -1661,7 +1683,12 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             if (!released && acceptingCandidates && (ufrag == null || ufrag in localUfrags) && candidates.none { it.sdp == candidate.sdp && it.sdpMid == candidate.sdpMid }) {
                 // The current protocol is append-only and bounded. Rotate generation instead of
                 // crashing or rewriting an acknowledged prefix when networks keep appearing.
-                if (candidates.size >= 32) candidateOverflow = true else candidates.add(candidate)
+                if (candidates.size >= 32) {
+                    // Dropped silently before: say so, and which kind of candidate was lost.
+                    if (!candidateOverflow) logger.info(AppEvent.RTC_CANDIDATE_OVERFLOW,
+                        Regex(" typ ([a-z]+)").find(candidate.sdp)?.groupValues?.get(1) ?: "unknown")
+                    candidateOverflow = true
+                } else candidates.add(candidate)
                 candidateRevision.value++
             }
         } }
