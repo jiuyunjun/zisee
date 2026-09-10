@@ -767,7 +767,7 @@ Active
 
 [M3 通话多任务、屏幕共享与画面协作专项](./docs/product/CALL_MULTITASKING.md)
 
-`document_id`：`DESIGN-M3-001`；版本：1.0.0；状态：Draft。
+`document_id`：`DESIGN-M3-001`；版本：1.1.0；状态：Draft。
 
 用途：后台通话、应用内迷你通话、系统画中画、Show Me/共享/AR 组合、双端布局、定格 2D 协作与分步验收。设计不代表已实现。
 
@@ -814,6 +814,16 @@ Active
 ---
 
 ## docs/architecture
+
+### SCREEN_SHARE.md
+
+[屏幕共享框架与接入契约](./docs/architecture/SCREEN_SHARE.md)
+
+`document_id`：`ARCH-SCREEN-001`；版本：1.0.0；状态：Active。
+
+M3-F 控制器、Android 投影后端、资源归属、服务/RTC 接入顺序及验证边界。框架已实现，产品共享未接入。
+
+---
 
 ### SECURITY.md
 
@@ -1555,6 +1565,10 @@ Zisee 的文档遵循：
 ---
 
 # Changelog
+
+## M3 框架索引 - 2026-09-10
+
+- 增加 SCREEN_SHARE.md，实现边界与 CALL_MULTITASKING.md 1.1.0 同步。
 
 ## M3 多任务专项索引 - 2026-09-10
 
