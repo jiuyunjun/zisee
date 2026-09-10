@@ -1,7 +1,7 @@
 ---
 title: Zisee 开发路线图
 document_id: PROD-ROADMAP-001
-version: 1.7.0
+version: 1.8.0
 status: Active
 created: 2026-09-08
 updated: 2026-09-10
@@ -852,6 +852,8 @@ H.264
 
 ## 11.3 Adaptive Video
 
+专项设计见 [视频通话与屏幕共享参数自适应](../architecture/VIDEO_ADAPTATION.md)（Review）。基于研究报告，按 V0 逐 Track 观测 → V1 屏幕质量与音频保护 → V2 统一预算/迟滞 → V3 内容与功耗 → V4 编码实验推进。V1 补齐 M3 共享质量，后续属于 M6，不改变 M3 优先顺序；文档完成不代表功能或真机验收完成。
+
 动态调整：
 
 - bitrate
@@ -882,16 +884,20 @@ Audio first
 网络变差：
 
 ```text
-Secondary video quality ↓
+Secondary video quality ↓ / pause
 ↓
-Primary video quality ↓
+Primary video budget ↓
 ↓
-FPS ↓
+Camera: balance resolution and FPS
+Screen text: FPS first, then resolution
+Screen motion: resolution first, then FPS
 ↓
-Resolution ↓
+Audio only when video is no longer sustainable
 ```
 
 不要先破坏音频。
+
+共享方只发送屏幕与音频，不分配本机辅摄预算；进入纯语音时结束共享并清理投影，网络恢复后由用户重新共享和授权。普通换网的冷启动估计不能凭单个低样本触发终止。参数初值、统计缺失和恢复探测规则见上述专项。
 
 ---
 
@@ -1644,6 +1650,11 @@ M7
 ---
 
 # Changelog
+
+## 1.8.0 - 2026-09-10
+
+- 关联视频参数自适应专项，将 M3 屏幕质量补齐与 M6 统一预算、内容策略和编码实验分阶段推进。
+- 区分文字与运动内容的弱网降级顺序，明确纯语音时结束共享及重新授权边界；设计待实施与真机验收。
 
 ## 1.7.0 - 2026-09-10
 

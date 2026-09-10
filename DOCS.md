@@ -815,6 +815,16 @@ Active
 
 ## docs/architecture
 
+### VIDEO_ADAPTATION.md
+
+[视频通话与屏幕共享参数自适应专项设计](./docs/architecture/VIDEO_ADAPTATION.md)
+
+`document_id`：`ARCH-VIDEO-ADAPTATION-001`；版本：1.0.0；状态：Review。
+
+用途：依据[视频参数自适应研究报告](./docs/researchs/视频通话与屏幕共享场景下的视频参数自适应决策研究报告deep-research-report.md)，定义逐 Track 统计、发送预算、文字/运动档位、音频保护、换网恢复、实施阶段和真机验收。适用于 M3 屏幕质量补齐与 M6 演进；设计与实验参数不代表已实现。
+
+---
+
 ### ACTIVE_CALL.md
 
 [M3 活动通话后台生命周期](./docs/architecture/ACTIVE_CALL.md)
