@@ -92,6 +92,26 @@ class SpatialFrameworkTest {
         assertNull(wall(-2f).intersect(Vec3(0f, 0f, 0f), Vec3(1f, 0f, 0f)))
     }
 
+    @Test fun acceptsTapJustPastAPlaneEdgeButNotFarBeyondIt() {
+        val history = PoseHistory()
+        history.record(frame(1, planes = listOf(wall(-2f, 1f))))
+        // Ray x = (x * 640 - 320) / 320, so on the wall at z = -2 the hit is at 2x that.
+        val near = SpatialResolver(history).resolve(request(1, 0.78f)) as SpatialResolution.Resolved
+        assertEquals(SurfaceSource.PLANE, near.source)
+        assertEquals(1.12f, near.pose.position.x, 0.001f) // 12 cm past the edge.
+        assertEquals(SpatialResolution.Rejected(SpatialRejection.SURFACE_MISSING),
+            SpatialResolver(history).resolve(request(1, 0.85f))) // 40 cm past the edge.
+    }
+
+    @Test fun depthHoleUsesMedianOfValidNeighboursAndKeepsValidCentre() {
+        val values = ShortArray(25) { listOf(1000, 2000, 3000)[it % 3].toShort() }
+        values[12] = 0
+        assertEquals(2f, DepthSnapshot(5, 5, values).metresAt(VideoPoint(0.5f, 0.5f))!!, 0f)
+        values[12] = 3000
+        assertEquals(3f, DepthSnapshot(5, 5, values).metresAt(VideoPoint(0.5f, 0.5f))!!, 0f)
+        assertNull(DepthSnapshot(5, 5, ShortArray(25)).metresAt(VideoPoint(0.5f, 0.5f)))
+    }
+
     @Test fun rejectsMissingFramesWrongTracksLostTrackingAndLongRange() {
         val history = PoseHistory()
         history.record(frame(1, tracking = ArTracking.PAUSED))

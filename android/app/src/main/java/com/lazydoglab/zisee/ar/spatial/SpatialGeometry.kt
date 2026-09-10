@@ -49,7 +49,7 @@ class PlaneSnapshot(val pose: WorldPose, polygon: List<Vec3>) {
     val polygon: List<Vec3> = java.util.Collections.unmodifiableList(polygon.toList())
     init { require(polygon.size in 3..128 && polygon.all { abs(it.y) < 0.0001f }) }
 
-    fun intersect(origin: Vec3, direction: Vec3): Vec3? {
+    fun intersect(origin: Vec3, direction: Vec3, margin: Float = 0f): Vec3? {
         val normal = pose.rotation.rotate(Vec3(0f, 1f, 0f))
         val denominator = direction.dot(normal)
         if (abs(denominator) < 0.00001f) return null
@@ -67,7 +67,21 @@ class PlaneSnapshot(val pose: WorldPose, polygon: List<Vec3>) {
             if (cross > 0.00001f) positive = true
             if (cross < -0.00001f) negative = true
         }
-        return hit.takeUnless { positive && negative }
+        if (!(positive && negative)) return hit
+        // A freshly detected plane is a small patch of a larger real surface; a tap just past its
+        // edge nearly always means the same surface. Accept that only within [margin].
+        return hit.takeIf { margin > 0f && edgeDistance(local.x, local.z) <= margin }
+    }
+
+    private fun edgeDistance(x: Float, z: Float): Float = polygon.indices.minOf { i ->
+        val a = polygon[i]
+        val b = polygon[(i + 1) % polygon.size]
+        val dx = b.x - a.x
+        val dz = b.z - a.z
+        val t = (((x - a.x) * dx + (z - a.z) * dz) / (dx * dx + dz * dz).coerceAtLeast(1e-12f)).coerceIn(0f, 1f)
+        val ex = x - (a.x + dx * t)
+        val ez = z - (a.z + dz * t)
+        sqrt(ex * ex + ez * ez)
     }
 }
 
@@ -80,6 +94,21 @@ class DepthSnapshot(val width: Int, val height: Int, millimetres: ShortArray) {
     fun metresAt(point: VideoPoint): Float? {
         val x = (point.x * width).toInt().coerceAtMost(width - 1)
         val y = (point.y * height).toInt().coerceAtMost(height - 1)
-        return (samples[y * width + x].toInt() and 0xffff).takeIf { it > 0 }?.div(1000f)
+        sample(x, y)?.let { return it }
+        // Holes (edges, glare, low texture) are usually a few cells, not the surface itself: take
+        // the median of the valid cells around the tap instead of giving up on depth entirely.
+        val nearby = buildList {
+            for (dy in -HOLE_RADIUS..HOLE_RADIUS) for (dx in -HOLE_RADIUS..HOLE_RADIUS) {
+                val sx = x + dx
+                val sy = y + dy
+                if (sx in 0 until width && sy in 0 until height) sample(sx, sy)?.let { add(it) }
+            }
+        }.sorted()
+        return nearby.getOrNull(nearby.size / 2)
     }
+
+    private fun sample(x: Int, y: Int): Float? =
+        (samples[y * width + x].toInt() and 0xffff).takeIf { it > 0 }?.div(1000f)
+
+    private companion object { const val HOLE_RADIUS = 2 }
 }

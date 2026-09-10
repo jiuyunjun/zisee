@@ -30,9 +30,14 @@ class SpatialResolver(private val history: PoseHistory, private val maxDistanceM
         }
         val origin = frame.pose.position
         val direction = frame.pose.rotation.rotate(ray).normalized()
-        val point = frame.planes.mapNotNull { it.intersect(origin, direction) }
-            .minByOrNull { (it - origin).length() } ?: return reject(SpatialRejection.SURFACE_MISSING)
+        fun nearestPlaneHit(margin: Float) = frame.planes.mapNotNull { it.intersect(origin, direction, margin) }
+            .minByOrNull { (it - origin).length() }
+        // Inside a detected polygon first; only then the band just past a plane's edge.
+        val point = nearestPlaneHit(0f) ?: nearestPlaneHit(PLANE_EDGE_MARGIN_METRES)
+            ?: return reject(SpatialRejection.SURFACE_MISSING)
         if ((point - origin).length() > maxDistanceMetres) return reject(SpatialRejection.TOO_FAR)
         return SpatialResolution.Resolved(WorldPose(point), SurfaceSource.PLANE)
     }
+
+    private companion object { const val PLANE_EDGE_MARGIN_METRES = 0.25f }
 }
