@@ -72,6 +72,7 @@ internal data class PreviewScenario(
     val peerName: String = "林然",
     val sharePhase: ScreenSharePhase = ScreenSharePhase.IDLE,
     val openMore: Boolean = false,
+    val remoteSharing: Boolean = false,
 ) {
     val localScene: Boolean get() = localMode in setOf(CameraMode.DUAL, CameraMode.BACK_ONLY, CameraMode.AR)
 }
@@ -89,6 +90,8 @@ internal fun PreviewScenario.toUiState(feeds: List<VideoFeed>) = CallUiState(
     // A non-IDLE phase requires a session, so the fixture supplies a complete one.
     machine = CallState(CallPhase.CONNECTED, CallSession("preview", "peer")),
     local = feeds[0], remote = feeds[1], localBack = feeds[2], remoteBack = feeds[3],
+    remoteScreen = if (remoteSharing) feeds[3] else null,
+    remoteShare = com.lazydoglab.zisee.rtc.SharePresentation(remoteSharing, if (remoteSharing) "preview" else ""),
     cameraEnabled = cameraEnabled, muted = muted, speakerOn = speakerOn, showMeHint = showMeHint,
     showMe = ShowMeState(localMode), remotePresentation = CameraPresentation(remoteMode, remoteEnabled),
     stats = MediaStats(videoFrames = if (remoteFrames) 1L else 0L,
@@ -119,7 +122,8 @@ internal fun CallUiPreview(feeds: List<VideoFeed>, initial: PreviewScenario, int
         onMute = { scenario = scenario.copy(muted = !scenario.muted) },
         onCamera = { scenario = scenario.copy(cameraEnabled = !scenario.cameraEnabled) },
         onShowMe = { scenario = scenario.copy(localMode = if (scenario.localScene) CameraMode.FACE else CameraMode.DUAL) },
-        onSwitch = {},
+        onSwitch = { scenario = scenario.copy(localMode = if (scenario.localMode == CameraMode.FACE)
+            CameraMode.BACK_ONLY else CameraMode.FACE) },
         onSpeaker = { scenario = scenario.copy(speakerOn = !scenario.speakerOn) },
         onEnd = onExit,
         onMinimize = onExit,

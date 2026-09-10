@@ -148,7 +148,7 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
         onDispose { accessibilityManager?.removeTouchExplorationStateChangeListener(listener) }
     }
     val remoteDual = state.remotePresentation.mode == CameraMode.DUAL
-    val scene = state.remotePresentation.mode in setOf(CameraMode.DUAL, CameraMode.BACK_ONLY, CameraMode.AR)
+    val scene = !state.remoteShare.sharing && state.remotePresentation.mode in setOf(CameraMode.DUAL, CameraMode.BACK_ONLY, CameraMode.AR)
     val localScene = localMode in setOf(CameraMode.DUAL, CameraMode.BACK_ONLY, CameraMode.AR)
     val starting = state.showMe.mode == CameraMode.STARTING
     // Anything past consent is a live projection as far as the user is concerned, including the
@@ -204,12 +204,7 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
     // The hint has taught its gesture once it has been read, whether or not it was used.
     LaunchedEffect(hint) { if (hint) { delay(8_000); onHintSeen() } }
     LaunchedEffect(tip) { if (tip == null) tipInset = 0.dp }
-    LaunchedEffect(controls) {
-        if (!controls) {
-            bottomControlsHeight = 0.dp
-            topControlsHeight = 0.dp
-        }
-    }
+    // Retain measured safe areas while controls are hidden, so default thumbnails stay put.
     Surface(color = CallInk, contentColor = CallText, modifier = Modifier.fillMaxSize()) {
         BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().clickable { controls = !controls; interaction++ }) {
             val order = CallVideoLayout.sources(localMode, state.remotePresentation.mode,
@@ -241,10 +236,19 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                 maxHeight.value.coerceAtLeast(1f), thumbs.map { aspects.getValue(it) },
                 (bottomControlsHeight + arToolsHeight + tipInset + 12.dp).value)
             val tiles = thumbs.zip(positions).toMap()
-            // Pixel drag offsets belong to one geometry. Rotation/stream changes reset them before
-            // they can strand a thumbnail outside the resized window.
-            LaunchedEffect(maxWidth, maxHeight, main, positions) {
-                moved = emptyMap(); parked = emptyMap()
+            // Store user placements as window-relative coordinates, independent of default slots
+            // and transient controls. Clamp for the current tile size without losing the memory.
+            fun rememberedOffset(tile: String): Offset {
+                val saved = moved[tile] ?: return Offset.Zero
+                val rect = tiles.getValue(tile)
+                return with(density) { Offset((saved.x * maxWidth.value - rect.x).dp.toPx(),
+                    (saved.y * maxHeight.value - rect.y).dp.toPx()) }
+            }
+            fun saveOffset(tile: String, offset: Offset) {
+                val rect = tiles.getValue(tile)
+                moved = moved + (tile to with(density) { Offset(
+                    (rect.x + offset.x.toDp().value) / maxWidth.value,
+                    (rect.y + offset.y.toDp().value) / maxHeight.value) })
             }
             val edge = with(density) { 8.dp.toPx() }
             fun inside(tile: String, raw: Offset): Offset {
@@ -281,7 +285,7 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                 if (tile == main) return Modifier.fillMaxSize().zIndex(CallVideoLayout.stack(tile, main))
                 val rect = tiles.getValue(tile)
                 // Clamp during composition as well: layout changes precede the reset effect.
-                val drag = inside(tile, moved[tile] ?: Offset.Zero)
+                val drag = inside(tile, rememberedOffset(tile))
                 val y = with(density) { rect.y.dp.toPx() } + drag.y
                 parked[tile]?.let { left ->
                     val handleHeight = minOf(56.dp, maxHeight)
@@ -353,9 +357,10 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                         detectDragGestures(
                             onDrag = { change, delta ->
                                 change.consume()
-                                moved = moved + (tile to inside(tile, (moved[tile] ?: Offset.Zero) + delta))
+                                interaction++
+                                saveOffset(tile, inside(tile, rememberedOffset(tile) + delta))
                             },
-                            onDragEnd = { moved = moved + (tile to settled(tile, moved[tile] ?: Offset.Zero)) },
+                            onDragEnd = { saveOffset(tile, settled(tile, rememberedOffset(tile))) },
                         )
                     }
                     .clickable {
@@ -473,7 +478,7 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                                 "%02d:%02d".format(duration / 60, duration % 60) else state.status,
                                 fontSize = 13.sp, color = CallMuted, maxLines = 1)
                         }
-                        if (scene) Row(Modifier.height(28.dp).clip(RoundedCornerShape(14.dp))
+                        if (scene || state.remoteShare.sharing) Row(Modifier.heightIn(min = 28.dp).clip(RoundedCornerShape(14.dp))
                             .background(CallAccent.copy(alpha = 0.16f))
                             .border(1.dp, CallAccent.copy(alpha = 0.30f), RoundedCornerShape(14.dp))
                             .padding(start = 9.dp, end = 11.dp),
@@ -482,17 +487,22 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                             Canvas(Modifier.size(14.dp)) {
                                 scale(size.width / 24f, size.width / 24f, Offset.Zero) { callIcon("show", CallAccent, knockout = CallInk) }
                             }
-                            Text("对方现场", fontSize = 12.sp, color = CallAccent, fontWeight = FontWeight.Medium)
+                            Text(if (state.remoteShare.sharing) "对方屏幕" else "对方现场",
+                                fontSize = 12.sp, color = CallAccent, fontWeight = FontWeight.Medium)
                         }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Box(Modifier.size(48.dp).clip(CircleShape).background(Color(0xFF0C1216).copy(alpha = 0.5f))
-                            .border(1.dp, CallText.copy(alpha = 0.10f), CircleShape)
-                            .clickable { interaction++; onMinimize() }
-                            .semantics { role = Role.Button; contentDescription = "最小化通话" },
-                            contentAlignment = Alignment.Center) {
-                            Canvas(Modifier.size(20.dp)) {
-                                scale(size.width / 24f, size.width / 24f, Offset.Zero) { callIcon("minimize", CallText) }
+                        if (localMode in setOf(CameraMode.FACE, CameraMode.BACK_ONLY) && !sharing && !state.remoteShare.sharing) {
+                            Box(Modifier.size(48.dp).clip(CircleShape).background(Color(0xFF0C1216).copy(alpha = 0.5f))
+                                .border(1.dp, CallText.copy(alpha = 0.10f), CircleShape)
+                                .clickable(enabled = state.cameraEnabled && !starting) { interaction++; onSwitch() }
+                                .semantics { role = Role.Button; contentDescription = "切换前后摄像头" },
+                                contentAlignment = Alignment.Center) {
+                                Canvas(Modifier.size(20.dp)) {
+                                    scale(size.width / 24f, size.width / 24f, Offset.Zero) {
+                                        callIcon("swap", if (state.cameraEnabled && !starting) CallText else CallFaint)
+                                    }
+                                }
                             }
                         }
                         Box(Modifier.size(48.dp).clip(CircleShape)

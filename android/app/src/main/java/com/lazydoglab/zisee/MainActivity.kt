@@ -84,9 +84,23 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(call.busy) { if (!call.busy) minimized = false }
             // Home may enter PiP even for a local AR field: onPause ends that field while PiP
             // continues to show the peer. The in-app minimize action has a stricter AR guard.
-            val pipEligible = call.busy && call.local != null
+            val sharing = call.shareConsent != null || call.screenShare.phase in setOf(
+                com.lazydoglab.zisee.screen.ScreenSharePhase.STARTING,
+                com.lazydoglab.zisee.screen.ScreenSharePhase.ACTIVE)
+            val pipEligible = call.busy && call.local != null && !sharing
+            val pipSource = com.lazydoglab.zisee.ui.CallVideoLayout.compactRemote(
+                call.remotePresentation.mode, call.selectedVideoSource, call.remoteShare.sharing)
+            val pipFeed = when (pipSource) {
+                com.lazydoglab.zisee.ui.CallVideoLayout.PeerScreen -> call.remoteScreen
+                com.lazydoglab.zisee.ui.CallVideoLayout.PeerScene ->
+                    if (call.remotePresentation.mode in setOf(CameraMode.DUAL, CameraMode.AR)) call.remoteBack else call.remote
+                else -> call.remote
+            }
+            val pipGeometry = pipFeed?.geometry?.collectAsStateWithLifecycle()?.value
+            val portrait = androidx.compose.ui.platform.LocalConfiguration.current.orientation != Configuration.ORIENTATION_LANDSCAPE
             SideEffect {
-                callPip.update(pipEligible, call.stats.videoWidth, call.stats.videoHeight, call.muted)
+                callPip.update(pipEligible, pipGeometry?.displayWidth ?: if (portrait) 9 else 16,
+                    pipGeometry?.displayHeight ?: if (portrait) 16 else 9, call.muted)
             }
             LaunchedEffect(identity) {
                 (identity as? IdentityState.Ready)?.let { callModel.observeIdentity(it.identity) }

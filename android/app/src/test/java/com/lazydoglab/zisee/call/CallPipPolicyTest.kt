@@ -4,6 +4,13 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class CallPipPolicyTest {
+    @Test fun rotatedFrameUsesDisplayedDimensions() {
+        for (rotation in listOf(0, 90, 180, 270)) {
+            val geometry = com.lazydoglab.zisee.rtc.VideoGeometry(1920, 1080, rotation)
+            assertEquals(if (rotation % 180 == 0) PipAspect(16, 9) else PipAspect(9, 16),
+                CallPipPolicy.aspect(geometry.displayWidth, geometry.displayHeight))
+        }
+    }
     @Test fun preservesAndReducesOrdinaryFrameRatios() {
         assertEquals(PipAspect(16, 9), CallPipPolicy.aspect(1920, 1080))
         assertEquals(PipAspect(9, 16), CallPipPolicy.aspect(1080, 1920))

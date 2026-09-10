@@ -275,6 +275,9 @@ internal fun VideoRenderer(feed: VideoFeed, modifier: Modifier, corner: Dp = 0.d
         val geometry by feed.geometry.collectAsState()
         val cornerPx = with(androidx.compose.ui.platform.LocalDensity.current) { corner.toPx() }
         var renderer by remember(feed) { mutableStateOf<com.lazydoglab.zisee.rtc.TextureViewRenderer?>(null) }
+        // The role changes outside BoxWithConstraints' size subcomposition. Update the retained
+        // view here, so a main/thumbnail swap cannot reuse that subcomposition's old radius.
+        androidx.compose.runtime.SideEffect { renderer?.cornerRadius = cornerPx }
         val displayedState = renderer?.displayedArFrame
         val displayed = if (displayedState != null) displayedState.collectAsState().value else null
         // The call surface supplies the bars behind a tile smaller than its box.
@@ -286,7 +289,7 @@ internal fun VideoRenderer(feed: VideoFeed, modifier: Modifier, corner: Dp = 0.d
             val height = minOf(maxHeight, width / aspect.coerceAtLeast(0.001f))
             AndroidView(factory = { context -> TextureViewRenderer(context).also { renderer = it; feed.attach(it) } },
                 modifier = Modifier.size(width, height),
-                update = { it.cornerRadius = cornerPx },
+                update = {},
                 onRelease = { feed.detach(it); if (renderer === it) renderer = null })
             if (onArTap != null && displayed != null) {
                 val density = androidx.compose.ui.platform.LocalDensity.current

@@ -23,6 +23,10 @@ internal object CallVideoLayout {
      */
     fun sources(local: CameraMode, remote: CameraMode, remoteSharing: Boolean = false,
         localSharing: Boolean = false): List<String> = buildList {
+        if (remoteSharing) {
+            add(PeerScreen)
+            return@buildList
+        }
         fun addCamera(mode: CameraMode, face: String, scene: String) {
             when (mode) {
                 CameraMode.DUAL -> { add(scene); add(face) }
@@ -30,7 +34,6 @@ internal object CallVideoLayout {
                 else -> add(face)
             }
         }
-        if (remoteSharing) add(PeerScreen)
         if (!localSharing) addCamera(local, MeFace, MeScene)
         addCamera(remote, PeerFace, PeerScene)
     }
@@ -43,16 +46,16 @@ internal object CallVideoLayout {
         ?: sources.firstOrNull { it == PeerScene }
         ?: PeerFace
 
-    /** Compact windows show exactly one remote source. A remote user selection wins; otherwise a
-     * share the peer is sending outranks the cameras, then Show Me and rear-only calls prefer the
-     * scene, and an ordinary call prefers the face.
+    /** Shared screens own the view until sharing stops; an old camera selection resumes afterwards.
+     * Without a share, compact windows follow the selected remote camera or the default scene.
      */
     fun compactRemote(remote: CameraMode, chosen: String?, remoteSharing: Boolean = false): String {
+        if (remoteSharing) return PeerScreen
         val available = when (remote) {
             CameraMode.DUAL -> setOf(PeerScene, PeerFace)
             CameraMode.BACK_ONLY, CameraMode.AR -> setOf(PeerScene)
             else -> setOf(PeerFace)
-        } + if (remoteSharing) setOf(PeerScreen) else emptySet()
+        }
         return chosen?.takeIf { it in available }
             ?: if (PeerScreen in available) PeerScreen
             else if (PeerScene in available) PeerScene else PeerFace

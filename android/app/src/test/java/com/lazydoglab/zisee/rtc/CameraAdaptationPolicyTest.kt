@@ -7,14 +7,30 @@ import org.junit.Test
 
 class CameraAdaptationPolicyTest {
     @Test fun `sender capped bandwidth can recover without a local route event`() {
+        for (nativeLimit in listOf("none", "bandwidth")) {
         val policy = CameraAdaptationPolicy(supportsFullHd = true)
         for (t in 0L..10_000L step 1_000) policy.update(input(t, 100))
         assertEquals(CameraTier.C0, policy.lastPlan.main.tier)
         // Model a healthy route whose estimate cannot grow beyond the application's sender cap.
         for (t in 11_000L..120_000L step 1_000) {
-            policy.update(input(t, policy.lastPlan.main.maxBitrateBps / 1_000L))
+            policy.update(input(t, policy.lastPlan.main.maxBitrateBps / 1_000L,
+                main = healthyMain.copy(qualityLimitation = nativeLimit)))
         }
         assertEquals(CameraTier.C3, policy.lastPlan.main.tier)
+        }
+    }
+
+    @Test fun `unsuccessful ceiling probe expires without forcing higher resolution`() {
+        val policy = CameraAdaptationPolicy(supportsFullHd = true)
+        for (t in 0L..10_000L step 1_000) policy.update(input(t, 100))
+        var probed = false
+        for (t in 11_000L..32_000L step 1_000) {
+            val plan = policy.update(input(t, 350))
+            probed = probed || plan.main.maxBitrateBps > CameraTier.C0.maxKbps * 1_000
+            assertEquals(CameraTier.C0, plan.main.tier)
+        }
+        assertTrue(probed)
+        assertEquals(CameraTier.C0.maxKbps * 1_000, policy.lastPlan.main.maxBitrateBps)
     }
 
     @Test fun `recovery probe never overrides loss thermal or thumbnail limits`() {

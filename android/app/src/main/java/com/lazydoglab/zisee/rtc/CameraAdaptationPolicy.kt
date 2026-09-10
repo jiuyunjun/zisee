@@ -213,8 +213,7 @@ class CameraAdaptationPolicy(
         fun trackPlan(tier: CameraTier, ceilingKbps: Long) =
             TrackPlan(tier, tier.width, tier.height, tier.fps, (ceilingKbps * 1_000).toInt())
 
-        // Deterministic in the tier alone, so it is only ever "new" when the tier itself changes —
-        // no separate stability threshold is needed for it.
+        // A bounded recovery probe may temporarily raise only the sender ceiling.
         // The tier ceiling can itself pin BWE below the next tier's entry threshold. Probe only
         // the ceiling (never force a resolution/minimum rate), with fresh healthy feedback,
         // bounded duration and cooldown. This also works when only the remote peer changed route.
@@ -289,7 +288,7 @@ class CameraAdaptationPolicy(
             val healthy = upgradeTier.minKbps <= pool * 0.8 &&
                 track.outboundLoss?.takeIf { track.outboundReportFresh }?.let { it < 0.02 } != false &&
                 track.sendDelayMs?.let { it <= 30.0 } != false &&
-                track.qualityLimitation == "none" && (thermalStatus ?: 0) < 2
+                track.qualityLimitation in setOf("none", "bandwidth") && (thermalStatus ?: 0) < 2
             target = if (healthy) upgradeTier else current
         } else if (target.ordinal < current.ordinal) {
             target = previous(current)

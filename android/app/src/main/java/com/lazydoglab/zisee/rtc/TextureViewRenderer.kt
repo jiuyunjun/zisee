@@ -63,6 +63,13 @@ class TextureViewRenderer(context: Context) : TextureView(context), TextureView.
             invalidateOutline()
         }
 
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        // A main/thumbnail swap updates the radius before AndroidView receives its new bounds.
+        // Rebuild the outline using the final bounds, including swaps with an unchanged radius.
+        invalidateOutline()
+    }
+
     fun init(sharedContext: EglBase.Context) {
         eglRenderer.init(sharedContext, EglBase.CONFIG_PLAIN, GlRectDrawer(), true)
         surfaceTexture?.let { eglRenderer.createEglSurface(it) }

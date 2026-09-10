@@ -24,6 +24,7 @@ import org.webrtc.*
 class RtcSmokeInstrumentation : Instrumentation() {
     private var expectedQuality: String? = null
     private var preview = false
+    private var thumbnailSwaps = false
     private var capabilities = false
     private var orientationPreview = false
     private var callUiPreview = false
@@ -41,6 +42,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
         super.onCreate(arguments)
         expectedQuality = arguments?.getString("expectedQuality")
         preview = arguments?.getString("preview") == "true"
+        thumbnailSwaps = arguments?.getString("thumbnailSwaps") == "true"
         capabilities = arguments?.getString("capabilities") == "true"
         orientationPreview = arguments?.getString("orientationPreview") == "true"
         callUiPreview = arguments?.getString("callUiPreview") == "true"
@@ -60,6 +62,12 @@ class RtcSmokeInstrumentation : Instrumentation() {
     override fun onStart() {
         val output = Bundle()
         try {
+            if (thumbnailSwaps) {
+                CallThumbnailSmoke.run(this)
+                output.putString("stream", "PASS: all four thumbnail swaps, outlines and dragged position across auto-hide; synthetic frames\n")
+                finish(Activity.RESULT_OK, output)
+                return
+            }
             if (arCameraTakeover) {
                 runBlocking {
                     val activity = ArTestActivityLauncher.open(this@RtcSmokeInstrumentation, waitForForeground)
@@ -123,7 +131,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
             if (callUiPreview) {
                 val files = mutableListOf<String>()
                 val scenarios = listOf("normal", "muted-camera-off", "long-name", "sharing-starting",
-                    "sharing-active", "ar-notice", "more")
+                    "sharing-active", "remote-sharing", "ar-notice", "more")
                 try {
                     for ((rotation, orientation) in listOf(
                         android.app.UiAutomation.ROTATION_FREEZE_0 to android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,

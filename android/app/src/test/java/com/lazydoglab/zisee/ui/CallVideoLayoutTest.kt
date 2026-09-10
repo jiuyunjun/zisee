@@ -80,8 +80,7 @@ class CallVideoLayoutTest {
             val sources = CallVideoLayout.sources(local, remote, remoteSharing = true)
             assertEquals(sources.size, sources.toSet().size)
             assertTrue(CallVideoLayout.PeerScreen in sources)
-            assertEquals(CallVideoLayout.sources(local, remote) + CallVideoLayout.PeerScreen,
-                sources.filter { it != CallVideoLayout.PeerScreen } + CallVideoLayout.PeerScreen)
+            assertEquals(listOf(CallVideoLayout.PeerScreen), sources)
             assertTrue(sources.none { it.startsWith("me.") && it.endsWith("screen") })
             assertTrue(CallVideoLayout.PeerScreen !in CallVideoLayout.sources(local, remote))
         }
@@ -124,7 +123,7 @@ class CallVideoLayoutTest {
             assertNotEquals(CallVideoLayout.PeerScreen,
                 CallVideoLayout.compactRemote(remote, CallVideoLayout.PeerScreen))
         }
-        assertEquals(CallVideoLayout.PeerFace,
+        assertEquals(CallVideoLayout.PeerScreen,
             CallVideoLayout.compactRemote(CameraMode.DUAL, CallVideoLayout.PeerFace, remoteSharing = true))
     }
 

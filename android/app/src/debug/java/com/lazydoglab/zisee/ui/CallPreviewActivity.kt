@@ -57,6 +57,8 @@ class CallPreviewActivity : ComponentActivity() {
         val interactive = intent.getBooleanExtra("interactive", false)
         val scenarioName = intent.getStringExtra("callUiScenario") ?: "normal"
         val scenario = when (scenarioName) {
+            "remote-sharing" -> PreviewScenario(localMode = CameraMode.DUAL, remoteMode = CameraMode.DUAL,
+                remoteSharing = true, selectedVideoSource = CallVideoLayout.PeerFace)
             "muted-camera-off" -> PreviewScenario(localMode = localMode, remoteMode = remoteMode,
                 muted = true, cameraEnabled = false)
             "long-name" -> PreviewScenario(localMode = localMode, remoteMode = remoteMode,
