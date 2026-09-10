@@ -45,6 +45,11 @@
   - 4G 期间：srflx/relay 成功，relay/host:failed=8 为 TURN 拒绝私网地址，属正常。
   - 01:21 相机 7 次开关对应两次 RTC_SHOW_ME_FALLBACK requested（用户开关给你看），非缺陷。
   - 仍存在：Wi-Fi→4G 必须 ICE 重启，视频中断 2.9s（01:21）至 7.1s（01:15），为下一步重点。
+- 2026-09-11 01:29 AR 复测（最新代码，进程自 01:20 起）：点击仍只切换菜单。代码上主画面无其他全屏可点击层，onArTap 已传到 VideoRenderer，点击层只覆盖适配后的画面区域；推断点在黑边上落到外层菜单开关，未证实。已加 AR_TAP 诊断：点击层出现时记录 layer/box 像素尺寸，每次点击记录 frame=none / outside / placed。若复测时点画面也没有 AR_TAP 点击记录，说明点击层没收到事件。
+- 2026-09-11 Wi-Fi→4G 7.1s 分析（01:15 通话）：
+  - 该通话开头只收集到 host，无 srflx/relay（01:14:00 RTC_BACKUP_PATH missing on=wifi origins=3），切网时无备用路径；01:15:14 起对端音频全为零帧，媒体完全中断。STUN/TURN 为何没结果未查明（01:16:02 有 Binding request timed out）。
+  - 恢复评估在信令循环里、排在重建信令连接之后；切网 200ms 后旧信令被主动关闭，重启要等 4G 上 WebSocket 重连并收到 session.ready。naturalRecoveryMs 仅 2s，实际 4.5s 才决定重启，推断耗在信令重连。已加 RTC_SIGNALING_READY ms=… route=…（仅重连时记录）以证实。
+  - 可能的改进（未做，涉及架构，需用户确认）：切网后若新网络无备用路径则尽快重启；或在 4G 待机网络上预热信令连接，避免重启等待重连。
 - 剩余：双机切网实测（需求 1）、系统浮窗横竖屏（需求 4，用户自测）、AR 现场跟踪/放置（需求 6）。
 - 改动内容：MainActivity 用选中远端 feed 的 VideoGeometry.displayWidth/displayHeight 更新 PiP，共享授权/启动/进行中禁用 auto-enter；CallVideoLayout 远端共享仅返回 PeerScreen，compact 也优先共享；ActiveCall 单摄右上角切前后摄，拖动位置保存为窗口归一坐标，取消随 controls 清空高度；TextureViewRenderer 尺寸变化重新 invalidateOutline。
 - 圆角真实根因：VideoRenderer 的 AndroidView.update 在 BoxWithConstraints 尺寸子组合中保留旧 cornerPx；交换后主画面仍圆角、旧主画面小窗无圆角。改为外部 SideEffect 更新保留 renderer，尺寸变化还会 invalidateOutline。四路真实触摸交换测试已 PASS，且审过 rounded-fixed.png；继续补拖动后自动隐藏位置不变测试。

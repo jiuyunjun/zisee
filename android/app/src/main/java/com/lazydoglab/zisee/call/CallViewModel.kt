@@ -562,6 +562,7 @@ class CallViewModel(application: Application, private val container: AppContaine
                 val signalingRetry = com.lazydoglab.zisee.signaling.SignalingRetryPolicy()
                 val routeWake = Channel<Unit>(Channel.CONFLATED)
                 var socketNetworkVersion = network.version.value
+                var signalingReadyOnce = false
                 // Preparing for the break is worth nothing once it has happened, so this does not
                 // share the route collector: that one debounces and performs signaling IO. It
                 // collects forever, so like every other observer here it is cancelled explicitly.
@@ -583,9 +584,17 @@ class CallViewModel(application: Application, private val container: AppContaine
                     }
                     try {
                         if (socket == null) {
+                            // A route restart can only be signaled once this reconnect finishes, so
+                            // its duration is part of every handover gap that needed a restart.
+                            val reconnect = signalingReadyOnce
+                            val routeChanged = reconnect && socketNetworkVersion != network.version.value
+                            val connectStartMs = System.nanoTime() / 1_000_000
                             socketNetworkVersion = network.version.value
                             socket = MediaSignaling(api, container.httpClient, session)
                             socket.ready()
+                            if (reconnect) container.logger.info(AppEvent.RTC_SIGNALING_READY,
+                                "ms=${System.nanoTime() / 1_000_000 - connectStartMs} route=$routeChanged")
+                            signalingReadyOnce = true
                         }
                         var current = remote
                         if (current == null) {

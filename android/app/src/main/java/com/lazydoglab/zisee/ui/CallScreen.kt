@@ -300,14 +300,30 @@ internal fun VideoRenderer(feed: VideoFeed, modifier: Modifier, corner: Dp = 0.d
                 // controls toggle. Keep the layer while marking and read the latest frame on tap.
                 val latest by androidx.compose.runtime.rememberUpdatedState(displayed)
                 val tap by androidx.compose.runtime.rememberUpdatedState(onArTap)
+                // Field diagnosis: taps still toggled the controls. Record the layer's size against
+                // its box (letterbox bars fall through to the controls) and each tap's outcome.
+                val layer = "layer=${viewportWidth.toInt()}x${viewportHeight.toInt()} " +
+                    "box=${with(density) { maxWidth.toPx().toInt() }}x${with(density) { maxHeight.toPx().toInt() }}"
+                androidx.compose.runtime.LaunchedEffect(layer) {
+                    com.lazydoglab.zisee.core.logging.AndroidAppLogger.info(
+                        com.lazydoglab.zisee.core.logging.AppEvent.AR_TAP, "shown $layer")
+                }
                 Box(Modifier.size(width, height).pointerInput(viewportWidth, viewportHeight) {
                     detectTapGestures { offset ->
-                        val frame = latest ?: return@detectTapGestures
-                        val point = com.lazydoglab.zisee.ar.annotation.VideoPointMapper.fromViewport(
-                            offset.x, offset.y, viewportWidth, viewportHeight,
-                            frame.geometry, frame.mirrored,
-                            com.lazydoglab.zisee.ar.annotation.VideoPointMapper.Scale.FIT)
-                        if (point != null) tap(frame, point)
+                        val frame = latest
+                        val point = frame?.let {
+                            com.lazydoglab.zisee.ar.annotation.VideoPointMapper.fromViewport(
+                                offset.x, offset.y, viewportWidth, viewportHeight,
+                                it.geometry, it.mirrored,
+                                com.lazydoglab.zisee.ar.annotation.VideoPointMapper.Scale.FIT)
+                        }
+                        com.lazydoglab.zisee.core.logging.AndroidAppLogger.info(
+                            com.lazydoglab.zisee.core.logging.AppEvent.AR_TAP, when {
+                                frame == null -> "frame=none"
+                                point == null -> "outside"
+                                else -> "placed"
+                            })
+                        if (frame != null && point != null) tap(frame, point)
                     }
                 }.semantics { contentDescription = "AR 现场，可轻点放置所选标记" })
             }
