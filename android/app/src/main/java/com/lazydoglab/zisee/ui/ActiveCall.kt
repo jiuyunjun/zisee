@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.core.view.WindowInsetsControllerCompat
 import com.lazydoglab.zisee.BuildConfig
 import com.lazydoglab.zisee.call.CallUiState
@@ -72,12 +73,14 @@ private const val MeFace = CallVideoLayout.MeFace
 private const val MeScene = CallVideoLayout.MeScene
 private const val PeerFace = CallVideoLayout.PeerFace
 private const val PeerScene = CallVideoLayout.PeerScene
+private const val PeerScreen = CallVideoLayout.PeerScreen
 
 private fun label(tile: String) = when (tile) {
     MeFace -> "我"
     MeScene -> "我的现场"
     // Four characters at most: a three-tile stack leaves the label 88dp to sit in.
     PeerScene -> "对方现场"
+    PeerScreen -> "对方屏幕"
     else -> "对方"
 }
 
@@ -107,6 +110,7 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
     onArUndo: () -> Unit = {},
     onArClearOwn: () -> Unit = {},
     onSelectVideo: (String) -> Unit = {},
+    onStartShare: () -> Unit = {}, onStopShare: () -> Unit = {},
     arControls: @Composable () -> Unit = {}) {
     var controls by remember { mutableStateOf(true) }
     var interaction by remember { mutableLongStateOf(0L) }
@@ -127,6 +131,11 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
     val scene = state.remotePresentation.mode in setOf(CameraMode.DUAL, CameraMode.BACK_ONLY, CameraMode.AR)
     val localScene = localMode in setOf(CameraMode.DUAL, CameraMode.BACK_ONLY, CameraMode.AR)
     val starting = state.showMe.mode == CameraMode.STARTING
+    // Anything past consent is a live projection as far as the user is concerned, including the
+    // window before the first frame: they must be able to stop it throughout.
+    val sharing = state.screenShare.phase in setOf(
+        com.lazydoglab.zisee.screen.ScreenSharePhase.STARTING,
+        com.lazydoglab.zisee.screen.ScreenSharePhase.ACTIVE)
     val hint = state.showMeHint && remoteDual
     // Priority: what is happening now, then what failed, then the one-time teaching hint.
     val tip = when {
@@ -174,7 +183,8 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
     LaunchedEffect(tip) { if (tip == null) tipInset = 0.dp }
     Surface(color = CallInk, contentColor = CallText, modifier = Modifier.fillMaxSize()) {
         BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().clickable { controls = !controls; interaction++ }) {
-            val order = CallVideoLayout.sources(localMode, state.remotePresentation.mode)
+            val order = CallVideoLayout.sources(localMode, state.remotePresentation.mode,
+                state.remoteShare.sharing, sharing)
             val main = CallVideoLayout.main(order, state.selectedVideoSource)
             val localArMarking = main == MeScene && localMode == CameraMode.AR &&
                 state.arState == com.lazydoglab.zisee.ar.session.ArSessionState.TRACKING
@@ -192,6 +202,7 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                 MeScene to videoAspect(if (localMode in setOf(CameraMode.DUAL, CameraMode.AR)) state.localBack else state.local),
                 PeerFace to videoAspect(state.remote),
                 PeerScene to videoAspect(if (remoteDual || state.remotePresentation.mode == CameraMode.AR) state.remoteBack else state.remote),
+                PeerScreen to videoAspect(state.remoteScreen),
             )
             val positions = CallVideoLayout.thumbnails(maxWidth.value.coerceAtLeast(1f),
                 maxHeight.value.coerceAtLeast(1f), thumbs.map { aspects.getValue(it) }, 140f + tipInset.value)
@@ -231,14 +242,16 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
             // renderer's outline (an ancestor clip makes a TextureView composite as nothing), and
             // the gesture overlay drawn on top of it already carries the border.
             fun slot(tile: String, video: Boolean = false): Modifier {
-                if (tile == main) return Modifier.fillMaxSize()
+                // Every tile stacks through CallVideoLayout.stack; see it for why fixed renderer
+                // call sites make an explicit z index the only thing keeping thumbnails visible.
+                if (tile == main) return Modifier.fillMaxSize().zIndex(CallVideoLayout.stack(tile, main))
                 val rect = tiles.getValue(tile)
                 // Clamp during composition as well: layout changes precede the reset effect.
                 val drag = inside(tile, moved[tile] ?: Offset.Zero)
                 val y = with(density) { rect.y.dp.toPx() } + drag.y
                 parked[tile]?.let { left ->
                     val handleHeight = minOf(56.dp, maxHeight)
-                    return Modifier.align(Alignment.TopStart)
+                    return Modifier.align(Alignment.TopStart).zIndex(CallVideoLayout.stack(tile, main))
                         .offset { IntOffset(if (left) 0 else with(density) { (maxWidth - 14.dp).toPx().roundToInt() },
                             y.coerceIn(0f, with(density) { (maxHeight - handleHeight).toPx() }).roundToInt()) }
                         .size(14.dp, handleHeight)
@@ -247,7 +260,7 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                         .border(1.dp, CallText.copy(alpha = 0.16f),
                             if (left) HandleLeftShape else HandleRightShape)
                 }
-                val placed = Modifier.align(Alignment.TopStart)
+                val placed = Modifier.align(Alignment.TopStart).zIndex(CallVideoLayout.stack(tile, main))
                     .offset { IntOffset((with(density) { rect.x.dp.toPx() } + drag.x).roundToInt(), y.roundToInt()) }
                     .size(rect.width.dp, rect.height.dp)
                 return if (video) placed
@@ -277,6 +290,18 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                     state.remotePresentation.enabled && (PeerScene == main || PeerScene !in parked),
                     slot(PeerScene, video = true), PeerScene != main, corner(PeerScene),
                     if (remoteArMarking) { frame, point -> onArMarker(frame, point, arKind) } else null)
+            }
+            if (PeerScreen in order) {
+                VideoTile(state.remoteScreen, state.remoteShare.sharing && (PeerScreen == main || PeerScreen !in parked),
+                    slot(PeerScreen, video = true), PeerScreen != main, corner(PeerScreen))
+            }
+            // §5.1: the peer is only "sharing" once its frames arrive here. Until then say so
+            // rather than showing an empty picture that looks like a failure.
+            if (main == PeerScreen && !videoReady(state.remoteScreen)) {
+                Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(Modifier.size(26.dp), color = CallAccent, strokeWidth = 2.dp)
+                    Text("正在等待共享画面…", Modifier.padding(top = 14.dp), color = CallText.copy(alpha = 0.7f))
+                }
             }
             val mainIsPeer = main == PeerFace || main == PeerScene
             if (mainIsPeer && !state.remotePresentation.enabled) {
@@ -329,6 +354,18 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                 .border(1.dp, CallText.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
                 .padding(horizontal = 13.dp, vertical = 9.dp)) {
                 Text(tip, fontSize = 12.sp, lineHeight = 18.sp, color = CallMuted)
+            }
+            // §3.2: stopping a collaboration is a permanent control, never hidden behind "更多",
+            // and it stays on screen while the auto-hiding call controls are away.
+            if (sharing) Row(Modifier.align(Alignment.TopCenter).safeDrawingPadding()
+                .padding(top = 68.dp).clip(RoundedCornerShape(22.dp))
+                .background(DockInk.copy(alpha = 0.88f))
+                .border(1.dp, CallAccent.copy(alpha = .25f), RoundedCornerShape(22.dp))
+                .padding(start = 14.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(if (state.screenShare.phase == com.lazydoglab.zisee.screen.ScreenSharePhase.ACTIVE)
+                    "你正在共享屏幕 · 摄像头已暂停" else "正在准备共享…", fontSize = 12.5.sp, color = CallText)
+                TextButton(onClick = { interaction++; onStopShare() },
+                    colors = ButtonDefaults.textButtonColors(contentColor = CallDanger)) { Text("停止共享") }
             }
             if (localArMarking || remoteArMarking) Row(Modifier.align(Alignment.BottomCenter)
                 .safeDrawingPadding().padding(bottom = 118.dp).clip(RoundedCornerShape(22.dp))
@@ -406,10 +443,13 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically) {
                         DockButton(if (state.muted) "取消静音" else "静音", "mic", off = state.muted) { interaction++; onMute() }
-                        DockButton(if (state.cameraEnabled) "关闭画面" else "开启画面", "camera",
-                            off = !state.cameraEnabled) { interaction++; onCamera() }
-                        DockButton(if (localScene) "看我" else "给你看", "show", active = localScene,
-                            available = !localScene, enabled = state.cameraEnabled && !starting) { interaction++; onShowMe() }
+                        // A share owns every camera, so both camera controls wait for it to end
+                        // rather than offering an action that cannot take effect.
+                        DockButton(if (sharing) "已暂停" else if (state.cameraEnabled) "关闭画面" else "开启画面",
+                            "camera", off = sharing || !state.cameraEnabled,
+                            enabled = !sharing) { interaction++; onCamera() }
+                        DockButton(if (localScene) "看我" else "给你看", "show", active = localScene && !sharing,
+                            available = !localScene, enabled = state.cameraEnabled && !starting && !sharing) { interaction++; onShowMe() }
                         DockButton("更多", "more") { interaction++; more = true }
                         DockButton("挂断", "end", danger = true, width = 74.dp, action = onEnd)
                     }
@@ -417,7 +457,9 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                 }
             }
         }
-        if (more) CallOptions(state, onDismiss = { more = false; interaction++ }, onSwitch = onSwitch, onNoiseMode = onNoiseMode, arControls = arControls)
+        if (more) CallOptions(state, onDismiss = { more = false; interaction++ }, onSwitch = onSwitch,
+            onNoiseMode = onNoiseMode, sharing = sharing,
+            onStartShare = onStartShare, onStopShare = onStopShare, arControls = arControls)
         if (confirmArClear) AlertDialog(onDismissRequest = { confirmArClear = false },
             title = { Text("清除我的标记？") },
             text = { Text("双方都将看不到你在这个现场放置的 ${state.arOwnMarkerCount} 个标记。此操作不能撤销。") },
@@ -430,6 +472,7 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
 @Composable
 private fun CallOptions(state: CallUiState, onDismiss: () -> Unit, onSwitch: () -> Unit,
     onNoiseMode: (com.lazydoglab.zisee.rtc.audio.processing.NoiseSuppressionMode) -> Unit,
+    sharing: Boolean, onStartShare: () -> Unit, onStopShare: () -> Unit,
     arControls: @Composable () -> Unit) {
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Color(0xFF12181D), contentColor = CallText) {
         Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState())
@@ -437,6 +480,23 @@ private fun CallOptions(state: CallUiState, onDismiss: () -> Unit, onSwitch: () 
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("通话选项", style = MaterialTheme.typography.titleMedium)
             arControls()
+            Text("展示与协作", style = MaterialTheme.typography.titleSmall)
+            // §5.2: one collaboration per call, so the entry says which one is in the way rather
+            // than opening a system prompt that has to be undone.
+            val shareBlocker = when {
+                state.showMe.mode == CameraMode.AR -> "请先结束我的 AR 现场"
+                state.remoteShare.sharing -> "对方正在共享屏幕"
+                else -> null
+            }
+            TextButton(onClick = { onDismiss(); if (sharing) onStopShare() else onStartShare() },
+                enabled = sharing || shareBlocker == null,
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = if (sharing) CallDanger else CallAccent)) {
+                Text(if (sharing) "停止共享屏幕" else "共享我的屏幕")
+            }
+            Text(shareBlocker ?: "共享期间只发送屏幕：所有摄像头会暂停，停止后自动恢复。" +
+                "你仍可以说话，停止共享不会挂断；标注只表达位置，不会让对方操作你的手机。",
+                style = MaterialTheme.typography.bodySmall, color = CallMuted)
             TextButton(onClick = { onDismiss(); onSwitch() },
                 enabled = state.cameraEnabled && state.showMe.mode !in setOf(CameraMode.STARTING, CameraMode.AR),
                 colors = ButtonDefaults.textButtonColors(contentColor = CallAccent)) { Text("切换前后摄像头") }
@@ -482,6 +542,14 @@ private fun videoAspect(feed: com.lazydoglab.zisee.rtc.VideoFeed?): Float {
     if (feed == null) return 9f / 16f
     val geometry by feed.geometry.collectAsState()
     return geometry?.aspectRatio ?: (9f / 16f)
+}
+
+/** A feed only has geometry once a frame has actually been decoded from it. */
+@Composable
+private fun videoReady(feed: com.lazydoglab.zisee.rtc.VideoFeed?): Boolean {
+    if (feed == null) return false
+    val geometry by feed.geometry.collectAsState()
+    return geometry != null
 }
 
 /** A camera's slot in the layout: its picture when it is live, its dark placeholder when not. */

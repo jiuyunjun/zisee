@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Intent
 import android.content.res.Configuration
 import android.content.pm.PackageManager
+import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
@@ -67,6 +68,12 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+            // §4.2: system authorization is a PendingExternalAction, not the user leaving the call.
+            // startActivityForResult does not fire onUserLeaveHint, so no PiP entry is triggered
+            // here; a cancelled or unavailable dialog leaves the ordinary call untouched.
+            val shareConsent = rememberLauncherForActivityResult(
+                ActivityResultContracts.StartActivityForResult()
+            ) { result -> callModel.onScreenShareConsent(result.resultCode, result.data) }
             val identity by viewModel.identity.collectAsStateWithLifecycle()
             val save by viewModel.save.collectAsStateWithLifecycle()
             val connection by viewModel.connection.collectAsStateWithLifecycle()
@@ -83,6 +90,16 @@ class MainActivity : ComponentActivity() {
             }
             LaunchedEffect(identity) {
                 (identity as? IdentityState.Ready)?.let { callModel.observeIdentity(it.identity) }
+            }
+            LaunchedEffect(call.shareConsent) {
+                if (call.shareConsent == null) return@LaunchedEffect
+                val manager = getSystemService(MediaProjectionManager::class.java)
+                val launched = manager != null && runCatching {
+                    shareConsent.launch(manager.createScreenCaptureIntent())
+                }.isSuccess
+                // A device without the projection service, or one that refuses the dialog, must
+                // release the pending request rather than leave the share entry stuck.
+                if (!launched) callModel.onScreenShareConsent(RESULT_CANCELED, null)
             }
             // Placing the call needs a ready identity, so a link that arrives first waits here
             // rather than being dropped. It only fills the code in: the tap stays the user's.

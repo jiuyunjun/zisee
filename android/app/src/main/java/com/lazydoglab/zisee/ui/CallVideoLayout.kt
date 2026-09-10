@@ -10,8 +10,19 @@ internal object CallVideoLayout {
     const val MeScene = "me.scene"
     const val PeerFace = "peer.face"
     const val PeerScene = "peer.scene"
+    const val PeerScreen = "peer.screen"
 
-    fun sources(local: CameraMode, remote: CameraMode): List<String> = buildList {
+    /**
+     * There is deliberately no local screen source. §5.1: a device sharing its whole screen must not
+     * play its own share back, or the capture re-enters the picture it is capturing. This end shows
+     * that it is sharing in words instead.
+     *
+     * A share is the one thing this device sends, so while [localSharing] every local camera is
+     * paused and drops out of the layout entirely: an empty placeholder where a picture used to be
+     * reads as a fault rather than as the deliberate pause it is.
+     */
+    fun sources(local: CameraMode, remote: CameraMode, remoteSharing: Boolean = false,
+        localSharing: Boolean = false): List<String> = buildList {
         fun addCamera(mode: CameraMode, face: String, scene: String) {
             when (mode) {
                 CameraMode.DUAL -> { add(scene); add(face) }
@@ -19,26 +30,32 @@ internal object CallVideoLayout {
                 else -> add(face)
             }
         }
-        addCamera(local, MeFace, MeScene)
+        if (remoteSharing) add(PeerScreen)
+        if (!localSharing) addCamera(local, MeFace, MeScene)
         addCamera(remote, PeerFace, PeerScene)
     }
 
+    /** §3.2: a share the peer has just started becomes the main view once, but never over a
+     * selection the viewer made for themselves. */
     fun main(sources: List<String>, chosen: String?): String = chosen?.takeIf { it in sources }
+        ?: sources.firstOrNull { it == PeerScreen }
         ?: sources.firstOrNull { it == MeScene }
         ?: sources.firstOrNull { it == PeerScene }
         ?: PeerFace
 
-    /** Compact windows show exactly one remote source. A remote user selection wins; otherwise
-     * Show Me and rear-only calls prefer the scene, while an ordinary call prefers the face.
+    /** Compact windows show exactly one remote source. A remote user selection wins; otherwise a
+     * share the peer is sending outranks the cameras, then Show Me and rear-only calls prefer the
+     * scene, and an ordinary call prefers the face.
      */
-    fun compactRemote(remote: CameraMode, chosen: String?): String {
+    fun compactRemote(remote: CameraMode, chosen: String?, remoteSharing: Boolean = false): String {
         val available = when (remote) {
             CameraMode.DUAL -> setOf(PeerScene, PeerFace)
             CameraMode.BACK_ONLY, CameraMode.AR -> setOf(PeerScene)
             else -> setOf(PeerFace)
-        }
+        } + if (remoteSharing) setOf(PeerScreen) else emptySet()
         return chosen?.takeIf { it in available }
-            ?: if (PeerScene in available) PeerScene else PeerFace
+            ?: if (PeerScreen in available) PeerScreen
+            else if (PeerScene in available) PeerScene else PeerFace
     }
 
     fun remoteView(main: String, remote: CameraMode): ViewRequest {
@@ -47,6 +64,17 @@ internal object CallVideoLayout {
         return ViewRequest(if (frontLarge) ViewSize.LARGE else ViewSize.SMALL,
             if (main == PeerScene && remote in setOf(CameraMode.DUAL, CameraMode.AR)) ViewSize.LARGE else ViewSize.SMALL)
     }
+
+    /** Stacking order for one tile, as a Compose z index.
+     *
+     * Compose draws siblings in composition order unless a z index overrides it, and each renderer
+     * keeps a fixed call site so its node identity survives a swap. Composition order is therefore
+     * the source order, not the stacking order: the main view fills the window and buries every
+     * thumbnail declared before it, leaving only the frame and label that are drawn afterwards.
+     * The main view is the backdrop; every thumbnail sits above it, and thumbnails never contend
+     * with each other because [thumbnails] gives them disjoint slots.
+     */
+    fun stack(tile: String, main: String): Float = if (tile == main) -1f else 0f
 
     data class Tile(val x: Float, val y: Float, val width: Float, val height: Float)
 

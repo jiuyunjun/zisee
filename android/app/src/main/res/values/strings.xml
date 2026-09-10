@@ -64,6 +64,8 @@
     <string name="call_mute">静音</string>
     <string name="call_unmute">取消静音</string>
     <string name="call_hang_up">挂断</string>
+    <string name="call_active_sharing">正在共享屏幕</string>
+    <string name="call_stop_sharing">停止共享</string>
     <string name="debug_tools">调试工具</string>
     <string name="debug_call_preview">通话与 AR 界面预览</string>
     <string name="debug_call_preview_body">用本机合成画面打开真实通话界面，可切换 Show Me、AR 会话状态与标记数量。不使用摄像头、麦克风、ARCore 或网络。</string>

@@ -10,12 +10,13 @@ class ActiveCallActions {
         val owner: Any,
         val hangUp: () -> Unit,
         val toggleMute: () -> Unit,
+        val stopSharing: () -> Unit,
     )
 
     private val current = AtomicReference<Registration?>()
 
-    fun register(owner: Any, hangUp: () -> Unit, toggleMute: () -> Unit) {
-        current.set(Registration(owner, hangUp, toggleMute))
+    fun register(owner: Any, hangUp: () -> Unit, toggleMute: () -> Unit, stopSharing: () -> Unit) {
+        current.set(Registration(owner, hangUp, toggleMute, stopSharing))
     }
 
     fun clear(owner: Any) {
@@ -28,4 +29,5 @@ class ActiveCallActions {
 
     fun hangUp(): Boolean = current.get()?.let { it.hangUp(); true } ?: false
     fun toggleMute(): Boolean = current.get()?.let { it.toggleMute(); true } ?: false
+    fun stopSharing(): Boolean = current.get()?.let { it.stopSharing(); true } ?: false
 }

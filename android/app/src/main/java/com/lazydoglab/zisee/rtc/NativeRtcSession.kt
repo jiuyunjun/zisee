@@ -71,6 +71,29 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private var backSender: RtpSender? = null
     var localBackFeed: VideoFeed? = null; private set
     var remoteBackFeed: VideoFeed? = null; private set
+    private var remoteScreenTrack: VideoTrack? = null
+    private var screenSource: VideoSource? = null
+    private var screenTrack: VideoTrack? = null
+    private var screenSender: RtpSender? = null
+    var localScreenFeed: VideoFeed? = null; private set
+    var remoteScreenFeed: VideoFeed? = null; private set
+    private var screenShare: com.lazydoglab.zisee.screen.ScreenShareSession? = null
+    /** One session is one call, so a per-instance id is what a late consent result must match. */
+    private val mediaCallId = java.util.UUID.randomUUID().toString()
+    private var screenStateJob: Job? = null
+    /** What this end is actually publishing, and what the peer says it is publishing. */
+    val screenShareState = MutableStateFlow(com.lazydoglab.zisee.screen.ScreenShareState())
+    val remoteShare = MutableStateFlow(SharePresentation.None)
+    private var localShare = SharePresentation.None
+    /** Suppresses every camera while the screen is the one thing being sent, in the same way
+     * [arLeaseId] suppresses them while ARCore holds the device. */
+    private var screenSharing = false
+    /** Agrees who holds the call's single collaboration slot before any device is started. */
+    private val ownership = CollaborationOwnership(arFieldCoordinator) { text -> sendControl(text) }
+    val collaborationOwnership = ownership.state
+    private var claimTimeout: Job? = null
+    /** The camera arrangement to put back when the share ends, if the user has not changed it. */
+    private var shareSuspendedMode: CameraMode? = null
     val showMe = MutableStateFlow(ShowMeState())
     val remotePresentation = MutableStateFlow(CameraPresentation(CameraMode.FACE, true))
     private var presentationMode = CameraMode.FACE
@@ -290,6 +313,17 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             it.setEnabled(false); it.addSink(localBackFeed)
             backSender = requireNotNull(peer).addTrack(it, listOf("zisee"))
         }
+        // The screen m-section is negotiated up front and left disabled, exactly like the rear
+        // camera. Creating it when the user starts sharing would need a mid-call renegotiation,
+        // and the queue that drives one only exists for the initial caller-role exchange.
+        // isScreencast keeps libwebrtc from trading resolution away on a still page of text.
+        screenSource = requireNotNull(factory).createVideoSource(true)
+        localScreenFeed = VideoFeed(shared, false)
+        remoteScreenFeed = VideoFeed(shared, false)
+        screenTrack = requireNotNull(factory).createVideoTrack(MediaTrack.SCREEN.wireId, screenSource).also {
+            it.setEnabled(false); it.addSink(localScreenFeed)
+            screenSender = requireNotNull(peer).addTrack(it, listOf("zisee"))
+        }
         // Rear video carries AR identities through H264 SEI; retain every fallback codec.
         val rearCodecs = requireNotNull(factory).getRtpSenderCapabilities(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO).codecs
         if (rearCodecs.any { it.name.equals("H264", true) }) {
@@ -313,7 +347,10 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         control?.registerObserver(object : DataChannel.Observer {
             override fun onBufferedAmountChange(previousAmount: Long) = Unit
             override fun onStateChange() { scope.launch {
-                if (!released) { sendPresentation(); sendViewLayout() }
+                if (released) return@launch
+                if (control?.state() == DataChannel.State.OPEN) ownership.connected()
+                else ownership.disconnected()
+                sendPresentation(); sendViewLayout(); sendSharePresentation()
             } }
             override fun onMessage(buffer: DataChannel.Buffer) {
                 if (buffer.binary || buffer.data.remaining() > 32) return
@@ -323,6 +360,10 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                     scope.launch { if (!released) remotePresentation.value = value }
                     return
                 }
+                SharePresentation.decode(text)?.let { value ->
+                    scope.launch { if (!released) remoteShare.value = value }
+                    return
+                }
                 ViewRequest.decode(text)?.let { value ->
                     scope.launch {
                         if (!released && remoteView != value) {
@@ -330,7 +371,11 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                             applyQuality(qualityPolicy.current, changeCapture = false)
                         }
                     }
+                    return
                 }
+                // Ownership is serialized onto the same dispatcher as every other decision about
+                // starting or stopping capture, so a claim cannot interleave with one.
+                scope.launch { if (!released) ownership.receive(text) }
             }
         })
         audioSource = requireNotNull(factory).createAudioSource(MediaConstraints().apply {
@@ -636,6 +681,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
 
     private fun applyQuality(decision: QualityDecision, changeCapture: Boolean = true) {
         if (arLeaseId != null) return // AR preserves the full image; sender congestion control remains active.
+        // With every camera paused this would adapt a dead sender; the screen has its own encoding.
+        if (screenSharing) return
         if (audioBandwidth.mode == com.lazydoglab.zisee.rtc.audio.AudioBandwidthMode.VIDEO_PROBE) return
         if (appliedQuality == decision.quality && appliedView == remoteView) return
         if (!adaptationEnabled) return
@@ -687,18 +734,201 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             MediaTrack.MICROPHONE -> audioTrack?.setEnabled(enabled)
             MediaTrack.FRONT_CAMERA, MediaTrack.BACK_CAMERA -> {
                 cameraEnabled = enabled
-                videoTrack?.setEnabled(enabled && arLeaseId == null)
-                backTrack?.setEnabled(enabled && (presentationMode == CameraMode.DUAL || arLeaseId != null))
+                // A share owns every camera until it ends. Foreground changes and the camera
+                // button both land here, and neither may quietly resume a paused camera.
+                videoTrack?.setEnabled(enabled && arLeaseId == null && !screenSharing)
+                backTrack?.setEnabled(enabled && !screenSharing &&
+                    (presentationMode == CameraMode.DUAL || arLeaseId != null))
+                // Turning the camera off during a share is a real change of intent, so nothing is
+                // restored for the user afterwards.
+                if (!enabled) shareSuspendedMode = null
                 sendPresentation()
             }
+            // Screen sending follows the capture lifecycle, not a UI toggle: stopScreenShare is the
+            // only way to stop, because leaving a live projection with a disabled track keeps
+            // capturing the user's screen while telling them nothing is going out.
             MediaTrack.SCREEN -> throw UnsupportedOperationException("screen_not_available")
         }
         Unit
     }
+
+    /**
+     * Asks the peer for the call's one collaboration slot. Nothing is started here: the system
+     * consent dialog is only worth showing once [collaborationOwnership] reports HELD, so two users
+     * tapping at the same moment cannot end up with two consent dialogs and two projections.
+     */
+    suspend fun claimCollaboration(): Boolean = withContext(dispatcher) {
+        if (released || screenShare != null) return@withContext false
+        if (!ownership.claim()) return@withContext false
+        val id = ownership.outstanding
+        claimTimeout?.cancel()
+        claimTimeout = scope.launch {
+            delay(CollaborationOwnership.CLAIM_TIMEOUT_MS)
+            if (!released && id != null) ownership.claimExpired(id)
+        }
+        true
+    }
+
+    /** Gives the slot back. Idempotent, and safe whether or not a claim ever became ownership. */
+    suspend fun releaseCollaboration() = withContext(dispatcher) {
+        claimTimeout?.cancel(); claimTimeout = null
+        if (!released) ownership.release()
+    }
+
+    /**
+     * Claims this call's one share attempt. A request is what the system consent dialog is asked
+     * for; it carries no consent data and grants nothing on its own.
+     */
+    suspend fun requestScreenShare(): com.lazydoglab.zisee.screen.ScreenShareRequest? = withContext(dispatcher) {
+        if (released || screenShare != null) return@withContext null
+        // The slot must already be agreed: a device is never started on an unconfirmed claim.
+        if (ownership.state.value.phase != CollaborationOwnership.Phase.HELD) return@withContext null
+        val source = screenSource ?: return@withContext null
+        val shared = egl?.eglBaseContext ?: return@withContext null
+        val session = com.lazydoglab.zisee.screen.ScreenShareSession(
+            context, mediaCallId, shared, source, logger,
+        ) { active -> scope.launch { if (!released) applyScreenSending(active) } }
+        screenShare = session
+        screenStateJob?.cancel()
+        screenStateJob = scope.launch { session.state.collect { if (!released) screenShareState.value = it } }
+        val request = session.request()
+        if (request == null) { session.close(); screenShare = null }
+        request
+    }
+
+    /** [data] is the untouched system consent result; it is never stored or logged. */
+    suspend fun startScreenShare(request: com.lazydoglab.zisee.screen.ScreenShareRequest,
+        resultCode: Int, data: android.content.Intent): Boolean = withContext(dispatcher) {
+        val session = screenShare ?: return@withContext false
+        if (released) return@withContext false
+        val started = session.start(request, resultCode, data)
+        if (!started) closeScreenShare()
+        started
+    }
+
+    suspend fun stopScreenShare(reason: com.lazydoglab.zisee.screen.ScreenShareReason =
+        com.lazydoglab.zisee.screen.ScreenShareReason.USER) = withContext(dispatcher) {
+        claimTimeout?.cancel(); claimTimeout = null
+        val session = screenShare
+        if (session != null) {
+            session.stop(reason)
+            closeScreenShare()
+        }
+        // The slot is given back whether or not capture ever started: a denied or cancelled consent
+        // must not leave the peer believing this end still owns it.
+        if (!released) ownership.release()
+    }
+
+    /** One controller per attempt: a stopped share can never be resumed on its consumed token. */
+    private suspend fun closeScreenShare() {
+        applyScreenSending(false)
+        screenStateJob?.cancel(); screenStateJob = null
+        try { screenShare?.close() } catch (_: Exception) { logger.error(AppEvent.SCREEN_SHARE_FAILED) }
+        screenShare = null
+    }
+
+    /**
+     * The track is enabled only while frames are genuinely flowing, so the peer's "sharing" state
+     * and the picture it waits for cannot disagree. The session id changes per share, letting the
+     * viewer drop any selection or annotation state left over from the previous one.
+     *
+     * A share is the one thing this device sends: every camera pauses for its duration and the
+     * hardware is released, so nothing competes with the screen for the uplink or the thermal
+     * budget, and the peer is never left choosing between a screen and a stale face.
+     */
+    private suspend fun applyScreenSending(active: Boolean) {
+        if (active == screenSharing) {
+            screenTrack?.setEnabled(active)
+            return
+        }
+        screenSharing = active
+        screenTrack?.setEnabled(active)
+        if (active) pauseCamerasForShare() else restoreCamerasAfterShare()
+        localShare = if (!active) SharePresentation.None
+            else SharePresentation(true, java.util.UUID.randomUUID().toString()
+                .replace("-", "").take(SharePresentation.MAX_SESSION))
+        sendSharePresentation()
+        sendPresentation()
+    }
+
+    /** Releases the camera devices, not just their tracks: a projection is exactly when the
+     * thermal and power budget matters most. Failing to close one still pauses what it sends. */
+    private suspend fun pauseCamerasForShare() {
+        shareSuspendedMode = if (cameraEnabled) presentationMode else null
+        changingCamera = true
+        try {
+            videoTrack?.setEnabled(false)
+            backTrack?.setEnabled(false)
+            try { dualCapture?.close() } catch (_: Exception) { logger.error(AppEvent.RTC_MEDIA_FAILED) }
+            dualCapture = null
+            try { releaseCamera() } catch (_: Exception) { logger.error(AppEvent.RTC_MEDIA_FAILED) }
+            showMe.value = ShowMeState(presentationMode, "共享屏幕时摄像头已暂停")
+        } finally { changingCamera = false }
+    }
+
+    /**
+     * §4.1: only what this share paused comes back. A camera the user switched off during the
+     * share, or a device that can no longer open the pair, stays off rather than surprising them
+     * with a live camera when the share ends.
+     */
+    private suspend fun restoreCamerasAfterShare() {
+        val previous = shareSuspendedMode
+        shareSuspendedMode = null
+        if (previous == null || released || !cameraEnabled) {
+            showMe.value = ShowMeState(presentationMode)
+            return
+        }
+        changingCamera = true
+        try {
+            if (previous == CameraMode.DUAL) {
+                val dual = DualCameraCapture(context, requireNotNull(egl).eglBaseContext)
+                dualCapture = dual
+                check(dual.supported())
+                dual.setTargetRotation(deviceOrientation.rotation)
+                dual.start(requireNotNull(videoSource), requireNotNull(backSource))
+                dual.setTargetRotation(deviceOrientation.rotation)
+                backTrack?.setEnabled(true)
+            } else requireNotNull(camera).startCapture(1280, 720, 30)
+            presentationMode = previous
+            videoTrack?.setEnabled(true)
+            showMe.value = ShowMeState(previous)
+            appliedQuality = null
+            applyQuality(qualityPolicy.current)
+        } catch (_: Exception) {
+            logger.error(AppEvent.RTC_MEDIA_FAILED)
+            // Leaving the mode on the arrangement that failed to reopen would strand the user with
+            // a disabled track and no button that brings an ordinary camera back.
+            try { dualCapture?.close() } catch (_: Exception) { logger.error(AppEvent.RTC_MEDIA_FAILED) }
+            dualCapture = null
+            presentationMode = CameraMode.FACE
+            videoTrack?.setEnabled(cameraEnabled)
+            showMe.value = ShowMeState(CameraMode.FACE, "摄像头恢复失败，请重试")
+        } finally { changingCamera = false }
+    }
+
+    private fun sendSharePresentation() {
+        if (!sendControl(localShare.encode())) logger.error(AppEvent.RTC_MEDIA_FAILED)
+    }
+
+    /** Bounded text on the shared control channel. A peer that cannot parse a line ignores it. */
+    private fun sendControl(text: String): Boolean {
+        val channel = control ?: return false
+        if (channel.state() != DataChannel.State.OPEN) return false
+        val data = text.toByteArray(Charsets.UTF_8)
+        if (data.size > 32) return false
+        return channel.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(data), false))
+    }
+
+    /**
+     * What this end is actually sending, not what it intends to send later. During a share every
+     * camera is paused, so the peer is told a single paused camera: keeping a Show Me pair here
+     * would leave two slots waiting for pictures that are not coming.
+     */
     private fun sendPresentation() {
         val channel = control ?: return
         if (channel.state() != DataChannel.State.OPEN) return
-        val data = CameraPresentation(presentationMode, cameraEnabled).encode().toByteArray(Charsets.UTF_8)
+        val mode = if (screenSharing) CameraMode.FACE else presentationMode
+        val data = CameraPresentation(mode, cameraEnabled && !screenSharing).encode().toByteArray(Charsets.UTF_8)
         if (!channel.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(data), false))) logger.error(AppEvent.RTC_MEDIA_FAILED)
     }
 
@@ -722,7 +952,9 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     /** Called only after user-triggered ARCore preparation. UI must stop AR when leaving foreground. */
     suspend fun startAr(preparation: com.lazydoglab.zisee.ar.session.ArPreparation,
         rotation: Int, width: Int, height: Int): Boolean = withContext(dispatcher + kotlinx.coroutines.NonCancellable) {
-        if (released || changingCamera || arLeaseId != null || !cameraEnabled ||
+        // §5.2: an AR field and a screen share are mutually exclusive, and the share owns the
+        // cameras an AR field would need.
+        if (released || changingCamera || arLeaseId != null || !cameraEnabled || screenSharing ||
             preparation != com.lazydoglab.zisee.ar.session.ArPreparation.READY ||
             rotation !in 0..3 || width <= 0 || height <= 0) return@withContext false
         val collaboration = arCollaboration ?: return@withContext false
@@ -865,7 +1097,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     }
 
     suspend fun toggleShowMe(preferDual: Boolean = true) = withContext(dispatcher) {
-        if (released || changingCamera || !cameraEnabled || arLeaseId != null) return@withContext
+        // A share owns every camera; the arrangement to come back to is chosen after it ends.
+        if (released || changingCamera || !cameraEnabled || arLeaseId != null || screenSharing) return@withContext
         changingCamera = true
         showMe.value = ShowMeState(CameraMode.STARTING)
         try {
@@ -1027,8 +1260,15 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             arStopRequested = true
             arStarting?.await() // Keep sources/factory/EGL alive while GL startup is in flight.
             statsJob?.cancel(); statsJob = null
+            // Before anything else: hanging up must not leave the user's screen being captured.
+            screenStateJob?.cancel(); screenStateJob = null
+            claimTimeout?.cancel(); claimTimeout = null
+            ownership.disconnected()
+            try { screenShare?.close() } catch (_: Exception) { logger.error(AppEvent.SCREEN_SHARE_FAILED) }
+            screenShare = null
             withContext(Dispatchers.Main.immediate) {
                 localFeed?.close(); remoteFeed?.close(); localBackFeed?.close(); remoteBackFeed?.close()
+                localScreenFeed?.close(); remoteScreenFeed?.close()
             }
             // Attempt every release even if an OEM operation fails; log only an allowlisted event.
             fun cleanup(block: () -> Unit) { try { block() } catch (error: Exception) { logger.error(AppEvent.RTC_RELEASE_FAILED) } }
@@ -1046,15 +1286,20 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             cleanup { camera?.stopCapture() }
             cleanup { remoteTrack?.removeSink(remoteFeed) }
             cleanup { remoteBackTrack?.removeSink(remoteBackFeed) }
+            cleanup { remoteScreenTrack?.removeSink(remoteScreenFeed) }
             cleanup { backTrack?.removeSink(localBackFeed) }
+            cleanup { screenTrack?.removeSink(localScreenFeed) }
             cleanup { videoTrack?.removeSink(localFeed) }
             cleanup { peer?.close() }
-            cleanup { peer?.dispose() }; peer = null; videoSender = null; audioSender = null
+            cleanup { peer?.dispose() }; peer = null; videoSender = null; audioSender = null; screenSender = null
             cleanup { camera?.dispose() }; camera = null
             cleanup { videoTrack?.dispose() }; videoTrack = null
             cleanup { audioTrack?.dispose() }; audioTrack = null
             cleanup { backTrack?.dispose() }; backTrack = null
+            cleanup { screenTrack?.dispose() }; screenTrack = null
             cleanup { backSource?.dispose() }; backSource = null
+            // The share session borrows this source, so it is only safe to dispose after its close.
+            cleanup { screenSource?.dispose() }; screenSource = null
             cleanup { videoSource?.dispose() }; videoSource = null
             cleanup { audioSource?.dispose() }; audioSource = null
             cleanup { texture?.dispose() }; texture = null
@@ -1107,13 +1352,20 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             // transceiver is bidirectional, so the local track sharing its m-section identifies it
             // without parsing anything the peer wrote.
             val local = transceiver.sender.track()?.id()
-            val back = if (local != null) local == MediaTrack.BACK_CAMERA.wireId
-                else track.id() == MediaTrack.BACK_CAMERA.wireId
-            logger.info(AppEvent.RTC_TRACK_ROUTED, "${if (back) "back" else "front"} msid_matched=${local == track.id()}")
-            scope.launch { if (!released) {
-                if (back) {
+            val slot = when (local ?: track.id()) {
+                MediaTrack.BACK_CAMERA.wireId -> MediaTrack.BACK_CAMERA
+                MediaTrack.SCREEN.wireId -> MediaTrack.SCREEN
+                else -> MediaTrack.FRONT_CAMERA
+            }
+            logger.info(AppEvent.RTC_TRACK_ROUTED, "${slot.name} msid_matched=${local == track.id()}")
+            scope.launch { if (!released) when (slot) {
+                MediaTrack.BACK_CAMERA -> {
                     remoteBackTrack?.removeSink(remoteBackFeed); remoteBackTrack = track; track.addSink(remoteBackFeed)
-                } else { remoteTrack?.removeSink(remoteFeed); remoteTrack = track; track.addSink(remoteFeed) }
+                }
+                MediaTrack.SCREEN -> {
+                    remoteScreenTrack?.removeSink(remoteScreenFeed); remoteScreenTrack = track; track.addSink(remoteScreenFeed)
+                }
+                else -> { remoteTrack?.removeSink(remoteFeed); remoteTrack = track; track.addSink(remoteFeed) }
             } }
         }
         override fun onSignalingChange(state: PeerConnection.SignalingState) = Unit

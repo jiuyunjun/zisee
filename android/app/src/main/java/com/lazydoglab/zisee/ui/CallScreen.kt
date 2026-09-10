@@ -96,6 +96,7 @@ fun CallScreen(state: CallUiState, model: CallViewModel, onMinimize: () -> Unit 
             { frame, point, kind -> model.createArMarker(frame, point, kind) }, model::undoArMarker,
             model::clearOwnArMarkers,
             onSelectVideo = model::selectVideoSource,
+            onStartShare = model::startScreenShare, onStopShare = { model.stopScreenShare() },
             arControls = { ArCallControls(state, model) })
         return
     }

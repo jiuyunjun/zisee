@@ -10,13 +10,18 @@ class ActiveCallActionsTest {
         val owner = Any()
         var hungUp = false
         var muted = false
-        actions.register(owner, { hungUp = true }, { muted = true })
+        var stoppedSharing = false
+        actions.register(owner, { hungUp = true }, { muted = true }, { stoppedSharing = true })
         assertTrue(actions.hangUp())
         assertTrue(actions.toggleMute())
+        assertTrue(actions.stopSharing())
         assertTrue(hungUp)
         assertTrue(muted)
+        assertTrue(stoppedSharing)
         actions.clear(owner)
         assertFalse(actions.hangUp())
+        // A notification outliving its call must not reach a later one either.
+        assertFalse(actions.stopSharing())
     }
 
     @Test fun staleOwnerCannotClearReplacement() {
@@ -24,8 +29,8 @@ class ActiveCallActionsTest {
         val old = Any()
         val current = Any()
         var called = false
-        actions.register(old, {}, {})
-        actions.register(current, { called = true }, {})
+        actions.register(old, {}, {}, {})
+        actions.register(current, { called = true }, {}, {})
         actions.clear(old)
         assertTrue(actions.hangUp())
         assertTrue(called)

@@ -10,6 +10,7 @@ enum class AppEvent { RTC_NETWORK_CHANGED, RTC_NETWORK_MONITOR_FAILED, RTC_ICE_R
     RTC_NATIVE_ERROR, RTC_BIND_FAILED, RTC_SOCKET_FAILED, RTC_CODEC_FAILED, RTC_AUDIO_PROCESSING,
     RTC_CAPABILITY_UNAVAILABLE, RTC_STATS_UNAVAILABLE, RTC_QUALITY_REJECTED, RTC_QUALITY_CHANGED, RTC_MEDIA_FAILED, RTC_RELEASE_FAILED, CALL_FAILED, CALL_CLEANUP_FAILED, CALL_SERVICE_FAILED,
     RTC_ICE_STATE, RTC_SDP_FAILED, RTC_SHOW_ME_FALLBACK, RTC_TRACK_ROUTED, RTC_SELECTED_CANDIDATE, RTC_SETUP_MS, RTC_FIRST_FRAME_MS, CALL_NOT_STARTED,
+    SCREEN_SHARE_STATE, SCREEN_SHARE_FAILED, SCREEN_SHARE_SERVICE_FAILED,
     PUSH_RECEIVED, PUSH_EXPIRED, PUSH_IGNORED, PUSH_REGISTER_FAILED }
 
 interface AppLogger {
@@ -45,7 +46,8 @@ object FailureReason {
         "sdp_set_local_offer_failed", "sdp_set_local_answer_failed", "sdp_rollback_failed",
         "sdp_set_remote_offer_failed", "sdp_set_remote_answer_failed",
         "screen_not_available", "initial_negotiation_only",
-        "call_service_failed",
+        "call_service_failed", "screen_service_failed", "screen_consent_unavailable",
+        "screen_projection_unavailable", "screen_capture_unavailable",
         // MediaSignaling
         "signaling_closed", "signaling_send", "signaling_timeout",
         // CallViewModel

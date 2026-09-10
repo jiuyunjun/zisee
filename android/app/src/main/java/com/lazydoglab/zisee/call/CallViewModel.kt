@@ -17,7 +17,10 @@ import com.lazydoglab.zisee.invite.InviteLink
 import com.lazydoglab.zisee.rtc.IceState
 import com.lazydoglab.zisee.rtc.MediaStats
 import com.lazydoglab.zisee.rtc.NativeRtcSession
+import com.lazydoglab.zisee.rtc.CollaborationOwnership
 import com.lazydoglab.zisee.rtc.VideoFeed
+import com.lazydoglab.zisee.screen.ScreenSharePhase
+import com.lazydoglab.zisee.screen.ScreenShareReason
 import com.lazydoglab.zisee.signaling.MediaSignaling
 import java.io.IOException
 import java.time.Instant
@@ -27,6 +30,7 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.Channel
@@ -60,6 +64,13 @@ data class CallUiState(
     val arOwnMarkerCount: Int = 0,
     val selectedVideoSource: String? = null,
     val remotePresentation: com.lazydoglab.zisee.rtc.CameraPresentation = com.lazydoglab.zisee.rtc.CameraPresentation(com.lazydoglab.zisee.rtc.CameraMode.FACE, true),
+    val localScreen: VideoFeed? = null, val remoteScreen: VideoFeed? = null,
+    /** What this end is publishing, and what the peer says it is publishing. */
+    val screenShare: com.lazydoglab.zisee.screen.ScreenShareState = com.lazydoglab.zisee.screen.ScreenShareState(),
+    val remoteShare: com.lazydoglab.zisee.rtc.SharePresentation = com.lazydoglab.zisee.rtc.SharePresentation.None,
+    /** Set once when the system consent dialog should be shown, and cleared by the Activity that
+     * shows it. It carries no consent data and grants nothing. */
+    val shareConsent: com.lazydoglab.zisee.screen.ScreenShareRequest? = null,
 )
 
 /** Process-scoped serial call owner. It survives Activity/PiP destruction through AppContainer.
@@ -83,7 +94,7 @@ class CallViewModel(application: Application, private val container: AppContaine
     private var showMeHintSeen = true
 
     init {
-        container.activeCallActions.register(this, ::stop, ::toggleMute)
+        container.activeCallActions.register(this, ::stop, ::toggleMute, { stopScreenShare() })
         viewModelScope.launch { container.callPreferences.showMeHintSeen.collect { showMeHintSeen = it } }
     }
 
@@ -207,9 +218,98 @@ class CallViewModel(application: Application, private val container: AppContaine
     }
 
     fun selectVideoSource(source: String) {
+        val current = mutable.value
         val valid = com.lazydoglab.zisee.ui.CallVideoLayout.sources(
-            mutable.value.showMe.mode, mutable.value.remotePresentation.mode)
+            current.showMe.mode, current.remotePresentation.mode, current.remoteShare.sharing,
+            current.screenShare.phase in setOf(ScreenSharePhase.STARTING, ScreenSharePhase.ACTIVE))
         if (source in valid) mutable.update { it.copy(selectedVideoSource = source) }
+    }
+
+    /**
+     * Asks for this call's one share attempt, publishing the request the Activity turns into the
+     * system consent dialog. §5.2: one collaboration at a time, so a local AR field or a share the
+     * peer already owns refuses here rather than after the user has answered a system prompt.
+     */
+    fun startScreenShare() {
+        val media = rtc ?: return
+        val current = mutable.value
+        if (current.shareConsent != null || current.screenShare.phase != ScreenSharePhase.IDLE) return
+        if (current.showMe.mode == com.lazydoglab.zisee.rtc.CameraMode.AR) {
+            arNotice("请先结束我的 AR 现场，再共享屏幕。"); return
+        }
+        if (current.remoteShare.sharing) {
+            arNotice("对方正在共享屏幕，等对方停止后再共享。"); return
+        }
+        viewModelScope.launch {
+            // Agree who owns the call's one collaboration slot before showing a system dialog that
+            // would otherwise have to be undone. Both users tapping at once resolves to one owner.
+            if (!media.claimCollaboration()) { arNotice(claimRefusal()); return@launch }
+            val granted = withTimeoutOrNull(CollaborationOwnership.CLAIM_TIMEOUT_MS + 1_000) {
+                media.collaborationOwnership.first {
+                    it.phase != CollaborationOwnership.Phase.CLAIMING
+                }
+            }
+            if (granted?.phase != CollaborationOwnership.Phase.HELD) {
+                arNotice(claimRefusal()); return@launch
+            }
+            val request = media.requestScreenShare()
+            if (request == null) {
+                media.releaseCollaboration()
+                arNotice("暂时无法开始共享，请稍后再试。")
+            } else mutable.update { it.copy(shareConsent = request) }
+        }
+    }
+
+    private fun claimRefusal(): String = when (rtc?.collaborationOwnership?.value?.refusal) {
+        CollaborationOwnership.Refusal.PEER_HOLDS -> "对方正在共享屏幕，等对方停止后再共享。"
+        CollaborationOwnership.Refusal.PEER_CLAIMED_FIRST -> "对方刚刚也点了共享，这次由对方共享。"
+        CollaborationOwnership.Refusal.CHANNEL_UNAVAILABLE -> "连接尚未就绪，稍后再试。"
+        else -> "对方没有响应，暂时无法开始共享。"
+    }
+
+    /**
+     * The untouched system consent result. A refusal, a dismissal or a foreground service that
+     * cannot take the mediaProjection type all leave the ordinary call running: sharing is the only
+     * thing that fails.
+     */
+    fun onScreenShareConsent(resultCode: Int, data: android.content.Intent?) {
+        val media = rtc
+        val request = mutable.value.shareConsent
+        mutable.update { it.copy(shareConsent = null) }
+        if (media == null || request == null) return
+        if (resultCode != android.app.Activity.RESULT_OK || data == null) {
+            viewModelScope.launch { media.stopScreenShare(ScreenShareReason.CONSENT_DENIED) }
+            return
+        }
+        viewModelScope.launch {
+            // The projection cannot be obtained until the service already holds the type, and the
+            // call keeps its camera/microphone types either way.
+            val current = mutable.value
+            if (!CallForegroundService.setSharing(getApplication(), current.peerName, current.muted, true)) {
+                container.logger.error(AppEvent.SCREEN_SHARE_SERVICE_FAILED)
+                media.stopScreenShare(ScreenShareReason.START_FAILED)
+                arNotice("无法开始共享，请稍后再试。")
+                return@launch
+            }
+            if (!media.startScreenShare(request, resultCode, data)) {
+                releaseSharingType()
+                arNotice("共享未能开始，通话继续。")
+            }
+        }
+    }
+
+    /** Every stop path — the call surface, the notification, hanging up — funnels through here. */
+    fun stopScreenShare(reason: ScreenShareReason = ScreenShareReason.USER) {
+        val media = rtc ?: return
+        viewModelScope.launch {
+            media.stopScreenShare(reason)
+            releaseSharingType()
+        }
+    }
+
+    private fun releaseSharingType() {
+        val current = mutable.value
+        CallForegroundService.setSharing(getApplication(), current.peerName, current.muted, false)
     }
 
     fun setArResumed(resumed: Boolean) {
@@ -427,6 +527,8 @@ class CallViewModel(application: Application, private val container: AppContaine
             var ended = false
             var mediaObservation: Job? = null
             var cameraObservation: Job? = null
+            var shareObservation: Job? = null
+            var screenLock: ScreenLockWatcher? = null
             var candidateObservation: Job? = null
             var networkWatcher: com.lazydoglab.zisee.rtc.DefaultNetworkWatcher? = null
             var networkObservation: Job? = null
@@ -594,7 +696,20 @@ class CallViewModel(application: Application, private val container: AppContaine
                                                 arCollaboration = collaboration, arOwnMarkerCount = arOwnMarkers.size) }
                                         }
                                     }
-                                    mutable.update { it.copy(local = media.localFeed, remote = media.remoteFeed, localBack = media.localBackFeed, remoteBack = media.remoteBackFeed) }
+                                    // §4.1: locking the device ends the share. A projection is
+                                    // process-owned, so nothing in the Activity lifecycle does it.
+                                    screenLock = ScreenLockWatcher(getApplication()) {
+                                        stopScreenShare(ScreenShareReason.LOCKED)
+                                    }
+                                    shareObservation = launch {
+                                        combine(media.screenShareState, media.remoteShare) { local, remote -> local to remote }
+                                            .collect { (local, remote) ->
+                                                mutable.update { it.copy(screenShare = local, remoteShare = remote) }
+                                            }
+                                    }
+                                    mutable.update { it.copy(local = media.localFeed, remote = media.remoteFeed,
+                                        localBack = media.localBackFeed, remoteBack = media.remoteBackFeed,
+                                        localScreen = media.localScreenFeed, remoteScreen = media.remoteScreenFeed) }
                                     negotiator = com.lazydoglab.zisee.signaling.MediaNegotiator(media, current.caller == identity.identityId) {
                                         iceServers(requireNotNull(session))
                                     }
@@ -660,6 +775,8 @@ class CallViewModel(application: Application, private val container: AppContaine
                 withContext(NonCancellable) {
                     cameraJob?.cancelAndJoin(); cameraJob = null
                     cameraObservation?.cancelAndJoin()
+                    screenLock?.close()
+                    shareObservation?.cancelAndJoin()
                     candidateObservation?.cancelAndJoin()
                     networkObservation?.cancelAndJoin()
                     losingObservation?.cancelAndJoin()
@@ -673,7 +790,10 @@ class CallViewModel(application: Application, private val container: AppContaine
                     mutable.update { it.copy(local = null, remote = null, localBack = null, remoteBack = null, invite = "",
                         arState = com.lazydoglab.zisee.ar.session.ArSessionState.IDLE, arNotice = "",
                         arCollaboration = com.lazydoglab.zisee.ar.collaboration.ArCollaborationState(),
-                        arOwnMarkerCount = 0) }
+                        arOwnMarkerCount = 0,
+                        localScreen = null, remoteScreen = null, shareConsent = null,
+                        screenShare = com.lazydoglab.zisee.screen.ScreenShareState(),
+                        remoteShare = com.lazydoglab.zisee.rtc.SharePresentation.None) }
                     try { media?.release() } catch (error: Exception) { container.logger.error(AppEvent.RTC_RELEASE_FAILED) }
                     val token = session
                     if (token != null) {

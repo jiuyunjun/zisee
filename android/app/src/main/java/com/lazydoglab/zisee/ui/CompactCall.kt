@@ -45,9 +45,16 @@ import kotlin.math.roundToInt
 private data class CompactRemote(val feed: VideoFeed?, val live: Boolean, val waiting: Boolean)
 
 private fun compactRemote(state: CallUiState): CompactRemote {
-    val source = CallVideoLayout.compactRemote(state.remotePresentation.mode, state.selectedVideoSource)
+    val source = CallVideoLayout.compactRemote(
+        state.remotePresentation.mode, state.selectedVideoSource, state.remoteShare.sharing)
     val backTrack = source == CallVideoLayout.PeerScene &&
         state.remotePresentation.mode in setOf(CameraMode.DUAL, CameraMode.AR)
+    // §4.1: watching the peer's share from a compact window keeps showing the share. Its liveness
+    // and first frame are its own, not the camera statistics.
+    if (source == CallVideoLayout.PeerScreen) return CompactRemote(
+        feed = state.remoteScreen, live = state.remoteShare.sharing,
+        waiting = state.remoteScreen?.geometry?.value == null,
+    )
     return CompactRemote(
         feed = if (backTrack) state.remoteBack else state.remote,
         live = state.remotePresentation.enabled,

@@ -6,32 +6,37 @@ M3 — Call multitasking, screen sharing and 2D collaboration.
 
 ## Task
 
-Build M3-B: add an in-app mini-call and Android Picture-in-Picture while keeping one active call independent of Activity recreation.
+Build M3-C: connect screen sharing to a real call, from the share entry through the peer's picture to either side stopping it, with one agreed collaboration owner.
 
 ## Scope
 
-Process-scoped transitional call ownership, one-source compact video selection, draggable in-app mini-call, Android PiP entry/actions/aspect ratio, visible-video background policy, AR guardrails, tests and docs.
+Pre-allocated `video_screen` track, projection capture pipeline, mediaProjection foreground service type, system consent result, share state on the control channel, collaboration ownership negotiation, lock-screen cleanup, remote screen source and layout, share entry and a permanent stop control, tests and docs.
 
 ## Delivered
 
-- Active calls are held by the process-level AppContainer transitional owner, so Activity recreation or PiP closure does not dispose RTC resources.
-- Back from the full call opens a draggable in-app mini-call with restore, mute and hang-up controls while the rest of Zisee remains usable.
-- Home enters system PiP on supported devices for normal and Show Me calls; PiP renders one selected remote source and exposes mute/hang-up RemoteActions.
-- Video stays active while PiP is visible. Closing PiP or backgrounding without it pauses camera video but keeps audio/signaling and the ongoing notification.
-- Local AR field mode must end before in-app minimization; system Home enters remote-view PiP while the existing pause cleanup ends the local field. A remote AR guide can watch the field in PiP.
-- M3-F screen projection framework and M3-A foreground service remain delivered.
+- The screen m-section is negotiated at connect and left disabled, exactly like the rear camera, so starting a share needs no mid-call renegotiation.
+- `ScreenShareSession` owns a dedicated non-main thread, the single-use consent/projection lifecycle and the texture pipeline feeding the screen VideoSource. The track is enabled only on a real first frame.
+- `CallForegroundService` selects its foreground types explicitly and claims `mediaProjection` before the projection is obtained, releasing it back to `camera|microphone` on stop. Its notification gained a 停止共享 action.
+- Ownership is claimed and granted before any device starts, so two users tapping share at the same moment resolve to one owner instead of two consent dialogs and two projections. The caller side decides a tie, the same rule an AR field conflict uses. A peer that cannot answer times out and nothing starts.
+- Locking the device ends the share through the product's own cleanup rather than trusting every OEM to send a projection stop.
+- A share is the one thing the device sends: every camera pauses and its hardware is released for the duration, and the arrangement comes back when the share ends unless the user changed it meanwhile. Show Me, AR and the camera button all wait for the share to end.
+- `SharePresentation` reports on the control channel what this end is actually sending, with a per-share session id; it is never a command to the peer.
+- The peer's share appears as a `PeerScreen` source that becomes the main view once, and follows into the in-app mini-call and system PiP. A device sharing its own screen never plays that share back.
+- 更多 → 展示与协作 → 共享我的屏幕, plus a permanent stop control that survives the auto-hiding call controls.
+- Fixed a recurring call-surface bug: the full-screen main view buried every thumbnail composed before it, leaving only frames and labels. Stacking now routes through `CallVideoLayout.stack`, with a regression guard.
+- M3-F framework, M3-A foreground service and M3-B mini-call/PiP remain delivered.
 
 ## Validation
 
-:app:testDebugUnitTest PASS (186 tests), :app:assembleDebug PASS, and :app:lintDebug PASS. No physical PiP/background-call validation yet; prior M3-F checks remain valid.
+:app:testDebugUnitTest PASS (213 tests), :app:assembleDebug PASS, and :app:lintDebug PASS. No physical validation of consent, projection, foreground-type switching, system stop, screen-off cleanup, camera release/restore or the peer's picture — JVM tests cover none of it.
 
 ## State
 
-M3 ACTIVE — M3-A/B code implemented; device validation pending. Product screen sharing is not connected yet.
+M3 ACTIVE — M3-A/B and M3-C are code complete; all three await device validation. The 改由我共享 invitation and cross-device AR/share exclusion are not implemented.
 
 ## Next
 
-Validate M3-A/B on two devices, then implement M3-C explicit projection consent, mediaProjection service, screen frame sink/RTC sender and bilateral state; then M3.1 annotations. Media ownership lives in a process-scoped CallViewModel during this transition and must later move to CallSessionCoordinator.
+Validate M3-A/B/C on two devices, including camera restore after a share on a device that really supports Show Me, and a simultaneous share tap on both ends. Then finish M3-C: the handover invitation (20s expiry, 30s cooldown), folding the AR field into the same ownership slot, and measured bitrate/codec tiers for screen content. Then M3.1 annotations. Media ownership lives in a process-scoped CallViewModel during this transition and must later move to CallSessionCoordinator.
 
 ## Prior milestone checkpoint: M4/M5 AR (preserved)
 

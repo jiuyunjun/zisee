@@ -17,6 +17,33 @@ data class CameraPresentation(val mode: CameraMode, val enabled: Boolean) {
     }
 }
 
+/**
+ * Whether this end is publishing its screen, and which share it belongs to. Versioned, bounded and
+ * ordered like [CameraPresentation], and equally never a command to start or stop the peer's
+ * capture: it only reports what this end is actually sending.
+ *
+ * [session] changes on every new share, so a viewer can drop a stale selection, annotation
+ * generation or "waiting for the picture" state instead of carrying it into the next one.
+ */
+data class SharePresentation(val sharing: Boolean, val session: String = "") {
+    init { require(sharing == session.isNotEmpty()) }
+    fun encode(): String = "S1|${if (sharing) 1 else 0}|$session"
+    companion object {
+        const val MAX_SESSION = 12
+        val None = SharePresentation(false)
+        fun decode(text: String): SharePresentation? {
+            if (text.length > 32) return null
+            val fields = text.split('|')
+            if (fields.size != 3 || fields[0] != "S1" || fields[1] !in setOf("0", "1")) return null
+            val session = fields[2]
+            if (session.length > MAX_SESSION || !session.all { it.isLetterOrDigit() }) return null
+            val sharing = fields[1] == "1"
+            if (sharing != session.isNotEmpty()) return null
+            return SharePresentation(sharing, session)
+        }
+    }
+}
+
 enum class ViewSize { LARGE, SMALL }
 
 /**
