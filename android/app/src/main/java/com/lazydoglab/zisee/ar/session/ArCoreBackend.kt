@@ -180,6 +180,24 @@ class ArCoreBackend private constructor(
                 check(Looper.myLooper() != Looper.getMainLooper())
                 check(GLES20.glGetString(GLES20.GL_VERSION) != null) { "A current EGL context is required" }
                 session = Session(context.applicationContext)
+                // The video samples the GPU texture through the CPU image's field of view (see
+                // capture). Default configs can pair a 4:3 CPU image with a 16:9 texture; the image's
+                // corners then fall outside the texture and CLAMP_TO_EDGE smears the edge columns
+                // across both sides of the picture. Prefer a rear 30 fps config whose texture has the
+                // image's aspect, largest texture first; otherwise keep ARCore's default.
+                val configs = session.getSupportedCameraConfigs(com.google.ar.core.CameraConfigFilter(session)
+                    .setFacingDirection(com.google.ar.core.CameraConfig.FacingDirection.BACK)
+                    .setTargetFps(java.util.EnumSet.of(com.google.ar.core.CameraConfig.TargetFps.TARGET_FPS_30)))
+                fun aspect(size: android.util.Size) = size.width.toFloat() / size.height
+                val matching = configs.filter { kotlin.math.abs(aspect(it.imageSize) - aspect(it.textureSize)) < 0.01f }
+                    .maxByOrNull { it.textureSize.width.toLong() * it.textureSize.height }
+                if (matching != null) session.cameraConfig = matching
+                val chosen = session.cameraConfig
+                com.lazydoglab.zisee.core.logging.AndroidAppLogger.info(
+                    com.lazydoglab.zisee.core.logging.AppEvent.AR_CAMERA_CONFIG,
+                    "image=${chosen.imageSize.width}x${chosen.imageSize.height} " +
+                        "texture=${chosen.textureSize.width}x${chosen.textureSize.height} " +
+                        "matched=${matching != null} configs=${configs.size}")
                 session.configure(Config(session).apply {
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
                     depthMode = if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC))
