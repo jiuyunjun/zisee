@@ -6,6 +6,33 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CameraAdaptationPolicyTest {
+    @Test fun `sender capped bandwidth can recover without a local route event`() {
+        val policy = CameraAdaptationPolicy(supportsFullHd = true)
+        for (t in 0L..10_000L step 1_000) policy.update(input(t, 100))
+        assertEquals(CameraTier.C0, policy.lastPlan.main.tier)
+        // Model a healthy route whose estimate cannot grow beyond the application's sender cap.
+        for (t in 11_000L..120_000L step 1_000) {
+            policy.update(input(t, policy.lastPlan.main.maxBitrateBps / 1_000L))
+        }
+        assertEquals(CameraTier.C3, policy.lastPlan.main.tier)
+    }
+
+    @Test fun `recovery probe never overrides loss thermal or thumbnail limits`() {
+        for (blocked in listOf("loss", "thermal", "thumbnail", "stale")) {
+            val policy = CameraAdaptationPolicy(supportsFullHd = true)
+            for (t in 0L..10_000L step 1_000) policy.update(input(t, 100))
+            for (t in 11_000L..60_000L step 1_000) {
+                val observation = when (blocked) {
+                    "loss" -> healthyMain.copy(outboundLoss = 0.1)
+                    "stale" -> healthyMain.copy(outboundReportFresh = false)
+                    else -> healthyMain
+                }
+                val plan = policy.update(input(t, 350, main = observation,
+                    thermal = if (blocked == "thermal") 3 else 0, mainViewedSmall = blocked == "thumbnail"))
+                assertEquals(plan.main.tier.maxKbps * 1_000, plan.main.maxBitrateBps)
+            }
+        }
+    }
     private val healthyMain = CameraTrackObservation(encodeMs = 5.0, sendDelayMs = 10.0, outboundLoss = 0.0,
         outboundReportFresh = true, qualityLimitation = "none")
 
@@ -56,14 +83,14 @@ class CameraAdaptationPolicyTest {
         assertEquals(CameraTier.C0, tinyPlan.aux!!.tier)
     }
 
-    @Test fun `main ceiling is always the tier max, never clamped to its share`() {
+    @Test fun `main ceiling is at least tier max and never clamped to its share`() {
         // §5.2: a share-sized cap on main would suppress the very BWE signal the budget reacts to
         // (a low early estimate -> a low cap -> the estimate never gets a chance to climb). Native
         // congestion control owns the actual send rate below the tier ceiling.
         val policy = CameraAdaptationPolicy(supportsFullHd = true)
         var plan = policy.lastPlan
         for (t in 0L..10_000L step 1_000) plan = policy.update(input(t, bwe = 3_000, aux = healthyMain))
-        assertEquals(plan.main.tier.maxKbps * 1_000, plan.main.maxBitrateBps)
+        assertTrue(plan.main.maxBitrateBps >= plan.main.tier.maxKbps * 1_000)
 
         val tight = CameraAdaptationPolicy(supportsFullHd = false)
         var tightPlan = tight.lastPlan

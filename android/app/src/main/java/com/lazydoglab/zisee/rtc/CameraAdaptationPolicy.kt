@@ -90,6 +90,9 @@ class CameraAdaptationPolicy(
     private var lastMs: Long? = null
     /** §5.2: h stays lowered after a bandwidth/queue-caused downgrade until the link recovers. */
     private var h = STABLE_H
+    private var probeHealthySince: Long? = null
+    private var probeUntilMs = 0L
+    private var nextProbeMs = 0L
 
     var lastPlan: CameraPlan = CameraPlan(0, TrackPlan(startTier, startTier.width, startTier.height, startTier.fps,
         startTier.minKbps * 1_000), null, CameraAdaptationReason.RECOVERY, emptySet(), 0, null, false); private set
@@ -97,6 +100,9 @@ class CameraAdaptationPolicy(
     /** §7 routeGeneration handling, mirrored from [VideoQualityPolicy.routeChanged]: drop to C1,
      * remember the previous tier as a 30 s restoration ceiling climbed back at 2 s per step. */
     fun routeChanged(nowMs: Long) {
+        probeHealthySince = null
+        probeUntilMs = 0L
+        nextProbeMs = nowMs + 8_000L
         mainState.armRestore(nowMs, RESTORE_WINDOW_MS)
         auxState?.armRestore(nowMs, RESTORE_WINDOW_MS)
         mainState.forceTo(CameraTier.C1, CameraAdaptationReason.RECOVERY, nowMs)
@@ -113,6 +119,8 @@ class CameraAdaptationPolicy(
      * lane the caller uses when a stats sample never arrives (severe thermal with no RTCStats), and
      * what [update] itself falls back on when BWE is missing but thermal/CPU is still severe. */
     fun severe(nowMs: Long, reason: CameraAdaptationReason): CameraPlan {
+        probeHealthySince = null
+        probeUntilMs = 0L
         mainState.step(nowMs, CameraTier.C0, reason, immediate = true)
         auxState?.step(nowMs, CameraTier.C0, reason, immediate = true)
         lastMs = nowMs
@@ -139,6 +147,8 @@ class CameraAdaptationPolicy(
         }
         val bwe = input.availableOutgoingKbps
         if (bwe == null) {
+            probeHealthySince = null
+            probeUntilMs = 0L
             mainState.resetWindows()
             aux?.resetWindows()
             // Severe thermal/CPU protection is not budget logic: it must not wait on a BWE sample
@@ -205,7 +215,31 @@ class CameraAdaptationPolicy(
 
         // Deterministic in the tier alone, so it is only ever "new" when the tier itself changes —
         // no separate stability threshold is needed for it.
-        val newMain = trackPlan(mainTier, mainTier.maxKbps.toLong())
+        // The tier ceiling can itself pin BWE below the next tier's entry threshold. Probe only
+        // the ceiling (never force a resolution/minimum rate), with fresh healthy feedback,
+        // bounded duration and cooldown. This also works when only the remote peer changed route.
+        val probeHealthy = !gap && !mainCapView && (input.thermalStatus ?: 0) < 2 &&
+            input.main.outboundReportFresh && input.main.outboundLoss?.let { it < 0.02 } == true &&
+            input.main.sendDelayMs?.let { it <= 30.0 } == true &&
+            input.main.encodeMs?.let { it <= 1_000.0 / mainTier.fps * 0.7 } == true &&
+            input.main.qualityLimitation in setOf("none", "bandwidth") &&
+            bwe >= mainTier.maxKbps * 3L / 4
+        if (!probeHealthy) { probeHealthySince = null; probeUntilMs = 0L }
+        else if (probeHealthySince == null) probeHealthySince = nowMs
+        val probeTier = next(mainTier)
+        val canProbe = probeTier != mainTier && probeTier != CameraTier.C4 &&
+            (probeTier != CameraTier.C3 || supportsFullHd)
+        if (canProbe && probeHealthy && nowMs >= nextProbeMs &&
+            nowMs - requireNotNull(probeHealthySince) >= 8_000L) {
+            probeUntilMs = nowMs + 12_000L
+            nextProbeMs = nowMs + 30_000L
+        }
+        val probeCeiling = maxOf(probeTier.maxKbps.toLong(),
+            ((probeTier.minKbps / 0.8 + AUDIO_RESERVE_KBPS + DATA_RESERVE_KBPS +
+                if (hasAux) 450 else 0) / (CONSTRAINED_H - 0.10) * 1.10).toLong()).coerceAtMost(6_000L)
+        val ceiling = if (canProbe && probeHealthy && nowMs < probeUntilMs)
+            probeCeiling else mainTier.maxKbps.toLong()
+        val newMain = trackPlan(mainTier, ceiling)
         val newAux = auxTier?.let {
             stableOrNew(lastPlan.aux, trackPlan(it, auxShare.coerceIn(it.minKbps.toLong(), it.maxKbps.toLong())))
         }
