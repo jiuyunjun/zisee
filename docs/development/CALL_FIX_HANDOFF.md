@@ -35,6 +35,16 @@
 - 2026-09-11 局域网直连分析（A/B 日志）：通话开始 00:44:16 为 host/host wifi，排除 AP 隔离；A 在 4G 上 ICE 重启（00:45:39，新一代无 Wi-Fi 候选），00:46:53 回 Wi-Fi 判定路由恢复不重启，靠持续收集补发；此后 relay/relay→srflx/srflx，从未 host/host。srflx 被选中说明新 Wi-Fi 候选已到 B、两机互通。RTC_RELAY_PINNED 仅诊断不锁中继。现有日志只转发 native LS_ERROR，无法区分 host/host 对未形成还是检查失败。嫌疑：每代候选上限 32（CellularStandby + 双栈 + 多 TURN URL 易超），超限原先静默丢弃。
   - 已加诊断（未装机）：RTC_CANDIDATE_OVERFLOW（首次超 32 时的候选类型）；RTC_ICE_PAIRS（非 host/host 路径稳定 5s 后一次：各 本地/远端类型:状态 的候选对数、两端候选按 网络/类型 计数、已信令数、是否溢出，不含 IP）。未加：90s 补发超时触发的重启日志（需改 MediaNegotiator 构造）。
   - 用户复测旧版（A 安装于 09-10 21:21，早于 5196411/405c136），AR 点击仍只切换菜单、Wi-Fi 重连仍 prflx，均为旧代码表现。用户暂不同意装机，装新版前须再次确认。
+- 2026-09-11 01:13 第三轮（A=c073b16f 切网方，仍为旧版 09-10 21:21 安装）：
+  - 01:13:51 host/host wifi；01:15:13 Wi-Fi→4G，已有 cellular/srflx 备用路径，仍在 01:15:18 ROUTE 重启，视频中断 7114ms（HANDOVER_VIDEO ms=7114），为本轮最大体验问题，待查备用路径为何未接管。
+  - 01:15:48 回 Wi-Fi：17ms 内选中 prflx/host wifi，1s 后 prflx/prflx wifi，无中继。推断 prflx 是 A 新 Wi-Fi 端口尚未作为本地候选收集、B 回包源地址未信令而被标记，实际多半仍是局域网直连；日志不含地址无法证实。码率 5.5s 从 C1 爬到 C3（bwe 4.5M），本通话爬升正常。
+  - 01:21 通话 A 相机 7 次 close/open（01:21:09–01:21:32），与 RTC_ADAPTATION_PLAN 时间不对应，非换档所致，原因未知（可能是用户操作 AR/切换，旧版无日志）。
+- 2026-09-11 部署方式更正：用户用 Android Studio Apply Changes 部署，新代码在 code_cache/.overlay（01:20 更新，含 f0d953b），base.apk 与 lastUpdateTime 仍为 09-10 21:21。判断装机版本须查 overlay（run-as ... grep code_cache），不能只看 lastUpdateTime。
+- 2026-09-11 01:21 通话（最新代码）诊断结论：
+  - 回 Wi-Fi 后 RTC_ICE_PAIRS：prflx/host:succeeded、prflx/prflx:succeeded、host/host:in-progress、signaled=18 overflow=false。本端非 relay + 对端 host（B 局域网地址）= 局域网直连；prflx 仅因 A 新 Wi-Fi 实际源地址不在本地候选中而被标记，属标签问题，不影响画质。32 候选上限嫌疑排除。
+  - 4G 期间：srflx/relay 成功，relay/host:failed=8 为 TURN 拒绝私网地址，属正常。
+  - 01:21 相机 7 次开关对应两次 RTC_SHOW_ME_FALLBACK requested（用户开关给你看），非缺陷。
+  - 仍存在：Wi-Fi→4G 必须 ICE 重启，视频中断 2.9s（01:21）至 7.1s（01:15），为下一步重点。
 - 剩余：双机切网实测（需求 1）、系统浮窗横竖屏（需求 4，用户自测）、AR 现场跟踪/放置（需求 6）。
 - 改动内容：MainActivity 用选中远端 feed 的 VideoGeometry.displayWidth/displayHeight 更新 PiP，共享授权/启动/进行中禁用 auto-enter；CallVideoLayout 远端共享仅返回 PeerScreen，compact 也优先共享；ActiveCall 单摄右上角切前后摄，拖动位置保存为窗口归一坐标，取消随 controls 清空高度；TextureViewRenderer 尺寸变化重新 invalidateOutline。
 - 圆角真实根因：VideoRenderer 的 AndroidView.update 在 BoxWithConstraints 尺寸子组合中保留旧 cornerPx；交换后主画面仍圆角、旧主画面小窗无圆角。改为外部 SideEffect 更新保留 renderer，尺寸变化还会 invalidateOutline。四路真实触摸交换测试已 PASS，且审过 rounded-fixed.png；继续补拖动后自动隐藏位置不变测试。
