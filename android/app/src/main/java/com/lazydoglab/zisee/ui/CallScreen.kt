@@ -291,17 +291,23 @@ internal fun VideoRenderer(feed: VideoFeed, modifier: Modifier, corner: Dp = 0.d
                 modifier = Modifier.size(width, height),
                 update = {},
                 onRelease = { feed.detach(it); if (renderer === it) renderer = null })
-            if (onArTap != null && displayed != null) {
+            if (onArTap != null) {
                 val density = androidx.compose.ui.platform.LocalDensity.current
                 val viewportWidth = with(density) { width.toPx() }
                 val viewportHeight = with(density) { height.toPx() }
-                Box(Modifier.size(width, height).pointerInput(displayed, viewportWidth, viewportHeight) {
+                // Every rendered frame is a new DisplayedArFrame. Keying the gesture on it restarted
+                // detection ~30 times a second, so a tap never completed and fell through to the
+                // controls toggle. Keep the layer while marking and read the latest frame on tap.
+                val latest by androidx.compose.runtime.rememberUpdatedState(displayed)
+                val tap by androidx.compose.runtime.rememberUpdatedState(onArTap)
+                Box(Modifier.size(width, height).pointerInput(viewportWidth, viewportHeight) {
                     detectTapGestures { offset ->
+                        val frame = latest ?: return@detectTapGestures
                         val point = com.lazydoglab.zisee.ar.annotation.VideoPointMapper.fromViewport(
                             offset.x, offset.y, viewportWidth, viewportHeight,
-                            displayed.geometry, displayed.mirrored,
+                            frame.geometry, frame.mirrored,
                             com.lazydoglab.zisee.ar.annotation.VideoPointMapper.Scale.FIT)
-                        if (point != null) onArTap(displayed, point)
+                        if (point != null) tap(frame, point)
                     }
                 }.semantics { contentDescription = "AR 现场，可轻点放置所选标记" })
             }

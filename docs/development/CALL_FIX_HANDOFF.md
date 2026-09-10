@@ -29,6 +29,9 @@
   - 根因一（已修待复测）：B 每次档位变化（C1/C2/C3）后约 100ms 系统记录相机 close→open，8 次一一对应，纯码率变化不重开。applyCameraPlan 每次换档调 changeCaptureFormat，小米 HAL 会整机重开。改为仅当现有采集格式不能覆盖目标宽高/帧率时才 changeCaptureFormat，降档靠 adaptOutputFormat 缩放。
   - 根因二（推断）：重开造成断帧+关键帧突发→sendDelay>60ms→QUEUE 降档（00:47:31 升 C2，00:47:33 在 bwe=4735 时 QUEUE 降回），再叠加 5s 冷却+8s 升档等待，形成慢爬循环。修复一后应缓解，须复测确认。
   - 未解：同局域网却先走 TURN（relay/relay，RTC_RELAY_PINNED directSucceeded=0），00:46:56 才 srflx/srflx，全程无 host/host。需 A 端日志判断是否 host 候选未产生或路由器 AP 隔离。
+- 2026-09-11 AR 实测：A=c073b16f 开启现场，底部标记工具条出现，但轻点大画面只切换菜单显隐，无法放置。
+  - 根因（已修待真机复测）：VideoRenderer 的 AR 点击层 pointerInput 以 displayed 为 key，而每个渲染帧都是新的 DisplayedArFrame，手势检测每秒被重启约 30 次，点击无法完成并落到外层 controls 切换；displayed 某帧为空时点击层还会整体消失。改为标记模式下常驻点击层，仅按视口尺寸重建，点击时用 rememberUpdatedState 读最新帧，无帧则吞掉点击。
+  - A 日志无 AR 报错；AR 放置本身无应用日志，复测若仍失败需加调试日志。
 - 剩余：双机切网实测（需求 1）、系统浮窗横竖屏（需求 4，用户自测）、AR 现场跟踪/放置（需求 6）。
 - 改动内容：MainActivity 用选中远端 feed 的 VideoGeometry.displayWidth/displayHeight 更新 PiP，共享授权/启动/进行中禁用 auto-enter；CallVideoLayout 远端共享仅返回 PeerScreen，compact 也优先共享；ActiveCall 单摄右上角切前后摄，拖动位置保存为窗口归一坐标，取消随 controls 清空高度；TextureViewRenderer 尺寸变化重新 invalidateOutline。
 - 圆角真实根因：VideoRenderer 的 AndroidView.update 在 BoxWithConstraints 尺寸子组合中保留旧 cornerPx；交换后主画面仍圆角、旧主画面小窗无圆角。改为外部 SideEffect 更新保留 renderer，尺寸变化还会 invalidateOutline。四路真实触摸交换测试已 PASS，且审过 rounded-fixed.png；继续补拖动后自动隐藏位置不变测试。
