@@ -111,6 +111,8 @@ class ArDataChannel(
         access { collaboration.create(id, kind, request) }
     suspend fun remove(id: UUID): Boolean = access { collaboration.remove(id) }
     suspend fun clear(): Boolean = access { collaboration.clear() }
+    suspend fun announceFieldClear(): Boolean = access { collaboration.announceFieldClear() }
+    suspend fun revokeGuide(): Boolean = access { collaboration.revokeGuide() }
     private suspend fun access(block: () -> Boolean): Boolean = withContext(dispatcher) {
         mutex.withLock { !stopping && block() }
     }

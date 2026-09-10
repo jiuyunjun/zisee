@@ -78,6 +78,7 @@ class CallViewModel(application: Application, private val container: AppContaine
     private val arActivation = com.lazydoglab.zisee.ar.session.ArActivationGate()
     private val arOwnMarkers = ArrayDeque<Pair<java.util.UUID, java.util.UUID>>()
     private var lastArResult: Pair<java.util.UUID, java.util.UUID>? = null
+    private var lastFieldClearRevision = 0L
     private val removals = Channel<String>(4)
     private var showMeHintSeen = true
 
@@ -274,6 +275,23 @@ class CallViewModel(application: Application, private val container: AppContaine
             var complete = true
             markers.forEach { (session, id) -> if (!current.removeArMarker(session, id)) complete = false }
             if (!complete && rtc === current) arNotice("部分标记已不在当前现场，其余标记已清除。")
+        }
+    }
+
+    fun clearFieldArMarkers() {
+        val current = rtc ?: return
+        viewModelScope.launch {
+            if (current.clearFieldArMarkers() && rtc === current) {
+                arOwnMarkers.clear()
+                mutable.update { it.copy(arOwnMarkerCount = 0, arNotice = "现场标记已全部清除。") }
+            } else if (rtc === current) arNotice("现场标记未能全部清除，请重试。")
+        }
+    }
+
+    fun revokeArGuide() {
+        val current = rtc ?: return
+        viewModelScope.launch {
+            if (!current.revokeArGuide() && rtc === current) arNotice("暂时无法更新对方权限，请重试。")
         }
     }
     fun toggleSpeaker() {
@@ -521,6 +539,13 @@ class CallViewModel(application: Application, private val container: AppContaine
                                                     })
                                                 }
                                             }
+                                            if (collaboration.fieldClearRevision != lastFieldClearRevision) {
+                                                lastFieldClearRevision = collaboration.fieldClearRevision
+                                                collaboration.remote?.sessionId?.let { remoteSession ->
+                                                    arOwnMarkers.removeAll { it.first == remoteSession }
+                                                }
+                                                arNotice("对方已清空现场标记。")
+                                            }
                                             mutable.update { it.copy(showMe = local, remotePresentation = remote,
                                                 showMeHint = it.showMeHint || hint, arState = ar,
                                                 arCollaboration = collaboration, arOwnMarkerCount = arOwnMarkers.size) }
@@ -601,6 +626,7 @@ class CallViewModel(application: Application, private val container: AppContaine
                     val media = rtc; rtc = null
                     arOwnMarkers.clear()
                     lastArResult = null
+                    lastFieldClearRevision = 0
                     mutable.update { it.copy(local = null, remote = null, localBack = null, remoteBack = null, invite = "",
                         arState = com.lazydoglab.zisee.ar.session.ArSessionState.IDLE, arNotice = "",
                         arCollaboration = com.lazydoglab.zisee.ar.collaboration.ArCollaborationState(),

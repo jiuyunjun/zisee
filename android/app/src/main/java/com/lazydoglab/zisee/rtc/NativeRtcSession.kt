@@ -805,6 +805,14 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         else arCollaboration?.remove(id) ?: false
     }
 
+    suspend fun clearFieldArMarkers(): Boolean {
+        val local = arCapture ?: return false
+        if (!local.clearLocalMarkers()) return false
+        return arCollaboration?.announceFieldClear() ?: false
+    }
+
+    suspend fun revokeArGuide(): Boolean = arCollaboration?.revokeGuide() ?: false
+
     suspend fun stopAr() = withContext(dispatcher + kotlinx.coroutines.NonCancellable) {
         arStopRequested = true
         arStarting?.await()

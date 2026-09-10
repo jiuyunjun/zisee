@@ -32,6 +32,8 @@ internal fun ArCallControls(state: CallUiState, model: CallViewModel) {
     val uri = LocalUriHandler.current
     var availability by remember { mutableStateOf(ArAvailability.CHECKING) }
     var explanation by remember { mutableStateOf(false) }
+    var confirmFieldClear by remember { mutableStateOf(false) }
+    var confirmRevoke by remember { mutableStateOf(false) }
     DisposableEffect(context) {
         var alive = true
         ArCoreAvailability.check(context) { if (alive) availability = it }
@@ -62,6 +64,10 @@ internal fun ArCallControls(state: CallUiState, model: CallViewModel) {
     if (state.arNotice.isNotBlank()) Text(state.arNotice)
     if (active) {
         TextButton(onClick = model::stopAr) { Text("结束我的现场") }
+        TextButton(onClick = { confirmFieldClear = true }) { Text("清空现场标记") }
+        if (collaboration.fieldPeerJoined) {
+            TextButton(onClick = { confirmRevoke = true }) { Text("暂停对方标记权限") }
+        }
     } else if (collaboration.remote != null) {
         Text("对方已开启现场。加入只会打开标记工具，不会启动你的 ARCore 或摄像头。")
         if (collaboration.joined) {
@@ -102,6 +108,16 @@ internal fun ArCallControls(state: CallUiState, model: CallViewModel) {
                 ArPreparation.FAILED -> model.arNotice("AR 服务准备失败，请稍后重试。")
             }
         }) { Text("继续开启") } })
+    if (confirmFieldClear) AlertDialog(onDismissRequest = { confirmFieldClear = false },
+        title = { Text("清空现场标记？") },
+        text = { Text("双方放置的所有标记都会删除，此操作不能撤销。") },
+        dismissButton = { TextButton(onClick = { confirmFieldClear = false }) { Text("取消") } },
+        confirmButton = { TextButton(onClick = { confirmFieldClear = false; model.clearFieldArMarkers() }) { Text("清空") } })
+    if (confirmRevoke) AlertDialog(onDismissRequest = { confirmRevoke = false },
+        title = { Text("暂停对方标记？") },
+        text = { Text("对方仍能观看和通话，但需要重新加入后才能继续标记。已有标记会保留。") },
+        dismissButton = { TextButton(onClick = { confirmRevoke = false }) { Text("取消") } },
+        confirmButton = { TextButton(onClick = { confirmRevoke = false; model.revokeArGuide() }) { Text("暂停") } })
 }
 
 /** Geometry follows the actual display, including 180-degree changes without a size change. */

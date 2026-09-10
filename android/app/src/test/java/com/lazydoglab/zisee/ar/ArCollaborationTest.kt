@@ -169,6 +169,28 @@ class ArCollaborationTest {
         collaboration.close()
     }
 
+    @Test fun `field clear and revoke are reflected by the guide`() = runBlocking {
+        val fieldSent = mutableListOf<ArMessage>()
+        val field = ArCollaboration { fieldSent.add(it) }
+        val guide = ArCollaboration { true }
+        field.connected(); guide.connected()
+        assertTrue(field.attach(Field(epoch)))
+        guide.receive(ArMessage.Ready(epoch, true))
+        assertTrue(guide.join(epoch))
+        field.receive(ArMessage.Join(epoch))
+        guide.receive(ArMessage.Joined(epoch))
+        assertTrue(field.state.value.fieldPeerJoined)
+        assertTrue(guide.state.value.joined)
+        assertTrue(field.announceFieldClear())
+        guide.receive(ArMessage.Clear(epoch))
+        assertEquals(1, guide.state.value.fieldClearRevision)
+        assertTrue(field.revokeGuide())
+        guide.receive(ArMessage.Leave(epoch))
+        assertFalse(field.state.value.fieldPeerJoined)
+        assertFalse(guide.state.value.joined)
+        field.close(); guide.close()
+    }
+
     @Test fun `session lifecycle messages round trip and reject extra fields`() {
         listOf(ArMessage.Join(epoch), ArMessage.Joined(epoch), ArMessage.Leave(epoch), ArMessage.Ended(epoch)).forEach {
             assertEquals(ArDecodeResult.Message(it), ArProtocol.decode(ArProtocol.encode(it)))
