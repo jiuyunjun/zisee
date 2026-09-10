@@ -767,7 +767,7 @@ Active
 
 [AR 现场协作交互专项设计](./docs/product/AR_INTERACTION.md)
 
-`document_id`：`DESIGN-AR-001`；版本：1.0.0；状态：Draft。
+`document_id`：`DESIGN-AR-001`；版本：1.1.0；状态：Draft。
 
 用途：AR 入口与双方视角、单现场协作、同时标记与清除权限、功能互斥、异常恢复、扩展能力及分步验收。产品提案，不代表已实现。
 
@@ -1548,7 +1548,7 @@ Zisee 的文档遵循：
 
 ## AR 交互专项索引 - 2026-09-10
 
-- 增加 AR_INTERACTION.md 产品设计提案入口，明确与当前实现的边界。
+- 增加并更新 AR_INTERACTION.md 产品设计提案入口，明确 `99cf7a9` 基础闭环与待交付边界。
 
 ## 1.3.1 - 2026-09-08
 

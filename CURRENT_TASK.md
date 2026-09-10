@@ -1,25 +1,31 @@
 # Current Task
 
 ## Task
-Verify actual displayed-frame identity and physical ARCore takeover/restoration; fix device-discovered issues.
+Implement the first end-to-end AR collaboration marker slice from `docs/product/AR_INTERACTION.md`.
 
 ## Why
-The media APIs exist but no in-call path invokes preparation, capture or foreground cleanup.
+Camera takeover and displayed-frame identity existed, but neither side could join a field scene, place a visible spatial marker, or remove its own markers.
 
 ## Scope
-Call AR coordinator, call view model, AR menu composables, minimal ActiveCall slot, native AR state/cleanup, targeted tests and docs. Preserve existing five modified files.
+Dual-role call entry, one-field conflict convergence, join/leave, displayed-frame clicks, Pin/Arrow/Circle Anchor rendering, own undo/clear, camera privacy exit, tests and docs.
 
-## Planned Changes
-Capability check; explicit camera/privacy explanation; permission/install prepare; guarded start/stop; rotation geometry; onPause stop; state/error feedback. Preserve existing background-hangup policy. Do not expose remote spatial clicks.
+## Delivered
 
-## Acceptance Criteria
-No automatic camera activation after lifecycle loss or stale permission/install callback. Exit stays available during startup. Ordinary camera modes restore on exit. Unsupported devices retain video calling. AR status and failure are visible. Build/tests pass; real device checks recorded honestly.
+- Field and guide roles are visible in the call options; a guide joins explicitly without starting ARCore or its camera.
+- The caller coordinates simultaneous field activation so only one field remains active.
+- Local and remote taps use the exact frame latched by the relevant TextureView and preserve its source reference.
+- Pin, Arrow and Circle Anchors project through the current camera pose and render into the source video GPU framebuffer.
+- Both participants can add concurrently, undo their latest submitted marker and clear their own submitted markers.
+- Turning off the field camera ends AR first; lens switching stays disabled during AR.
+
+## Remaining Product Work
+
+Author/number metadata, marker list and hit targets, field-owner clear-all, revoke-guide permission, remote tracking readiness, transactional clear generations, reconnect snapshots, invite/only-watch/swap flows, Pointer, first-use teaching and sustained two-device validation. The interaction document remains Draft until these are resolved.
 
 ## Validation
-JVM intent/lifecycle tests, Debug/AndroidTest build and lint, available device display/camera verification.
+JVM projection/session tests, Debug and AndroidTest builds, lint, synthetic device GPU rendering, physical ARCore takeover where the local RTC loop allows it, and later two-device calls.
 
 ## State
-VERIFIED on device. arCameraTakeover PASS twice for FACE, BACK_ONLY and DUAL entry modes;
-arFramePool and arDisplayedIdentity re-run PASS; 165 JVM tests, Debug/AndroidTest and lint PASS.
-Required pinning ARCore back to 1.54.0 because SDK 1.56 demands an APK Play does not distribute.
-Two-device spatial clicks and overlays remain out of scope and unverified.
+IMPLEMENTED, NOT YET PRODUCT-COMPLETE. Commit `99cf7a9`.
+
+168 JVM tests, Debug/AndroidTest builds and lint PASS. Pixel 9a synthetic OES camera + marker overlay + orientation PASS. Physical ARCore availability and preparation are READY, but `arCameraTakeover` was blocked three times because its local loopback ICE reached FAILED after video frames; physical marker placement and two-device clicks remain unverified. ARCore remains pinned to 1.54.0 because SDK 1.56 requires an APK Play does not distribute on this device.

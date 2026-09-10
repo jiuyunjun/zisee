@@ -1,11 +1,11 @@
 ---
 title: AR 现场协作交互专项设计
 document_id: DESIGN-AR-001
-version: 1.0.0
+version: 1.1.0
 status: Draft
 created: 2026-09-10
 updated: 2026-09-10
-applies_to: "M4/M5 产品接入；实现基线 fe36524"
+applies_to: "M4/M5 产品接入；实现基线 99cf7a9"
 owners:
   - core
   - design
@@ -14,7 +14,7 @@ owners:
 
 # AR 现场协作交互专项设计
 
-本文给出可评审、可拆分实现的产品方案。**以下“首版”指拟交付的 AR 协作首版，不代表当前 APK 已具备这些行为。** 当前实现与差距见第 12 节；本次只设计，不修改运行代码，也不改变 M3 优先的路线图。
+本文给出可评审、可拆分实现的产品方案。**以下“首版”包含已实现的基础闭环和仍待交付的产品完善项，不应把整篇文档视为当前 APK 已具备的行为。** 当前实现与差距见第 12 节；本次实现不改变 M3 优先的总体路线图。
 
 ## 1. 先回答最关键的问题
 
@@ -321,14 +321,15 @@ stateDiagram-v2
 
 ## 12. 当前实现、文档差异和拆分计划
 
-以仓库 `fe36524` 为阅读基线：
+以仓库 `99cf7a9` 为阅读基线：
 
 | 已核查对象 | 当前能力 / 与本设计的差距 |
 | --- | --- |
-| [ArCallControls.kt](../../android/app/src/main/java/com/lazydoglab/zisee/ui/ArCallControls.kt) | 更多菜单内已有“AR 现场视角 / 开启 AR”、说明/安装/权限、状态与退出；明确提示远端空间标注尚未开放。尚无本文完整双角色入口。 |
-| [ActiveCall.kt](../../android/app/src/main/java/com/lazydoglab/zisee/ui/ActiveCall.kt) | AR 后摄视频槽和通话选项已接入；本文协作工具、角色布局、全套冲突交互尚待实现。 |
-| [ArCollaboration.kt](../../android/app/src/main/java/com/lazydoglab/zisee/ar/collaboration/ArCollaboration.kt) | 有本地/远端 session 和加入握手；不能认为已有单现场仲裁、作者权限、版本快照或双方本地标记广播。 |
-| [ArSessionController.kt](../../android/app/src/main/java/com/lazydoglab/zisee/ar/session/ArSessionController.kt) | 有历史投影、Pin/Arrow/Circle 类型和锚点删除/清空；无作者元数据、工具完整几何或产品撤销语义。 |
+| [ArCallControls.kt](../../android/app/src/main/java/com/lazydoglab/zisee/ui/ArCallControls.kt) | 更多菜单已区分“开启我的现场”和“加入对方标记”，展示现场方/指导方状态并支持退出。请求对方开启、交换现场和显式仅观看仍待实现。 |
+| [ActiveCall.kt](../../android/app/src/main/java/com/lazydoglab/zisee/ui/ActiveCall.kt) | 主现场支持 Pin/Arrow/Circle、撤销和确认后清除本人标记；空间点击只使用 TextureView 实际展示帧。作者编号、标记管理列表、Pointer、现场方全清和首次教学仍待实现。 |
+| [ArCollaboration.kt](../../android/app/src/main/java/com/lazydoglab/zisee/ar/collaboration/ArCollaboration.kt) | 本地/远端 session、加入握手和主叫端协调的单现场冲突收敛已接入。尚无作者权限代数、权威标记快照或重连状态同步。 |
+| [ArSessionController.kt](../../android/app/src/main/java/com/lazydoglab/zisee/ar/session/ArSessionController.kt) | 历史投影、Pin/Arrow/Circle Anchor、删除和清空已用于产品路径；无作者元数据、统一编号和批量事务语义。 |
+| [ArCameraRenderer.kt](../../android/app/src/main/java/com/lazydoglab/zisee/ar/render/ArCameraRenderer.kt) | 当前相机姿态把 Anchor 投影为三类高对比 billboard，并烧入现场 video_back 源帧，两端因而看到同一位置。本机隐藏、作者色、编号、遮挡和画面命中尚不可用。 |
 | [AR_FRAMEWORK.md](../architecture/AR_FRAMEWORK.md) | 记录现场采集、GPU 管线、帧身份与协议；开头“通话按钮待完成”等历史叙述落后于当前代码，应结合实际代码和近期记录阅读。本文不将历史测试数字当作重新验证结果。 |
 | [CURRENT_TASK.md](../../CURRENT_TASK.md) | 记录已有设备相机接管与帧身份检查；同时明确双设备空间点击/叠加未验证。 |
 | [DESIGN.md](DESIGN.md)、[ARAssist.dc.html](../../design/ARAssist.dc.html) | 提供视觉方向与单屏概念；尚未解决双方角色、权限、并发。本文为细化提案，不将原型视为已交付行为。 |
@@ -336,10 +337,10 @@ stateDiagram-v2
 
 建议以可验证小步推进：
 
-1. **协作会话与双端 UI**：完整入口、单现场仲裁、加入/退出/撤权、功能互斥与降级；暂不开放空间点击。
-2. **Pin 端到端闭环**：正确展示帧引用、现场叠加、双方新增、作者/编号同步、列表删除、本人撤销、事务清空、重连快照；完成两设备验证后才开放入口。
-3. **首版工具补齐**：固定形态箭头/圈、按帧命中、临时指示、教学与压力测试；复用 M3 基础，不一次扩展三维编辑器。
-4. **首版便捷切换与 P1 增强**：先补齐第 2.3 节的交换现场，完成首版便捷切换；此前 UI 只提供“结束后由对方开启”，不展示无实现按钮。之后独立推进文字/步骤、目标找回与定格讲解。
+1. **已实现基础闭环**：双端入口、加入/退出、主叫端协调的单现场收敛、可信展示帧点击、三类 Anchor 叠加、本人撤销/清除和关相机退出 AR。
+2. **下一步一致性与权限**：作者/编号、标记列表、现场方全清、对方撤权、跟踪状态同步、清空代数和加入/重连快照；完成两设备真实通话验证后再视为可发布。
+3. **首版交互补齐**：请求对方开启、仅观看、临时指示、首次教学、明确模式切换确认、交换现场与持续压力测试。
+4. **P1 产品增强**：文字/步骤、目标找回与定格讲解。
 
 双现场同时开启留待后续独立评审：需要每个 scene 独立 session/作者/列表/清除范围、显式“我方现场/对方现场”切换、只有当前大画面可编辑、无跨场景坐标投射，以及两端持续功耗验收。基础协议可保留扩展空间，首版不暴露该入口。
 
@@ -353,6 +354,11 @@ stateDiagram-v2
 需要用户测试验证的假设：双方是否理解“开启现场”和“加入标记”的区别；一现场是否足够覆盖主要场景；持机时点屏幕与中心准星哪种更稳；固定箭头/圈是否足够表达意图。初版按本文默认落地，以可用性测试结果迭代，不阻塞协议正确性与相机隐私边界。
 
 ## Changelog
+
+### 1.1.0 - 2026-09-10
+
+- 同步 `99cf7a9`：实现双端加入、单现场冲突收敛、实际展示帧点击、Pin/Arrow/Circle 视频叠加及本人撤销/清除。
+- 记录尚缺的作者/编号/权限/快照/邀请能力和双设备验收边界，保留 Draft 状态。
 
 ### 1.0.0 - 2026-09-10
 
