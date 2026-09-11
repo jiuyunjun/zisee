@@ -1,14 +1,38 @@
 package com.lazydoglab.zisee.rtc.compute
 
+import com.lazydoglab.zisee.core.logging.AppEvent
+import com.lazydoglab.zisee.core.logging.AppLogger
 import org.webrtc.VideoCodecStatus
 import org.webrtc.VideoEncoder
 import org.webrtc.VideoFrame
 import org.webrtc.WrappedNativeVideoEncoder
 
 /** Call-scoped snapshots; never retain native encoders or video buffers in the diagnostics owner. */
-class EncoderTelemetry {
+class EncoderTelemetry(private val logger: AppLogger? = null) {
     private var nextId = 0
     private val active = linkedMapOf<Int, EncoderTimingWindow>()
+    /** Encoder-thread wall time of one synchronous encode call, microseconds. */
+    val encodeCallCost = LatencyWindow(120)
+    private var slowWindowStartNs = 0L
+    private var slowLogged = 0
+
+    /** For HW encoders the call includes drawing the input texture and swapping into the codec surface. */
+    fun encodeCall(codec: String, startNs: Long, durationNs: Long) {
+        encodeCallCost.add(durationNs / 1000)
+        if (durationNs < SLOW_ENCODE_NS || logger == null) return
+        val allowed = synchronized(this) {
+            if (startNs - slowWindowStartNs > SLOW_LOG_WINDOW_NS) { slowWindowStartNs = startNs; slowLogged = 0 }
+            ++slowLogged <= SLOW_LOG_MAX
+        }
+        // `at` is monotonic ms, comparable with RTC_COMPUTE_LATE's `at`.
+        if (allowed) logger.info(AppEvent.RTC_COMPUTE_ENCODE_SLOW, "$codec:us=${durationNs / 1000}:at=${startNs / 1_000_000}")
+    }
+
+    private companion object {
+        const val SLOW_ENCODE_NS = 8_000_000L
+        const val SLOW_LOG_WINDOW_NS = 10_000_000_000L
+        const val SLOW_LOG_MAX = 20
+    }
     @Synchronized fun register(codec: String): Pair<Int, EncoderTimingWindow> {
         val id = ++nextId
         val window = EncoderTimingWindow(id, codec)
@@ -55,6 +79,7 @@ class MeasuredVideoEncoder(
         return try {
             delegate.encode(frame, info).also { if (it != VideoCodecStatus.OK) window?.rejected(frame.timestampNs) }
         } catch (error: RuntimeException) { window?.rejected(frame.timestampNs); throw error }
+        finally { telemetry.encodeCall(codec, now, clockNs() - now) }
     }
 
     override fun release(): VideoCodecStatus = try { delegate.release() }

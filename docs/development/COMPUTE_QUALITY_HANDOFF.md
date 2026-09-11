@@ -276,3 +276,17 @@
 - 本步诊断：新增 `ThreadSchedStat`，GL 线程初始化时打开 `/proc/thread-self/schedstat`（格式 `cpu_ns runqueue_wait_ns timeslices`，真机已确认可读）；每帧在 submit 起止各读一次，把 submit 墙钟拆成 `subCpu`（在 CPU 上）、`subRunq`（可运行但在等 CPU → 被抢占）、`subSleep = submit - cpu - runq`（阻塞睡眠 → 锁/fence）。`RTC_COMPUTE_LATE` 追加这三项（不可读时 `subSched=unavailable`）；`RTC_COMPUTE_STATS` 追加 `sched95(cpu/runq)` 与 GL 线程优先级 `glPrio`。
 - 验证：329 项 JVM 单测（新增 schedstat 解析 2 项）0 failures/errors/skipped；assembleDebug、assembleDebugAndroidTest、lintDebug、compileReleaseKotlin 通过（`android/app/build/schedstat-diag-validation.log`）。emulator-5556 `-e computeQuality true`、默认 native 回环 PASS。
 - 真机待测：卡顿帧 `subRunq` 大 → 提高 GL 线程优先级（如 `THREAD_PRIORITY_DISPLAY`）或降低 ML Kit worker 优先级；`subSleep` 大 → 驱动锁/隐式同步，需配合渲染线程 swap 时间或第 3 步异步流水线；`subCpu` 大 → 驱动 CPU 工作本身。
+- 调度诊断提交：`c6ce7e3`。
+
+### 锁持有者诊断：编码器与渲染器（2026-09-11）
+
+- 真机（16:44 通话，`c6ce7e3`）：卡顿帧 `subCpu` ≈0.5–3.4ms、`subRunq` 多为个位数到 0.3ms（偶有 1.6ms），`subSleep` 9.6–24.7ms。**GL 线程在绘制调用里阻塞睡眠，不是被抢占**；`glPrio=0`。提高线程优先级不会解决。
+- 卡顿分别出现在读取相机 OES 的 `hist`、写输出槽的降噪 `out`、RESIZE_ONLY 的 `out`，这些 pass 没有共同的纹理，指向进程级或 EGL share group 级的驱动锁，而非单个纹理的隐式同步；时长多为 12–17ms。
+- 现有日志无渲染器统计（WebRTC Java 日志只转发 ERROR）。
+- 候选持锁者：①编码器线程：HardwareVideoEncoder 在 `encode()` 中把我们的输出纹理画进 MediaCodec 输入 surface 并 `eglSwapBuffers`，编解码器输入队列满时 swap 会阻塞约一帧；②渲染线程（`TextureViewRenderer` 内的 `EglRenderer`，本地预览/远端视频）swap 等待 vsync/缓冲。
+- 本步诊断（`TextureViewRenderer` 含 AR 帧身份逻辑，未修改）：
+  - `MeasuredVideoEncoder.encode()` 记录同步调用墙钟（Java 硬件编码器，含纹理绘制与 swap），`EncoderTelemetry.encodeCallCost`；≥8ms 记 `RTC_COMPUTE_ENCODE_SLOW <codec>:us=..:at=<单调 ms>`，每 10s 最多 20 行。
+  - `RTC_COMPUTE_LATE` 增加 `at=<帧到达单调 ms>`，可与 `ENCODE_SLOW` 的 `at` 按毫秒对齐（慢编码区间 [at, at+us] 与迟到帧 [at, at+added] 是否重叠）。
+  - 仅 Debug：WebRTC 注入日志级别改为 INFO，但只把 `EglRenderer` 每 4s 的统计（含 `Average swapBuffer time`）转发为 logcat 标签 `ZiseeRender`，其余非 ERROR 消息直接丢弃；Release 仍为 ERROR。平均值可能掩盖尖峰，只作辅助证据。
+- 验证：331 项 JVM 单测（新增慢编码日志与限流 2 项）0 failures/errors/skipped；assembleDebug、assembleDebugAndroidTest、lintDebug、compileReleaseKotlin 通过（`android/app/build/encoder-render-diag-validation.log`）。emulator-5556 `-e computeQuality true`、默认 native 回环 PASS。模拟器使用软件编码且回环测试不经过 `TextureViewRenderer`，`ENCODE_SLOW`/`ZiseeRender` 均未出现，**需真机确认这两路日志是否产生**。
+- 真机待测：迟到帧是否与 `ENCODE_SLOW` 在时间上重叠；`ZiseeRender` 的 swapBuffer 平均值是否偏高。重叠 → 输出交付与编码器 swap 争锁，可考虑第 3 步异步交付或给编码器单独的非共享路径；不重叠且渲染 swap 高 → 渲染器侧（预览帧率/TextureView 合成）。

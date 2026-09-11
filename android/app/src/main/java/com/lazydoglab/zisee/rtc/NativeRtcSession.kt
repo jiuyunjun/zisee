@@ -54,7 +54,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private val frontComputePolicy = ComputeQualityPolicy()
     private val backComputePolicy = ComputeQualityPolicy()
     private val computeTelemetry = ComputeTelemetry(context, logger)
-    private val encoderTelemetry = EncoderTelemetry()
+    private val encoderTelemetry = EncoderTelemetry(logger)
     private val frameSources = FrameSourceRegistry()
     private var codecCapabilities: CodecCapabilitySnapshot? = null
     private var audioSource: AudioSource? = null
@@ -1867,7 +1867,15 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             if (initialized) return
             PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(context)
                 .setEnableInternalTracer(false)
-                .setInjectableLogger({ message, severity, _ ->
+                .setInjectableLogger({ message, severity, tag ->
+                    if (severity != Logging.Severity.LS_ERROR) {
+                        // Debug-only diagnosis: EglRenderer reports its average render/swapBuffer time
+                        // every 4s at INFO. Everything else below ERROR is dropped.
+                        if (BuildConfig.DEBUG && tag == "EglRenderer" && message.contains("swapBuffer")) {
+                            Log.i("ZiseeRender", message.take(300))
+                        }
+                        return@setInjectableLogger
+                    }
                     if (severity == Logging.Severity.LS_ERROR) {
                         // Three of these are normal operation reported at error level, and left
                         // alone they bury the ones that are not. A relay refuses to open a
@@ -1899,7 +1907,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                         // free-form and may quote SDP, so it stays out of release builds.
                         if (BuildConfig.DEBUG) Log.e("ZiseeNative", message.take(400))
                     }
-                }, Logging.Severity.LS_ERROR)
+                }, if (BuildConfig.DEBUG) Logging.Severity.LS_INFO else Logging.Severity.LS_ERROR)
                 .createInitializationOptions())
             initialized = true
         }

@@ -245,7 +245,9 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         if (now - lateLogWindowNs > LATE_LOG_WINDOW_NS) { lateLogWindowNs = now; lateLogCount = 0 }
         if (++lateLogCount > LATE_LOG_MAX) return
         val aux = if (auxBusy) "running" else "${auxAgoMs}ms_ago"
-        logger.info(AppEvent.RTC_COMPUTE_LATE, "$name:$action:$tier:added=${p.addedUs}:pre=${p.preUs}" +
+        // `at` is the frame's arrival in monotonic ms, comparable with RTC_COMPUTE_ENCODE_SLOW's `at`.
+        logger.info(AppEvent.RTC_COMPUTE_LATE, "$name:$action:$tier:at=${context.arrivalNs / 1_000_000}" +
+            ":added=${p.addedUs}:pre=${p.preUs}" +
             ":queue=${p.queueUs}:submit=${p.submitUs}:sub($SPLIT_LABEL)=${sub.joinToString("/")}" +
             ":wait=${p.waitUs}:resume=${p.resumeUs}:gpu=${p.gpuUs}:aux=$aux:auxUs=$lastAuxUs" +
             ":detector=${if (detectorBusy) "busy" else "idle"}:age=${context.ageMs}ms:fdelta=${context.deltaMs}ms" +
