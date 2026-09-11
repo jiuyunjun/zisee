@@ -93,6 +93,55 @@ class ArSessionControllerTest {
         controller.close()
     }
 
+    @Test fun legacyMarkerApiUsesStableNonReusedDisplayNumbers() {
+        val controller = controller()
+        val firstId = UUID.randomUUID()
+        controller.start(); controller.capture()
+        val first = create(controller, firstId) as MarkerResult.Created
+        assertEquals(1, first.marker.displayNumber)
+        assertTrue(controller.removeMarker(epoch, firstId))
+        val second = create(controller) as MarkerResult.Created
+        assertEquals(2, second.marker.displayNumber)
+        assertEquals(2, controller.markers().single().displayNumber)
+        assertEquals(2, controller.annotationSnapshot().single().displayNumber)
+        controller.close()
+    }
+
+    @Test fun guideCannotDeleteFieldMarkerButFieldMayDeleteGuideMarker() {
+        val controller = controller()
+        controller.start(); controller.capture()
+        val fieldId = UUID.randomUUID()
+        val guideId = UUID.randomUUID()
+        assertTrue(controller.createMarker(epoch, fieldId, MarkerKind.PIN, request(), AnnotationAuthor.FIELD) is MarkerResult.Created)
+        assertTrue(controller.createMarker(epoch, guideId, MarkerKind.PIN, request(), AnnotationAuthor.GUIDE) is MarkerResult.Created)
+
+        assertFalse(controller.removeMarker(epoch, fieldId, AnnotationAuthor.GUIDE))
+        assertTrue(controller.removeMarker(epoch, guideId, AnnotationAuthor.GUIDE))
+        assertEquals(listOf(fieldId), controller.markers().map { it.id })
+        assertTrue(controller.clearMarkers(epoch, AnnotationAuthor.FIELD))
+        assertTrue(controller.annotationSnapshot().isEmpty())
+        assertEquals(2, backend.created.count { it.detaches == 1 })
+        controller.close()
+    }
+
+    @Test fun pauseAndCloseClearLedgerAlongsideNativeAnchors() {
+        val controller = controller()
+        controller.start(); controller.capture()
+        create(controller)
+        assertEquals(1, controller.annotationSnapshot().size)
+
+        controller.pause()
+        assertTrue(controller.annotationSnapshot().isEmpty())
+        assertTrue(controller.resume())
+        backend.next = snapshot(2)
+        controller.capture()
+        val afterResume = create(controller, time = 2) as MarkerResult.Created
+        assertEquals(2, afterResume.marker.displayNumber)
+        controller.close()
+        assertTrue(controller.annotationSnapshot().isEmpty())
+        assertEquals(ArSessionState.CLOSED, controller.state.value)
+    }
+
     @Test fun cameraResumeFailureClosesAcquiredBackend() {
         backend.failResume = true
         val controller = controller()
