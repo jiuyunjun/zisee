@@ -2,6 +2,7 @@ package com.lazydoglab.zisee.ar.session
 
 import android.content.Context
 import com.lazydoglab.zisee.ar.annotation.ArMessage
+import com.lazydoglab.zisee.ar.annotation.ArStrokeMessage
 import com.lazydoglab.zisee.ar.collaboration.ArControllerEndpoint
 import com.lazydoglab.zisee.ar.collaboration.ArFieldEndpoint
 import com.lazydoglab.zisee.ar.render.ArCameraRenderer
@@ -83,6 +84,7 @@ class ArVideoCapture private constructor(
     }
 
     override suspend fun execute(message: ArMessage) = endpoint.execute(message)
+    override suspend fun executeStroke(message: ArStrokeMessage) = endpoint.executeStroke(message)
 
     suspend fun createLocalMarker(id: UUID, kind: MarkerKind,
         request: com.lazydoglab.zisee.ar.annotation.SpatialMarkerRequest): Boolean = withContext(dispatcher) {

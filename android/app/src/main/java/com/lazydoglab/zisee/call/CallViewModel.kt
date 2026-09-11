@@ -96,6 +96,7 @@ class CallViewModel(application: Application, private val container: AppContaine
     private var arStrokeInputs: Channel<com.lazydoglab.zisee.ar.annotation.ArStrokeInput>? = null
     private var arStrokeJob: Job? = null
     private var lastArResult: Pair<java.util.UUID, java.util.UUID>? = null
+    private var lastArStrokeResult: Pair<java.util.UUID, java.util.UUID>? = null
     private var lastFieldClearRevision = 0L
     private val removals = Channel<String>(4)
     private var showMeHintSeen = true
@@ -436,6 +437,7 @@ class CallViewModel(application: Application, private val container: AppContaine
             arStrokeInputs = queue; arStrokeId = input.id
             val first = input.samples.single()
             val identity = com.lazydoglab.zisee.ar.render.ArFrameIdentity(input.sessionId, first.frame)
+            val remote = state.value.arCollaboration.remote?.sessionId == input.sessionId
             arStrokeJob = viewModelScope.launch {
                 var created = false
                 var finished = false
@@ -453,7 +455,9 @@ class CallViewModel(application: Application, private val container: AppContaine
                                         arOwnMarkers.addLast(input.sessionId to input.id)
                                         mutable.update { it.copy(arOwnMarkerCount = arOwnMarkers.size) }
                                     }
-                                    arNotice(if (finished) "已保留画好的部分，请在新表面重新起笔。" else "这里没有连续表面，请重新起笔。")
+                                    arNotice(if (finished && remote) "画好的部分已发送，正在等待对方现场确认。"
+                                        else if (finished) "已保留画好的部分，请在新表面重新起笔。"
+                                        else "这里没有连续表面，请重新起笔。")
                                     break
                                 }
                             }
@@ -461,7 +465,9 @@ class CallViewModel(application: Application, private val container: AppContaine
                                 finished = media.endArStroke(identity, input.id, false)
                                 if (finished && rtc === media) {
                                     arOwnMarkers.addLast(input.sessionId to input.id)
-                                    mutable.update { it.copy(arOwnMarkerCount = arOwnMarkers.size, arNotice = "手绘已固定，可按整笔撤销。") }
+                                    mutable.update { it.copy(arOwnMarkerCount = arOwnMarkers.size,
+                                        arNotice = if (remote) "手绘已发送，正在等待对方现场确认。"
+                                        else "手绘已固定，可按整笔撤销。") }
                                 } else if (rtc === media) arNotice("这一笔太短或现场已变化，请重新绘制。")
                                 break
                             }
@@ -778,7 +784,7 @@ class CallViewModel(application: Application, private val container: AppContaine
                                             if (arOwnMarkers.any { it.first !in validSessions }) {
                                                 arOwnMarkers.removeAll { it.first !in validSessions }
                                             }
-                                            collaboration.lastResult?.let { result ->
+                                             collaboration.lastResult?.let { result ->
                                                 val key = result.sessionId to result.id
                                                 if (lastArResult != key) {
                                                     lastArResult = key
@@ -792,7 +798,16 @@ class CallViewModel(application: Application, private val container: AppContaine
                                                             "标记已满，请先清除一些。"
                                                         else -> "暂时无法固定在这里，请换个位置后重试。"
                                                     })
-                                                }
+                                             }
+                                             collaboration.lastStrokeResult?.let { result ->
+                                                 val key = result.sessionId to result.id
+                                                 if (lastArStrokeResult != key) {
+                                                     lastArStrokeResult = key
+                                                     if (result.rejection != null) arOwnMarkers.remove(key)
+                                                     arNotice(if (result.rejection == null) "手绘已由对方现场确认。"
+                                                         else "手绘未能固定在对方现场，请重新绘制。")
+                                                 }
+                                             }
                                             }
                                             if (collaboration.fieldClearRevision != lastFieldClearRevision) {
                                                 lastFieldClearRevision = collaboration.fieldClearRevision

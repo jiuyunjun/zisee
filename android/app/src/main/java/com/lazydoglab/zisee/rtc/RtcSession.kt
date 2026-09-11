@@ -12,7 +12,7 @@ enum class IceState { NEW, CHECKING, CONNECTED, DISCONNECTED, FAILED, CLOSED }
  */
 interface RtcSession {
     val iceState: Flow<IceState>
-    /** True only while this endpoint owns a live local AR capture. Remote v1 peers do not expose Stroke. */
+    /** True only while this endpoint owns a live local AR capture; remote Stroke is negotiated separately. */
     val localArStrokeSupported: Flow<Boolean>
     suspend fun setTrackEnabled(track: MediaTrack, enabled: Boolean)
     suspend fun restartIce()

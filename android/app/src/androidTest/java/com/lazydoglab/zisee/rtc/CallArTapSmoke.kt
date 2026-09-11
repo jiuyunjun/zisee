@@ -13,7 +13,7 @@ import android.view.MotionEvent
 internal object CallArTapSmoke {
     /** "ar-late-tracking" is the device order: picture first, TRACKING (and the marker tool) later. */
     fun run(test: Instrumentation): String =
-        listOf("ar-notice", "ar-late-tracking").joinToString("\n") { "[$it]\n" + run(test, it) }
+        listOf("ar-notice", "ar-late-tracking", "ar-remote-guide").joinToString("\n") { "[$it]\n" + run(test, it) }
 
     private fun run(test: Instrumentation, scenario: String): String {
         val automation = test.uiAutomation

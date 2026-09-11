@@ -30,6 +30,7 @@ internal object ArChannelSmoke {
             val controls = mutableListOf<DataChannel>()
             val channels = mutableListOf<ArDataChannel>()
             val rawArChannels = mutableListOf<DataChannel>()
+            val rawStrokeChannels = mutableListOf<DataChannel>()
             val failures = AtomicInteger()
             val controlReceived = CompletableDeferred<Unit>()
             val field = object : ArFieldEndpoint {
@@ -37,6 +38,7 @@ internal object ArChannelSmoke {
                 override val depthSupported = false
                 var creates = 0
                 var clears = 0
+                var strokeMessages = 0
                 var closes = 0
                 override suspend fun execute(message: ArMessage): ArMessage.Result? = when (message) {
                     is ArMessage.Create -> {
@@ -46,6 +48,10 @@ internal object ArChannelSmoke {
                     }
                     is ArMessage.Clear -> { clears++; null }
                     else -> null
+                }
+                override suspend fun executeStroke(message: ArStrokeMessage): ArStrokeMessage.Result? {
+                    strokeMessages++
+                    return if (message is ArStrokeMessage.End) ArStrokeMessage.Result(sessionId, message.id, null) else null
                 }
                 override suspend fun close() { closes++ }
             }
@@ -68,8 +74,11 @@ internal object ArChannelSmoke {
                     controls.add(peer.createDataChannel("camera-state", DataChannel.Init().apply { negotiated = true; id = 0 }))
                     val rawAr = peer.createDataChannel(ArProtocol.CHANNEL_LABEL,
                         DataChannel.Init().apply { negotiated = true; id = 2; ordered = true })
+                    val rawStroke = peer.createDataChannel(ArStrokeProtocol.CHANNEL_LABEL,
+                        DataChannel.Init().apply { negotiated = true; id = 4; ordered = true })
                     rawArChannels.add(rawAr)
-                    channels.add(ArDataChannel(rawAr, executor, false) { failures.incrementAndGet() })
+                    rawStrokeChannels.add(rawStroke)
+                    channels.add(ArDataChannel(rawAr, executor, false, { failures.incrementAndGet() }, rawStroke))
                 }
                 controls[1].registerObserver(object : DataChannel.Observer {
                     override fun onBufferedAmountChange(previousAmount: Long) = Unit
@@ -93,14 +102,22 @@ internal object ArChannelSmoke {
                     val local = channels[0]; val guide = channels[1]
                     check(local.attach(field))
                     while (guide.state.value.remote == null) delay(10)
-                    check(!guide.clear())
-                    check(guide.join(field.sessionId))
+                    // Automatic join may already complete on the local SCTP loopback.
+                    if (!guide.state.value.joined) check(guide.join(field.sessionId))
                     while (!guide.state.value.joined) delay(10)
+                    while (!guide.state.value.remoteStrokeSupported) delay(10)
                     val id = UUID.randomUUID()
                     check(guide.create(id, MarkerKind.PIN, SpatialMarkerRequest(
                         VideoFrameReference(MediaTrack.BACK_CAMERA, 9001), VideoPoint(.2f, .7f))))
                     while (guide.state.value.lastResult?.id != id) delay(10)
                     check(field.creates == 1 && guide.state.value.lastResult?.rejection == null)
+                    val strokeId = UUID.randomUUID()
+                    val strokePoint = SpatialMarkerRequest(VideoFrameReference(MediaTrack.BACK_CAMERA, 9001), VideoPoint(.2f, .7f))
+                    check(guide.beginStroke(strokeId, strokePoint))
+                    check(guide.appendStroke(strokeId, listOf(strokePoint)))
+                    check(guide.endStroke(strokeId, false))
+                    while (guide.state.value.lastStrokeResult?.id != strokeId) delay(10)
+                    check(field.strokeMessages == 3 && guide.state.value.lastStrokeResult?.rejection == null)
                     check(guide.clear())
                     while (field.clears != 1) delay(10)
                     guide.leave()
@@ -113,6 +130,7 @@ internal object ArChannelSmoke {
                         override val sessionId = UUID.randomUUID()
                         override val depthSupported = false
                         override suspend fun execute(message: ArMessage): ArMessage.Result? = null
+                        override suspend fun executeStroke(message: ArStrokeMessage): ArStrokeMessage.Result? = null
                         override suspend fun close() { failureCloses++ }
                     }))
                     while (guide.state.value.remote == null) delay(10)

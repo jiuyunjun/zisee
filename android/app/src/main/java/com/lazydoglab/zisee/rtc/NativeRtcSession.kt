@@ -397,12 +397,17 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             } catch (_: Exception) { logger.error(AppEvent.RTC_CAPABILITY_UNAVAILABLE) }
         }
         control = requireNotNull(peer).createDataChannel("camera-state", DataChannel.Init().apply { negotiated = true; id = 0 })
-        arCollaboration = com.lazydoglab.zisee.ar.collaboration.ArDataChannel(
-            requireNotNull(requireNotNull(peer).createDataChannel(
+        val arChannel = requireNotNull(requireNotNull(peer).createDataChannel(
                 com.lazydoglab.zisee.ar.annotation.ArProtocol.CHANNEL_LABEL,
                 DataChannel.Init().apply { negotiated = true; id = 2; ordered = true },
-            )), dispatcher, arFieldCoordinator,
-        ) { logger.error(AppEvent.AR_CHANNEL_FAILED) }
+            ))
+        val arStrokeChannel = requireNotNull(requireNotNull(peer).createDataChannel(
+            com.lazydoglab.zisee.ar.annotation.ArStrokeProtocol.CHANNEL_LABEL,
+            DataChannel.Init().apply { negotiated = true; id = 4; ordered = true },
+        ))
+        arCollaboration = com.lazydoglab.zisee.ar.collaboration.ArDataChannel(
+            arChannel, dispatcher, arFieldCoordinator,
+            { logger.error(AppEvent.AR_CHANNEL_FAILED) }, arStrokeChannel)
         scope.launch {
             requireNotNull(arCollaboration).state.collect { collaboration ->
                 if (!released && collaboration.ownershipLost && arLeaseId != null) stopAr()
@@ -1431,23 +1436,28 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
 
     override suspend fun beginArStroke(identity: com.lazydoglab.zisee.ar.render.ArFrameIdentity,
         id: java.util.UUID, request: com.lazydoglab.zisee.ar.annotation.SpatialMarkerRequest): Boolean {
-        val local = arCapture ?: return false
-        if (identity.sessionId != local.sessionId || request.frame != identity.reference) return false
-        return local.beginLocalStroke(id, request)
+        if (request.frame != identity.reference) return false
+        val local = arCapture
+        return if (local != null && identity.sessionId == local.sessionId) local.beginLocalStroke(id, request)
+        else if (arCollaboration?.state?.value?.remote?.sessionId == identity.sessionId)
+            arCollaboration?.beginStroke(id, request) ?: false else false
     }
 
     override suspend fun appendArStroke(identity: com.lazydoglab.zisee.ar.render.ArFrameIdentity,
         id: java.util.UUID, requests: List<com.lazydoglab.zisee.ar.annotation.SpatialMarkerRequest>): Boolean {
-        val local = arCapture ?: return false
-        if (identity.sessionId != local.sessionId || requests.isEmpty() || requests.any { it.frame.track != identity.reference.track }) return false
-        return local.appendLocalStroke(id, requests)
+        if (requests.isEmpty() || requests.any { it.frame.track != identity.reference.track }) return false
+        val local = arCapture
+        return if (local != null && identity.sessionId == local.sessionId) local.appendLocalStroke(id, requests)
+        else if (arCollaboration?.state?.value?.remote?.sessionId == identity.sessionId)
+            arCollaboration?.appendStroke(id, requests) ?: false else false
     }
 
     override suspend fun endArStroke(identity: com.lazydoglab.zisee.ar.render.ArFrameIdentity,
         id: java.util.UUID, cancel: Boolean): Boolean {
-        val local = arCapture ?: return false
-        if (identity.sessionId != local.sessionId) return false
-        return local.endLocalStroke(id, cancel)
+        val local = arCapture
+        return if (local != null && identity.sessionId == local.sessionId) local.endLocalStroke(id, cancel)
+        else if (arCollaboration?.state?.value?.remote?.sessionId == identity.sessionId)
+            arCollaboration?.endStroke(id, cancel) ?: false else false
     }
 
     suspend fun removeArMarker(sessionId: java.util.UUID, id: java.util.UUID): Boolean {

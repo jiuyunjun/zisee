@@ -55,8 +55,16 @@ adb -s emulator-5556 shell am instrument -w -e arTap true com.lazydoglab.zisee.d
 
 - 原生 Instant Placement、历史 Depth 实际对齐、法线精度、特征覆盖率与 ARCore anchor 纠偏效果。
 - 真实视频上的本地拖绘全链路、取消/前后台竞争、丢失跟踪恢复、编号与视觉去重。
-- v2 网络同步、远端 Stroke 与性能指标。
+- v2 指导方 Stroke 已在 emulator-5554 通过真实 SCTP/DTLS 双 PeerConnection 回环；仍未验证真实双设备弱网、重连或性能指标。
 - Depth、无 Depth 和不支持 AR 的真机降级。
 - 双设备延迟、丢包、旋转、前后台与持续 10 分钟通话。
 
 这些项目必须在对应实现完成后补充真实结果，不能由 JVM 合成测试替代。
+
+## 指导方手绘检查点（2026-09-12）
+
+- JVM 覆盖 v2 所有消息往返、64 位帧时间戳、批次边界、非法字段/坐标/序号、能力门控、未加入请求、乱序批次和结果相关。
+- 完整任务 `:app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug :app:compileReleaseKotlin` 通过。
+- XML 结果共 344 个 JVM 测试，失败/错误 0；基础 instrumentation 也通过原生摄像头、ICE、编解码、发送端上限、ICE 重连与释放检查。
+- `emulator-5554 -e arChannel true` PASS，使用两个真实 PeerConnection/DataChannel 验证 v1 与 v2 并存及指导方 Stroke 往返；现场端为合成 endpoint，不代表 ARCore 落锚通过。
+- `emulator-5554 -e arTap true` PASS，新增 `ar-remote-guide` 场景确认指导方主画面出现手绘工具并切换到 Stroke 触摸层；预览没有 AR frame，只验证 UI 路由。

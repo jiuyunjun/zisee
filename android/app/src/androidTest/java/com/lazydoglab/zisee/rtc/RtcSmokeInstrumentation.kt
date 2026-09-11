@@ -155,7 +155,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
             }
             if (arChannel) {
                 ArChannelSmoke.run(targetContext)
-                output.putString("stream", "PASS: paired native AR data channels, join/create/result/clear/leave/ended and isolated cleanup; synthetic field only\n")
+                output.putString("stream", "PASS: paired native AR data channels, capability handshake, ordered stroke begin/append/end/result, v1 marker lifecycle and isolated cleanup; synthetic field only\n")
                 finish(Activity.RESULT_OK, output)
                 return
             }

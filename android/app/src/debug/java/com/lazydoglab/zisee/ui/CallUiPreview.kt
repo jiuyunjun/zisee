@@ -65,6 +65,7 @@ internal data class PreviewScenario(
     val fieldPeerJoined: Boolean = false,
     /** This end joined the peer's field, which is what enables marking on the peer's scene. */
     val joinedRemoteField: Boolean = false,
+    val remoteStrokeSupported: Boolean = false,
     val ownMarkers: Int = 0,
     val audioInterrupted: Boolean = false,
     val audioOnly: Boolean = false,
@@ -106,7 +107,8 @@ internal fun PreviewScenario.toUiState(feeds: List<VideoFeed>) = CallUiState(
         localSession = if (localMode == CameraMode.AR) PreviewFieldSession else null,
         fieldPeerJoined = localMode == CameraMode.AR && fieldPeerJoined,
         remote = if (remoteMode == CameraMode.AR) ArMessage.Ready(PreviewPeerSession, depthSupported = false) else null,
-        joined = remoteMode == CameraMode.AR && joinedRemoteField),
+        joined = remoteMode == CameraMode.AR && joinedRemoteField,
+        remoteStrokeSupported = remoteMode == CameraMode.AR && remoteStrokeSupported),
 )
 
 /**

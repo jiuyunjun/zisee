@@ -96,7 +96,7 @@
 | P1 | 新 PlacementResolver、保守深度邻域法线、平面边缘带分级、有界特征快照、历史射线估计、SCREEN_LOCKED TTL 已落地；原生 Instant Placement 仅允许本地当前精确帧；真机精度和资源预算待验收。 |
 | P2 | 本地 POINT、可选 native anchor、证据门控纠偏、表面环/编号 HUD、短期触摸 preview、删除/撤销基础已接通。远端仍走旧 v1；结果 revision 关联去重、选中删除 UI、完整超时同步待补。 |
 | P3 | 本地手绘入口、逐样本帧引用、距离重采样、Surface Lock、100 ms/5 cm 缺口限制、一笔一 anchor、Ribbon、整笔取消/撤销已接通。轻平滑、完整 Stroke 状态同步、真机长时绘制/性能验收仍待补。 |
-| P4 | 未实现 v2/远端 Stroke，远端 UI 不开放手绘；现有 v1 原生通道回归通过。 |
+| P4 | 指导方 Stroke 的独立 v2 通道、能力握手、顺序批次、现场权限/执行、权威结果和背压已接通；旧端保持 v1 且不显示手绘。完整内容 revision、重入分页快照和跨连接幂等仍待实现。 |
 | P5 | JVM、构建/lint、模拟器 GPU/帧池/旧通道/点击入口通过；无本次真机或双设备性能验收。 |
 | P6 | 尚未开始；旧 ARROW/CIRCLE 仍是单点图形，不是方向 Arrow/Region。 |
 

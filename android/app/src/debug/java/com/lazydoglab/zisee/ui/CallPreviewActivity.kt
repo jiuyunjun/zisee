@@ -71,6 +71,8 @@ class CallPreviewActivity : ComponentActivity() {
                 arState = ArSessionState.TRACKING, arNotice = "对方已加入，可以共同放置标记。", ownMarkers = 2)
             "ar-late-tracking" -> PreviewScenario(localMode = CameraMode.AR, remoteMode = remoteMode,
                 arState = ArSessionState.SCANNING, trackAfterMs = 1_000)
+            "ar-remote-guide" -> PreviewScenario(remoteMode = CameraMode.AR, joinedRemoteField = true,
+                remoteStrokeSupported = true, selectedVideoSource = CallVideoLayout.PeerScene)
             "more" ->PreviewScenario(localMode = localMode, remoteMode = remoteMode, openMore = true)
             else -> PreviewScenario(localMode = localMode, remoteMode = remoteMode)
         }

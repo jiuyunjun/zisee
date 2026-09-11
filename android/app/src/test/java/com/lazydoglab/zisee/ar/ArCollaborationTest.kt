@@ -16,10 +16,15 @@ class ArCollaborationTest {
     private class Field(override val sessionId: UUID) : ArFieldEndpoint {
         override val depthSupported = true
         val commands = mutableListOf<ArMessage>()
+        val strokes = mutableListOf<ArStrokeMessage>()
         var closes = 0
         override suspend fun execute(message: ArMessage): ArMessage.Result? {
             commands.add(message)
             return (message as? ArMessage.Create)?.let { ArMessage.Result(sessionId, it.id, SpatialRejection.FRAME_MISSING) }
+        }
+        override suspend fun executeStroke(message: ArStrokeMessage): ArStrokeMessage.Result? {
+            strokes.add(message)
+            return if (message is ArStrokeMessage.End) ArStrokeMessage.Result(sessionId, message.id, null) else null
         }
         override suspend fun close() { closes++ }
     }
@@ -190,26 +195,95 @@ class ArCollaborationTest {
     @Test fun `field clear and revoke are reflected by the guide`() = runBlocking {
         val fieldSent = mutableListOf<ArMessage>()
         val guideSent = mutableListOf<ArMessage>()
-        val field = ArCollaboration { fieldSent.add(it) }
+        val endpoint = Field(epoch)
+        val field = ArCollaboration(false, { true }, { fieldSent.add(it) })
         val guide = ArCollaboration { guideSent.add(it) }
         field.connected(); guide.connected()
-        assertTrue(field.attach(Field(epoch)))
+        assertTrue(field.attach(endpoint))
         guide.receive(ArMessage.Ready(epoch, true))
         assertEquals(listOf(ArMessage.Join(epoch)), guideSent)
         field.receive(ArMessage.Join(epoch))
         guide.receive(ArMessage.Joined(epoch))
         assertTrue(field.state.value.fieldPeerJoined)
         assertTrue(guide.state.value.joined)
+        field.strokeConnected(true)
+        val activeStroke = UUID.randomUUID()
+        field.receiveStroke(ArStrokeMessage.Begin(epoch, activeStroke, request()))
         assertTrue(field.announceFieldClear())
         guide.receive(ArMessage.Clear(epoch))
         assertEquals(1, guide.state.value.fieldClearRevision)
         assertTrue(field.revokeGuide())
+        assertEquals(ArStrokeMessage.Cancel(epoch, activeStroke), endpoint.strokes.last())
         guide.receive(ArMessage.Leave(epoch))
         assertFalse(field.state.value.fieldPeerJoined)
         assertFalse(guide.state.value.joined)
         guide.receive(ArMessage.Ready(epoch, true))
         assertEquals(listOf(ArMessage.Join(epoch)), guideSent)
         field.close(); guide.close()
+    }
+
+    @Test fun `guide stroke requires v2 and joined field and preserves ordered batches`() = runBlocking {
+        val v1 = mutableListOf<ArMessage>(); val v2 = mutableListOf<ArStrokeMessage>()
+        val guide = ArCollaboration(false, { v2.add(it) }, { v1.add(it) })
+        guide.connected(); guide.receive(ArMessage.Ready(epoch, true)); guide.receive(ArMessage.Joined(epoch))
+        val id = UUID.randomUUID()
+        assertFalse(guide.beginStroke(id, request()))
+        guide.strokeConnected(true)
+        assertTrue(guide.beginStroke(id, request()))
+        assertTrue(guide.appendStroke(id, listOf(request())))
+        assertTrue(guide.endStroke(id, false))
+        assertEquals(listOf(ArStrokeMessage.Begin(epoch, id, request()),
+            ArStrokeMessage.Append(epoch, id, 0, listOf(request())), ArStrokeMessage.End(epoch, id, 1)), v2)
+        guide.receiveStroke(ArStrokeMessage.Result(epoch, id, null))
+        assertEquals(id, guide.state.value.lastStrokeResult?.id)
+        assertFalse(guide.endStroke(id, false))
+    }
+
+    @Test fun `guide stroke enforces the total point budget rather than the batch count`() = runBlocking {
+        val sent = mutableListOf<ArStrokeMessage>()
+        val guide = ArCollaboration(false, { sent.add(it) }, { true })
+        guide.connected(); guide.receive(ArMessage.Ready(epoch, true)); guide.receive(ArMessage.Joined(epoch))
+        guide.strokeConnected(true)
+        val id = UUID.randomUUID(); assertTrue(guide.beginStroke(id, request()))
+        val batch = List(AnnotationBudget.MAX_BATCH_POINTS) { request() }
+        repeat(31) { assertTrue(guide.appendStroke(id, batch)) }
+        assertFalse(guide.appendStroke(id, batch))
+        assertTrue(guide.endStroke(id, false))
+        assertEquals(31, (sent.last() as ArStrokeMessage.End).sequence)
+    }
+
+    @Test fun `field rejects unsolicited and out of sequence stroke mutations`() = runBlocking {
+        val sent = mutableListOf<ArStrokeMessage>(); val field = Field(epoch)
+        val local = ArCollaboration(false, { sent.add(it) }, { true })
+        assertTrue(local.attach(field)); local.connected(); local.strokeConnected(true)
+        val id = UUID.randomUUID(); val begin = ArStrokeMessage.Begin(epoch, id, request())
+        local.receiveStroke(begin)
+        assertTrue(field.strokes.isEmpty())
+        local.receive(ArMessage.Join(epoch)); local.receiveStroke(begin)
+        local.receiveStroke(ArStrokeMessage.Append(epoch, id, 1, listOf(request())))
+        local.receiveStroke(ArStrokeMessage.Append(epoch, id, 0, listOf(request())))
+        local.receiveStroke(ArStrokeMessage.End(epoch, id, 1))
+        assertEquals(listOf(begin, ArStrokeMessage.Append(epoch, id, 0, listOf(request())),
+            ArStrokeMessage.End(epoch, id, 1)), field.strokes)
+        assertEquals(ArStrokeMessage.Result(epoch, id, null), sent.last())
+
+        val interrupted = UUID.randomUUID()
+        local.receiveStroke(ArStrokeMessage.Begin(epoch, interrupted, request()))
+        local.strokeConnected(false)
+        assertEquals(ArStrokeMessage.Cancel(epoch, interrupted), field.strokes.last())
+        assertFalse(local.state.value.remoteStrokeSupported)
+    }
+
+    @Test fun `field cancels a remote stroke that exceeds the total point budget`() = runBlocking {
+        val sent = mutableListOf<ArStrokeMessage>(); val endpoint = Field(epoch)
+        val field = ArCollaboration(false, { sent.add(it) }, { true })
+        assertTrue(field.attach(endpoint)); field.connected(); field.strokeConnected(true); field.receive(ArMessage.Join(epoch))
+        val id = UUID.randomUUID(); field.receiveStroke(ArStrokeMessage.Begin(epoch, id, request()))
+        val batch = List(AnnotationBudget.MAX_BATCH_POINTS) { request() }
+        repeat(31) { sequence -> field.receiveStroke(ArStrokeMessage.Append(epoch, id, sequence, batch)) }
+        field.receiveStroke(ArStrokeMessage.Append(epoch, id, 31, batch))
+        assertEquals(ArStrokeMessage.Cancel(epoch, id), endpoint.strokes.last())
+        assertEquals(ArStrokeMessage.Result(epoch, id, SpatialRejection.LIMIT_REACHED), sent.last())
     }
 
     @Test fun `session lifecycle messages round trip and reject extra fields`() {

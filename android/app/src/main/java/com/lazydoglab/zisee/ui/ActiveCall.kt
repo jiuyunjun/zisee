@@ -219,9 +219,11 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                     com.lazydoglab.zisee.ar.session.ArSessionState.SCANNING)
             val remoteArMarking = main == PeerScene && state.remotePresentation.mode == CameraMode.AR &&
                 state.arCollaboration.joined
+            val strokeAvailable = localArMarking || remoteArMarking && state.arCollaboration.remoteStrokeSupported
             val compactHeight = maxHeight < 420.dp
-            LaunchedEffect(localArMarking, remoteArMarking) {
+            LaunchedEffect(localArMarking, remoteArMarking, strokeAvailable) {
                 if (!localArMarking && !remoteArMarking) arToolsHeight = 0.dp
+                if (!strokeAvailable) arDrawing = false
             }
             val thumbs = order.filter { it != main }
             // Report the resolved main view, including the automatic Show Me choice.
@@ -333,7 +335,8 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                 VideoTile(if (state.remotePresentation.mode in setOf(CameraMode.DUAL, CameraMode.AR)) state.remoteBack else state.remote,
                     state.remotePresentation.enabled && (PeerScene == main || PeerScene !in parked),
                     slot(PeerScene, video = true), PeerScene != main, corner(PeerScene),
-                    if (remoteArMarking) { frame, point -> onArMarker(frame, point, arKind) } else null)
+                    if (remoteArMarking && !arDrawing) { frame, point -> onArMarker(frame, point, arKind) } else null,
+                    if (remoteArMarking && arDrawing && state.arCollaboration.remoteStrokeSupported) onArStroke else null)
             }
             if (PeerScreen in order) {
                 VideoTile(state.remoteScreen, state.remoteShare.sharing && (PeerScreen == main || PeerScreen !in parked),
@@ -454,7 +457,7 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                         interaction++; arKind = kind; arDrawing = false
                     }
                 }
-                if (localArMarking) ArToolIcon("手绘", "ar-pen", active = arDrawing) { interaction++; arDrawing = true }
+                if (strokeAvailable) ArToolIcon("手绘", "ar-pen", active = arDrawing) { interaction++; arDrawing = true }
                 ArToolIcon("撤销", "ar-undo", enabled = state.arOwnMarkerCount > 0) { interaction++; onArUndo() }
                 ArToolIcon("清除我的", "ar-trash", enabled = state.arOwnMarkerCount > 0) { interaction++; confirmArClear = true }
                 if (localArMarking) ArToolIcon("停止 AR", "ar-stop", danger = true, onClick = onStopAr)
