@@ -40,6 +40,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private val dispatcher = Executors.newSingleThreadExecutor { Thread(it, "ZiseeRtc") }.asCoroutineDispatcher()
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
     override val iceState = MutableStateFlow(IceState.NEW)
+    private val mutableLocalArStrokeSupported = MutableStateFlow(false)
+    override val localArStrokeSupported = mutableLocalArStrokeSupported.asStateFlow()
     private var egl: EglBase? = null
     private var factory: PeerConnectionFactory? = null
     private var audioModule: JavaAudioDeviceModule? = null
@@ -1385,12 +1387,14 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 capture.close()
                 return@withContext false
             }
+            mutableLocalArStrokeSupported.value = true
             backTrack?.setEnabled(cameraEnabled)
             presentationMode = CameraMode.AR
             showMe.value = ShowMeState(CameraMode.AR)
             sendPresentation()
             true
         } catch (_: Exception) {
+            mutableLocalArStrokeSupported.value = false
             logger.error(AppEvent.AR_CHANNEL_FAILED)
             mutableArState.value = com.lazydoglab.zisee.ar.session.ArSessionState.FAILED
             try { arCapture?.close() } catch (_: Exception) { logger.error(AppEvent.AR_CHANNEL_FAILED) }
@@ -1425,6 +1429,27 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         }
     }
 
+    override suspend fun beginArStroke(identity: com.lazydoglab.zisee.ar.render.ArFrameIdentity,
+        id: java.util.UUID, request: com.lazydoglab.zisee.ar.annotation.SpatialMarkerRequest): Boolean {
+        val local = arCapture ?: return false
+        if (identity.sessionId != local.sessionId || request.frame != identity.reference) return false
+        return local.beginLocalStroke(id, request)
+    }
+
+    override suspend fun appendArStroke(identity: com.lazydoglab.zisee.ar.render.ArFrameIdentity,
+        id: java.util.UUID, requests: List<com.lazydoglab.zisee.ar.annotation.SpatialMarkerRequest>): Boolean {
+        val local = arCapture ?: return false
+        if (identity.sessionId != local.sessionId || requests.isEmpty() || requests.any { it.frame.track != identity.reference.track }) return false
+        return local.appendLocalStroke(id, requests)
+    }
+
+    override suspend fun endArStroke(identity: com.lazydoglab.zisee.ar.render.ArFrameIdentity,
+        id: java.util.UUID, cancel: Boolean): Boolean {
+        val local = arCapture ?: return false
+        if (identity.sessionId != local.sessionId) return false
+        return local.endLocalStroke(id, cancel)
+    }
+
     suspend fun removeArMarker(sessionId: java.util.UUID, id: java.util.UUID): Boolean {
         val local = arCapture
         return if (local != null && local.sessionId == sessionId) local.removeLocalMarker(id)
@@ -1441,6 +1466,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
 
     suspend fun stopAr() = withContext(dispatcher + kotlinx.coroutines.NonCancellable) {
         arStopRequested = true
+        mutableLocalArStrokeSupported.value = false
         arStarting?.await()
         try { arCollaboration?.detach() }
         finally {

@@ -2,6 +2,7 @@ package com.lazydoglab.zisee.rtc
 
 import com.lazydoglab.zisee.media.MediaTrack
 import kotlinx.coroutines.flow.Flow
+import java.util.UUID
 
 enum class IceState { NEW, CHECKING, CONNECTED, DISCONNECTED, FAILED, CLOSED }
 
@@ -11,7 +12,15 @@ enum class IceState { NEW, CHECKING, CONNECTED, DISCONNECTED, FAILED, CLOSED }
  */
 interface RtcSession {
     val iceState: Flow<IceState>
+    /** True only while this endpoint owns a live local AR capture. Remote v1 peers do not expose Stroke. */
+    val localArStrokeSupported: Flow<Boolean>
     suspend fun setTrackEnabled(track: MediaTrack, enabled: Boolean)
     suspend fun restartIce()
+    suspend fun beginArStroke(identity: com.lazydoglab.zisee.ar.render.ArFrameIdentity, id: UUID,
+        request: com.lazydoglab.zisee.ar.annotation.SpatialMarkerRequest): Boolean
+    suspend fun appendArStroke(identity: com.lazydoglab.zisee.ar.render.ArFrameIdentity, id: UUID,
+        requests: List<com.lazydoglab.zisee.ar.annotation.SpatialMarkerRequest>): Boolean
+    suspend fun endArStroke(identity: com.lazydoglab.zisee.ar.render.ArFrameIdentity, id: UUID,
+        cancel: Boolean): Boolean
     suspend fun release()
 }
