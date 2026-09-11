@@ -40,6 +40,11 @@ class ComputeQualityPolicyTest {
         assertEquals(ComputeLevel.C1, p.decision.level)
     }
 
+    @Test fun callbackP95ProtectsAgainstAHealthyMeanHidingTailLatency() {
+        assertEquals(ComputeLevel.C0, ComputeQualityPolicy().update(good(0).copy(encodeCallbackP95Ms = 25.0)).level)
+        assertEquals(ComputeLevel.C1, ComputeQualityPolicy().update(good(0).copy(encodeCallbackP95Ms = Double.NaN)).level)
+    }
+
     @Test fun burstExpiresAndCannotBeExtended() {
         val p = ComputeQualityPolicy(); warmUp(p)
         assertTrue(p.requestBurst(52_000))

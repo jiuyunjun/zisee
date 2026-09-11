@@ -2,6 +2,8 @@
 
 > Android 实现进度（2026-09-11）：已落地 P0 控制器、GPU 面积缩放、因果时域降噪，以及基础场景/发送 FPS 策略。Debug 默认开启，可用 `-Pzisee.computeQuality=false` 构建对照组；Release 暂关闭。ROI、硬编 complexity、接收端 SR 等尚未实现，不将设计目标等同于已交付能力。持续状态、验证及下一步见 [专项 handoff](../development/COMPUTE_QUALITY_HANDOFF.md)。
 
+> 第二步已接入 Java 硬件编码器的 encode→callback P50/P95/P99 与可选 QP，保留 AR SEI 和 native 软件 fallback。该分位数包含编码器排队/调度，不能解释为纯 MediaCodec 内部执行时间；不可观测的 native-only 软件路径保持未知。
+
 ## 1. 目标
 
 传统实时视频系统主要围绕三个变量做自适应：

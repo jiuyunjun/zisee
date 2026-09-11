@@ -13,14 +13,19 @@ import java.util.concurrent.ConcurrentLinkedQueue
 
 /** Real PeerConnection, H264 packetization and MediaCodec; synthetic RGB camera pixels. */
 internal object ArVideoIdentitySmoke {
-    fun run(context: Context, instrumentation: android.app.Instrumentation, display: Boolean, waitForForeground: Boolean) = runBlocking {
+    fun run(context: Context, instrumentation: android.app.Instrumentation, display: Boolean, waitForForeground: Boolean,
+        measureEncoding: Boolean = false) = runBlocking {
         PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(context).createInitializationOptions())
         val activity = if (display) ArTestActivityLauncher.open(instrumentation, waitForForeground) else null
         val egl = EglBase.create()
         val renderer = activity?.renderer
+        val encoderTelemetry = com.lazydoglab.zisee.rtc.compute.EncoderTelemetry()
+        val frameSources = com.lazydoglab.zisee.rtc.compute.FrameSourceRegistry()
         instrumentation.runOnMainSync { renderer?.init(egl.eglBaseContext) }
         val factory = PeerConnectionFactory.builder()
-            .setVideoEncoderFactory(ArEncoderFactory(egl.eglBaseContext))
+            .setVideoEncoderFactory(ArEncoderFactory(egl.eglBaseContext,
+                if (measureEncoding) { info, encoder -> com.lazydoglab.zisee.rtc.compute.MeasuredVideoEncoder(
+                    encoder, info.name, encoderTelemetry, frameSources) } else null))
             .setVideoDecoderFactory(ArDecoderFactory(egl.eglBaseContext))
             .createPeerConnectionFactory()
         val helper = requireNotNull(SurfaceTextureHelper.create("ArIdentityTest", egl.eglBaseContext))
@@ -28,6 +33,8 @@ internal object ArVideoIdentitySmoke {
         val drained = CompletableDeferred<Unit>()
         val pool = withContext(gl) { ArFramePool(helper.handler) { helper.dispose(); drained.complete(Unit) } }
         val source = factory.createVideoSource(false)
+        if (measureEncoding) source.setVideoProcessor(com.lazydoglab.zisee.rtc.compute.SourceTimestampProcessor(
+            frameSources, MediaTrack.BACK_CAMERA.wireId))
         val track = factory.createVideoTrack(MediaTrack.BACK_CAMERA.wireId, source)
         val session = UUID.randomUUID()
         val expected = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
@@ -97,6 +104,14 @@ internal object ArVideoIdentitySmoke {
                     delay(40)
                 }
                 received.await()
+                if (measureEncoding) {
+                    val timing = encoderTelemetry.snapshot(System.nanoTime()).firstOrNull {
+                        it.trackId == MediaTrack.BACK_CAMERA.wireId && it.codec.equals("H264", true)
+                    }
+                    check(timing != null && timing.samples > 0 && timing.callbackP95Ms != null) {
+                        "AR identity arrived without attributable Java encoder timing"
+                    }
+                }
                 if (renderer != null) {
                     while (renderer.displayedArFrame.value == null) delay(20)
                     val displayed = requireNotNull(renderer.displayedArFrame.value)

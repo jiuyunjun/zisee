@@ -64,7 +64,7 @@
 | 高质量缩放/降噪 | 已接前后摄；16 tap 面积采样和运动/边缘门控，不是光流补偿或 AI SR |
 | Scene/low-light | 亮度/运动启发式已接入 ACTIVE camera plan 的发送 FPS；未做曝光控制、人脸/手部识别 |
 | ROI/complexity | 未实现；需要可维护的 WebRTC MediaCodec 配置扩展，以及能力检测/拒绝回退和设备验证 |
-| Codec profile/QP/P95 encode | 原硬编选择保留；encodeMs 是 RTC 区间均值，未新增原始编码耗时分位数/逐帧 QP |
+| Codec profile/QP/P95 encode | Java 硬件路径已增加 encode→callback P50/P95/P99 和可选逐帧 QP；原生软件不可观测时保持未知/RTC mean。纯 MediaCodec 内部耗时与 DeviceProfile 尚未实现 |
 | Receiver SR/去伪影 | 未实现；没有引入模型或伪装双线性缩放为 SR；需要独立 receiver budget 和窗口可见性策略 |
 | P3 ML concealment | 未实现；设计本身列为可选，不生成不存在的内容 |
 | DeviceProfile/客观画质评分 | 尚未建立真机基准数据库；当前只有在线处理延迟与确定性合成 GPU 测试 |
@@ -101,4 +101,12 @@
 - 已读 `ar/render/ArVideoCodecs.kt`：现有 ArEncoderFactory 对 Java 硬件 H264 包装 AR SEI，其他 codec 返回 DefaultVideoEncoderFactory；软件回退是 WrappedNativeVideoEncoder，不能盲目套 Java encode/callback 包装器。
 - 计划在 Java 硬件编码器边界记录 encode 调用至 encoded callback 的耗时分布与 QP，不能把它称为 MediaCodec 纯内部耗时；保留原生软件回退和 AR 身份。
 - 设备能力记录与真机实测画像区分。不能仅凭 codec 名字/复杂度 range 就认为动态配置可用。
-- 尚未写下一阶段实现代码，首阶段代码仍为 2d68091；接手从上述文件及 rtc/compute 目录继续。
+- 本步实现完成：EncoderTimingWindow/FrameSourceRegistry、MeasuredVideoEncoder、SourceTimestampProcessor；Java 硬件包装位于 VideoEncoderFallback 内，H264 外层仍保留 AR SEI 包装。
+- CameraQualityProcessor 在增强/旁路两种情况下均记录 source timestamp；屏幕仅装 identity-only observer，不做相机滤波；GPU 初始化失败也回到 identity-only observer。
+- 观测保留最近 2 秒、120 个完成样本、128 个 pending、256 个 source timestamp；冲突归属为未知。记录 callback P50/P95/P99 和可选原始 QP，不保存媒体 payload。
+- 调试详情显示每个编码实例与 track 的分位数/QP。可归属且 >=10 个样本的 callback P95 优先用于 compute budget；native-only 软件编码保持原样，缺失时仍使用 RTC mean，不假报 P95。
+- 新增纯单测已通过：分位数、乱序回调、拒绝/重复/超时、有界窗口、双摄归属冲突、原始帧/编码图像引用保持、初始化/释放、screen 纯观察、P95 压力保护，以及 MeasuredVideoEncoder→ArVideoEncoder 组合的 SEI/QP/引用保持。
+- 完整 Debug/AndroidTest 构建、Release Kotlin 编译、lint 已通过；新增组合单测后全量 **272 项单测通过，0 failures/errors/skipped**。
+- 新增 `-e encoderTiming true` 仪器路径：合成 AR RGB→H264→RTP→decode，既验证 AR identity 保留又要求真实 Java 编码回调能归属 back track。模拟器执行 **FAIL: H264 unavailable**，止于前置 codec 能力检查（尚未进入编码）；不是测得 encoder callback 成功，必须在支持 H264 的真机补测。
+- `-e computeQuality true` 在新版本回归 PASS。软件回退 native 回环也 PASS（实际收帧、ICE restart、资源释放；模拟器首帧过预算退出增强）。没有为通过测试强开不支持的 H264，也没有把硬件失败改成测试成功。
+- 本步提交意图：`feat: observe per-track encoder callback latency and qp`。接下来实现设备能力记录与测量画像的明确分层，不盲目启用 complexity。

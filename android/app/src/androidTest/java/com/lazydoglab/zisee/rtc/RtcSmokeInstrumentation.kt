@@ -27,6 +27,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
     private var thumbnailSwaps = false
     private var arTap = false
     private var computeQuality = false
+    private var encoderTiming = false
     private var capabilities = false
     private var orientationPreview = false
     private var callUiPreview = false
@@ -47,6 +48,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
         thumbnailSwaps = arguments?.getString("thumbnailSwaps") == "true"
         arTap = arguments?.getString("arTap") == "true"
         computeQuality = arguments?.getString("computeQuality") == "true"
+        encoderTiming = arguments?.getString("encoderTiming") == "true"
         capabilities = arguments?.getString("capabilities") == "true"
         orientationPreview = arguments?.getString("orientationPreview") == "true"
         callUiPreview = arguments?.getString("callUiPreview") == "true"
@@ -109,9 +111,9 @@ class RtcSmokeInstrumentation : Instrumentation() {
                 finish(Activity.RESULT_OK, output)
                 return
             }
-            if (arVideoIdentity || arDisplayedIdentity) {
-                ArVideoIdentitySmoke.run(targetContext, this, arDisplayedIdentity, waitForForeground)
-                output.putString("stream", "PASS: synthetic AR RGB source through native H264 RTP and decoder with exact source identity; surface assertion=$arDisplayedIdentity\n")
+            if (arVideoIdentity || arDisplayedIdentity || encoderTiming) {
+                ArVideoIdentitySmoke.run(targetContext, this, arDisplayedIdentity, waitForForeground, encoderTiming)
+                output.putString("stream", "PASS: synthetic AR RGB source through native H264 RTP and decoder with exact source identity; surface assertion=$arDisplayedIdentity; measured encoder=$encoderTiming\n")
                 finish(Activity.RESULT_OK, output)
                 return
             }

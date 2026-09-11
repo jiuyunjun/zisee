@@ -52,6 +52,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private val frontComputePolicy = ComputeQualityPolicy()
     private val backComputePolicy = ComputeQualityPolicy()
     private val computeTelemetry = ComputeTelemetry(context, logger)
+    private val encoderTelemetry = EncoderTelemetry()
+    private val frameSources = FrameSourceRegistry()
     private var audioSource: AudioSource? = null
     private var videoTrack: VideoTrack? = null
     private var audioTrack: AudioTrack? = null
@@ -276,7 +278,10 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         factory = PeerConnectionFactory.builder().setAudioDeviceModule(audioModule)
             .setAudioProcessingFactory(processingFactory)
             .setOptions(options)
-            .setVideoEncoderFactory(com.lazydoglab.zisee.ar.render.ArEncoderFactory(shared))
+            .setVideoEncoderFactory(com.lazydoglab.zisee.ar.render.ArEncoderFactory(shared,
+                if (BuildConfig.VIDEO_COMPUTE_QUALITY) { info, encoder ->
+                    MeasuredVideoEncoder(encoder, info.name, encoderTelemetry, frameSources)
+                } else null))
             .setVideoDecoderFactory(com.lazydoglab.zisee.ar.render.ArDecoderFactory(shared)).createPeerConnectionFactory()
         val servers = iceServers.map { entry ->
             PeerConnection.IceServer.builder(entry.urls)
@@ -366,6 +371,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         // and the queue that drives one only exists for the initial caller-role exchange.
         // isScreencast keeps libwebrtc from trading resolution away on a still page of text.
         screenSource = requireNotNull(factory).createVideoSource(true)
+        if (BuildConfig.VIDEO_COMPUTE_QUALITY) screenSource?.setVideoProcessor(
+            SourceTimestampProcessor(frameSources, MediaTrack.SCREEN.wireId))
         localScreenFeed = VideoFeed(shared, false)
         remoteScreenFeed = VideoFeed(shared, false)
         screenTrack = requireNotNull(factory).createVideoTrack(MediaTrack.SCREEN.wireId, screenSource).also {
@@ -502,6 +509,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                     }
                     sampledStats.value = observed.copy(quality = appliedQuality ?: VideoQuality.HD,
                         computeQuality = computeDiagnostics(),
+                        encoderTiming = encoderTelemetry.snapshot(System.nanoTime()),
                         audioProcessing = audioProcessing.stats(), audioDevice = callAudio.state.value,
                         audioBandwidth = audioBandwidth.mode)
                     missing = false
@@ -532,14 +540,22 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
 
     private fun installQualityProcessor(source: VideoSource, shared: EglBase.Context, name: String): CameraQualityProcessor? {
         if (!BuildConfig.VIDEO_COMPUTE_QUALITY) return null
-        return try { CameraQualityProcessor(shared, logger, name).also { source.setVideoProcessor(it) } }
-        catch (error: RuntimeException) { logger.error(AppEvent.RTC_COMPUTE_UNAVAILABLE); null }
+        val trackId = if (name == "front") MediaTrack.FRONT_CAMERA.wireId else MediaTrack.BACK_CAMERA.wireId
+        return try { CameraQualityProcessor(shared, logger, name,
+            onSourceFrame = { timestamp -> frameSources.record(timestamp, trackId, System.nanoTime()) })
+            .also { source.setVideoProcessor(it) } }
+        catch (error: RuntimeException) {
+            logger.error(AppEvent.RTC_COMPUTE_UNAVAILABLE)
+            source.setVideoProcessor(SourceTimestampProcessor(frameSources, trackId))
+            null
+        }
     }
 
     private fun updateComputeQuality(stats: MediaStats?, environment: ComputeInput?) {
         if (environment == null) return
         // RTCStats is timestamped after its asynchronous callback, later than the thermal read.
         val nowMs = System.nanoTime() / 1_000_000
+        val timings = encoderTelemetry.snapshot(System.nanoTime())
         fun update(processor: CameraQualityProcessor?, policy: ComputeQualityPolicy, id: String) {
             processor ?: return
             val track = stats?.outboundVideo?.get(id)
@@ -550,7 +566,9 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 fps = track?.fps?.toInt()?.coerceAtLeast(1) ?: 30,
                 cpuLimited = track?.qualityLimitation == "cpu" || processor.stats.failed,
                 preprocessP95Ms = processor.stats.p95Ms?.takeIf { processor.stats.frames >= 30 },
-                sampleFresh = fresh))
+                sampleFresh = fresh,
+                encodeCallbackP95Ms = timings.filter { it.trackId == id && it.samples >= 10 }
+                    .mapNotNull { it.callbackP95Ms }.maxOrNull()))
             processor.decision = next
             if (old != next) logger.info(AppEvent.RTC_COMPUTE_PLAN,
                 "$id:${next.level}:${next.reason}:p95us=${processor.stats.p95Ms?.times(1000)?.toLong() ?: -1}")
@@ -1658,6 +1676,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             cleanup { camera?.stopCapture() }
             cleanup { videoSource?.setVideoProcessor(null) }
             cleanup { backSource?.setVideoProcessor(null) }
+            cleanup { screenSource?.setVideoProcessor(null) }
             cleanup { frontQualityProcessor?.close() }; frontQualityProcessor = null
             cleanup { backQualityProcessor?.close() }; backQualityProcessor = null
             cleanup { remoteTrack?.removeSink(remoteFeed) }
@@ -1680,6 +1699,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             cleanup { audioSource?.dispose() }; audioSource = null
             cleanup { texture?.dispose() }; texture = null
             cleanup { factory?.dispose() }; factory = null
+            frameSources.clear()
             if (ownsAudioProcessing) {
                 cleanup { com.lazydoglab.zisee.rtc.audio.processing.SharedAudioProcessing.release(audioProcessing) }
                 ownsAudioProcessing = false

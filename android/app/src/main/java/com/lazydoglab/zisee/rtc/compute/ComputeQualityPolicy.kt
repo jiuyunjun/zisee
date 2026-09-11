@@ -23,6 +23,8 @@ data class ComputeInput(
     val cpuLimited: Boolean = false,
     val preprocessP95Ms: Double? = null,
     val sampleFresh: Boolean = true,
+    /** Encode entry through callback P95 includes codec scheduling, unlike the RTC interval mean. */
+    val encodeCallbackP95Ms: Double? = null,
 )
 
 /** Conservative starting heuristics; fast down, 25 seconds of continuous evidence per upshift.
@@ -48,7 +50,8 @@ class ComputeQualityPolicy {
         if (gap) { pending = null; burstUntil = 0 }
         lastMs = input.nowMs
         val headroom = input.forecastHeadroom?.takeIf { it.isFinite() && it >= 0f }
-        val encode = input.encodeMs?.takeIf { it.isFinite() && it >= 0 }
+        val encode = input.encodeCallbackP95Ms?.takeIf { it.isFinite() && it >= 0 }
+            ?: input.encodeMs?.takeIf { it.isFinite() && it >= 0 }
         val preprocess = input.preprocessP95Ms?.takeIf { it.isFinite() && it >= 0 }
         val frameBudget = 1_000.0 / input.fps.coerceIn(1, 60)
         val (ceiling, reason) = when {

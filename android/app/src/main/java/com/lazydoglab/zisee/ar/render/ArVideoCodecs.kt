@@ -3,15 +3,19 @@ package com.lazydoglab.zisee.ar.render
 import org.webrtc.*
 
 /** Wrap only Java H264 codecs. Other codecs and native software fallbacks keep ordinary video. */
-class ArEncoderFactory(shared: EglBase.Context) : VideoEncoderFactory {
+class ArEncoderFactory(shared: EglBase.Context,
+    private val decorateHardware: ((VideoCodecInfo, VideoEncoder) -> VideoEncoder)? = null) : VideoEncoderFactory {
     private val defaults = DefaultVideoEncoderFactory(shared, true, true)
     private val hardware = HardwareVideoEncoderFactory(shared, true, true)
     override fun getSupportedCodecs(): Array<VideoCodecInfo> = defaults.supportedCodecs
     override fun createEncoder(info: VideoCodecInfo): VideoEncoder? {
-        if (!info.name.equals("H264", ignoreCase = true)) return defaults.createEncoder(info)
+        val h264 = info.name.equals("H264", ignoreCase = true)
+        if (!h264 && decorateHardware == null) return defaults.createEncoder(info)
         val encoder = hardware.createEncoder(info) ?: return defaults.createEncoder(info)
         val software = SoftwareVideoEncoderFactory().createEncoder(info)
-        return if (software == null) ArVideoEncoder(encoder) else VideoEncoderFallback(software, ArVideoEncoder(encoder))
+        val tagged = if (h264) ArVideoEncoder(encoder) else encoder
+        val decorated = decorateHardware?.invoke(info, tagged) ?: tagged
+        return if (software == null) decorated else VideoEncoderFallback(software, decorated)
     }
 }
 

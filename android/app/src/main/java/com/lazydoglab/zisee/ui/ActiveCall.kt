@@ -642,6 +642,11 @@ private fun CallOptions(state: CallUiState, onDismiss: () -> Unit, onSwitch: () 
                 stats.computeQuality.forEach { (track, detail) ->
                     Text("视频计算 $track · $detail", style = MaterialTheme.typography.bodySmall, color = CallMuted)
                 }
+                stats.encoderTiming.forEach { timing ->
+                    Text("编码回调 ${timing.trackId ?: "未归属"}/${timing.codec} · ${timing.samples} 帧\n" +
+                        "P50/95/99 ${timing.callbackP50Ms?.toInt()}/${timing.callbackP95Ms?.toInt()}/${timing.callbackP99Ms?.toInt()} ms · QP ${timing.qpMean?.toInt() ?: "—"}",
+                        style = MaterialTheme.typography.bodySmall, color = CallMuted)
+                }
                 val processing = stats.audioProcessing
                 Text("音频 ${stats.audioDevice.state} · 输入 ${stats.audioDevice.input} · 输出 ${stats.audioDevice.output}\n" +
                     "AEC 软件 · ${processing.engine} · ${processing.state}\n" +

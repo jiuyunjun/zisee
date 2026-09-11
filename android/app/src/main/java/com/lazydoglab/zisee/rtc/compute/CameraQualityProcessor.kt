@@ -14,6 +14,7 @@ data class PreprocessStats(val frames: Long = 0, val bypassed: Long = 0, val p95
  * Output ownership uses the existing tested bounded texture pool; all consumers may retain frames.
  */
 class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLogger, private val name: String,
+    private val onSourceFrame: (Long) -> Unit = {},
     private val elapsedClockNs: () -> Long = System::nanoTime) : VideoProcessor, AutoCloseable {
     private val helper = requireNotNull(SurfaceTextureHelper.create("Quality-$name", shared))
     private var sink: VideoSink? = null
@@ -61,6 +62,7 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
     override fun onFrameCaptured(frame: VideoFrame) {
         val target = sink ?: return
         if (closed) return
+        onSourceFrame(frame.timestampNs)
         val buffer = frame.buffer as? VideoFrame.TextureBuffer
         val config = decision
         if (!allowed || config.level == ComputeLevel.C0 || stats.failed || buffer == null ||
