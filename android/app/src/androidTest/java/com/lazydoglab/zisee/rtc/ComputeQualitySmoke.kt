@@ -112,7 +112,7 @@ internal object ComputeQualitySmoke {
                     kotlinx.coroutines.yield()
                     frameCost.set(21_000_000)
                     val slow = send(0.3f)
-                    check(processor.stats.failed) { "Hard deadline did not disable processing" }
+                    check(processor.stats.cooling && !processor.stats.failed) { "Hard deadline did not pause processing" }
                     slow.release(); retained.removeAt(retained.lastIndex)
                     kotlinx.coroutines.yield()
                     val beforeBypass = processor.stats.frames

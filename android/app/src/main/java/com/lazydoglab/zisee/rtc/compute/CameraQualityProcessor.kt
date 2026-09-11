@@ -7,7 +7,7 @@ import com.lazydoglab.zisee.core.logging.AppLogger
 import org.webrtc.*
 
 data class PreprocessStats(val frames: Long = 0, val bypassed: Long = 0, val p95Ms: Double? = null,
-    val failed: Boolean = false)
+    val failed: Boolean = false, val cooling: Boolean = false, val retries: Int = 0, val p95Samples: Int = 0)
 
 /** One processor per camera source. VideoSource serializes callbacks/setSink. Work runs on a
  * dedicated shared EGL context synchronously: no queued camera frames, no main-thread pixel work.
@@ -40,6 +40,7 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
     private var historyKey = ""
     private var lastTimestamp = 0L
     private val budget = PreprocessBudget()
+    private var gpuTimer: GpuTimer? = null
     private val scenePolicy = ScenePolicy()
     private var analysisBuffer: GlTextureFrameBuffer? = null
     private val analysisPixels = java.nio.ByteBuffer.allocateDirect(16 * 9 * 4)
@@ -54,6 +55,7 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
             try {
                 shader = CameraQualityShader()
                 shader!!.prepare()
+                gpuTimer = GpuTimer.createOrNull()
             } catch (error: RuntimeException) {
                 roi?.close()
                 try { shader?.close() } finally { helper.dispose() }
@@ -76,7 +78,13 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         val buffer = frame.buffer as? VideoFrame.TextureBuffer
         val config = decision
         val frameEpoch = epoch.get()
-        if (!allowed || config.level == ComputeLevel.C0 || stats.failed || buffer == null ||
+        val nowMs = elapsedClockNs() / 1_000_000
+        val cooling = budget.cooling(nowMs)
+        if (stats.cooling && !cooling) {
+            stats = stats.copy(cooling = false, p95Ms = null, p95Samples = 0)
+            logger.info(AppEvent.RTC_COMPUTE_BYPASS, "$name:budget:cooldown_end:try=${budget.retries}")
+        }
+        if (!allowed || config.level == ComputeLevel.C0 || stats.failed || cooling || buffer == null ||
             frame.buffer.width.toLong() * frame.buffer.height > 1920L * 1080) {
             resetHistory()
             stats = stats.copy(bypassed = stats.bypassed + 1)
@@ -84,12 +92,23 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
             return
         }
         val started = elapsedClockNs()
+        // Diagnostic split on the real clock; the budget decision uses [elapsedClockNs].
+        val queuedNs = System.nanoTime()
+        var enteredNs = 0L; var submittedNs = 0L; var finishedNs = 0L; var gpuNs: Long? = null
         val output = try {
             ThreadUtils.invokeAtFrontUninterruptibly(helper.handler, java.util.concurrent.Callable {
+                enteredNs = System.nanoTime()
+                gpuTimer?.begin()
                 try { process(frame, buffer, config, frameEpoch) }
                 // Even pool exhaustion/errors may have queued input reads. Complete them before
                 // the capturer can release/reuse the borrowed OES texture.
-                finally { GLES20.glFinish() }
+                finally {
+                    gpuTimer?.end()
+                    submittedNs = System.nanoTime()
+                    GLES20.glFinish()
+                    finishedNs = System.nanoTime()
+                    gpuNs = gpuTimer?.resultNs()
+                }
             })
         } catch (error: RuntimeException) {
             stats = stats.copy(failed = true)
@@ -98,12 +117,21 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         }
         // Includes GL-thread waiting, analysis and GPU completion; not just CPU submission time.
         val elapsedMs = (elapsedClockNs() - started) / 1_000_000.0
-        val breach = budget.record(elapsedMs)
+        val phases = if (finishedNs == 0L) null else FramePhases((enteredNs - queuedNs) / 1000,
+            (submittedNs - enteredNs) / 1000, (finishedNs - submittedNs) / 1000, gpuNs?.div(1000) ?: -1)
+        val breach = budget.record(elapsedMs, nowMs, phases)
         stats = stats.copy(frames = stats.frames + if (output != null) 1 else 0,
-            bypassed = stats.bypassed + if (output == null) 1 else 0, p95Ms = budget.p95Ms, failed = stats.failed || breach != null)
+            bypassed = stats.bypassed + if (output == null) 1 else 0, p95Ms = budget.p95Ms, p95Samples = budget.samples,
+            failed = stats.failed || budget.exhausted, cooling = budget.coolingActive, retries = budget.retries)
         if (stats.failed) { roi?.close(); roiFaces = null }
-        if (breach != null) logger.info(AppEvent.RTC_COMPUTE_BYPASS, "$name:budget:$breach:n=${budget.samples}" +
-            ":us=${(elapsedMs * 1000).toLong()}:p95us=${budget.p95Ms?.times(1000)?.toLong() ?: -1}:${buffer.width}x${buffer.height}")
+        if (breach != null) {
+            val p = budget.phaseP95()
+            logger.info(AppEvent.RTC_COMPUTE_BYPASS, "$name:budget:$breach:try=${budget.retries}" +
+                ":cool=${budget.lastCooldownMs ?: -1}:n=${budget.samples}:us=${(elapsedMs * 1000).toLong()}" +
+                ":p95us=${budget.p95Ms?.times(1000)?.toLong() ?: -1}" +
+                ":q95=${p?.queueUs ?: -1}:cpu95=${p?.cpuUs ?: -1}:fin95=${p?.finishUs ?: -1}:gpu95=${p?.gpuUs ?: -1}" +
+                ":${buffer.width}x${buffer.height}")
+        }
         if (output == null) target.onFrame(frame)
         else {
             val processed = VideoFrame(output, frame.rotation, frame.timestampNs)
@@ -190,6 +218,7 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         roi?.close(); roiFaces = null
         ThreadUtils.invokeAtFrontUninterruptibly(helper.handler) {
             roiSampler?.close(); roiSampler = null
+            gpuTimer?.close(); gpuTimer = null
             shader?.close(); shader = null
             history.forEach { it.release() }; history = emptyList()
             analysisBuffer?.release(); analysisBuffer = null

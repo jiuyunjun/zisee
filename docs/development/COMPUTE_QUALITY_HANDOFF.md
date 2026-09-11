@@ -76,7 +76,7 @@
 - 处理器初始化/GL 失败、非纹理帧、超 1080p 像素数时回原生管线；无帧队列。每轨纹理内存上限不代表系统已分配固定大小。
 - C0 当前关闭新增 GPU 工作，但不因此重开相机降低采集分辨率；旧 ABR 和原有严重热降档继续负责媒体规格。
 - 暗光 FPS 调整只节省发送帧，不保证传感器增加曝光。后续更改 Camera2/CameraX 时必须顾及此前小米 HAL 重开问题。
-- GPU 失败本次通话不重试；普通热恢复按 25 秒连续证据逐级升档。未知 headroom/统计不授权 C2+。
+- GPU 异常本次通话不重试；超预算按 30/60/120s 退避重试，第 4 次后锁定（见文末退避一节）。普通热恢复按 25 秒连续证据逐级升档。未知 headroom/统计不授权 C2+。
 
 ### 复现实验
 
@@ -170,3 +170,14 @@
 - 验证：290 项 JVM 单测（新增 4 项 budget）0 failures/errors/skipped；assembleDebug、assembleDebugAndroidTest、lintDebug、compileReleaseKotlin 通过（`android/app/build/budget-validation.log`）。emulator-5556 `-e computeQuality true` PASS；默认 native 回环在授予 CAMERA/RECORD_AUDIO 后 PASS（首次失败是该模拟器未授权相机，不是代码问题），模拟器首帧超 50ms 触发 WARMUP 旁路，符合预期。未在用户真机安装。
 - 用户要求不再依赖构建参数：`zisee.faceRoi` 默认改为 true，普通 Debug 即含 ML Kit 检测器；`-Pzisee.faceRoi=false` 仅用于 A/B 或排除 SDK。Release source set 仍固定为无依赖 provider，推广前的隐私披露要求不变。
 - 下一步：用户在 nezha 上用普通 Debug 构建复测，根据新旁路日志决定：若为 `WARMUP`/`FRAME` 首帧类，考虑初始化时预热 draw；若为稳定 `P95`，需降低处理分辨率或拆分工作，而不是放宽门槛。
+
+## 旁路退避重试与耗时拆分（2026-09-11）
+
+- 真机（nezha，默认开启 faceRoi 的 Debug）三通电话旁路原因均为稳态 `P95`：640×360 下 5.66ms（n=60）、8.60ms（n=30），1280×720 下 7.69ms（n=31，发生在 ICE CHECKING 阶段）。不是首帧预热问题，也和分辨率关系不大。旧逻辑锁定整通通话，用户反馈 2 分钟通话 front 一直 C0。ROI 仅在 C2+ 运行，level 从未离开 C1/C0，所以真机上 ROI 仍未执行；14:13:39 的 tflite 日志来自 ARCore，不是 ML Kit。
+- 同批日志：Wi-Fi→4G 切换后 ICE restart 已协商，14:12:54 仍出现 `CALL_FAILED reason=PROTOCOL`（MediaSignaling 回复类型/id 不匹配或 error），需服务端日志定位，属 CALL_FIX 线，未处理。
+- 超预算改为退避：第 1/2/3 次分别暂停 30/60/120s，第 4 次才整通锁定（`failed`）。暂停期间 `stats.cooling` 让策略保持 C0/LOAD；暂停结束清空 P95 窗口和预热计数，并记 `name:budget:cooldown_end:try=N`。之后仍需策略 25s 连续证据才升 C1，因此首次重试实际约在 55s 后。GPU 异常仍整通锁定，不重试。门槛（50/20/5ms、30 样本）不变。
+- 策略 P95 输入改为只看当前窗口样本数（`p95Samples >= 30`），避免重试后几帧样本代替 P95，或旧 P95 让策略永久 LOAD。
+- 每帧耗时拆分（真实时钟，仅诊断，预算判断仍用可注入时钟）：`q`＝调用线程到 GL 线程开始执行的排队，`cpu`＝GL 命令提交，`fin`＝`glFinish` 等待（含其他 context 的 GPU 争用），`gpu`＝`GL_EXT_disjoint_timer_query` 测得的本处理器 GPU 执行时间。timer 仅在 GL_VERSION 为 ES 3.x 且支持该扩展时启用，任何 GL 错误即禁用并清空错误，不影响处理；不可用时为 -1。
+- 旁路日志格式：`name:budget:<WARMUP|FRAME|P95>:try=N:cool=<ms|-1>:n=..:us=..:p95us=..:q95=..:cpu95=..:fin95=..:gpu95=..:WxH`（各段为窗口 P95，单位 us）。调试详情增加 `cooling`、`retries`。
+- 验证：293 项 JVM 单测（新增退避、重试重置、阶段 P95 三项）0 failures/errors/skipped；assembleDebug、assembleDebugAndroidTest、lintDebug、compileReleaseKotlin 通过（`android/app/build/budget-retry-validation.log`）。emulator-5556 `-e computeQuality true` PASS（控制时钟下超时后 `cooling && !failed`）；默认 native 回环 PASS，结束状态 `failed=false cooling=true retries=1`。模拟器是否支持 timer query 未单独断言；真机 `gpu95` 是否为 -1 待日志确认。
+- 下一步：用户在 nezha 打 ≥2 分钟电话。看 `fin95` 与 `gpu95` 的差：`gpu95` 小而 `fin95`/`q95` 大，说明是等待/争用，应去掉每帧同步 `glFinish`（改用 fence 保证输入纹理安全）并以 GPU 时间做预算；`gpu95` 本身接近 5ms，说明需要削减 shader 工作量。同时确认 55s 左右出现 `cooldown_end` 且能重新进入 C1/C2。
