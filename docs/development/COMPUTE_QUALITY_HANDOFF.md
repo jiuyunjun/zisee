@@ -159,3 +159,13 @@
 - 旁路日志只记录 `budget`，无法区分单帧 >20ms（首帧驱动/分配开销）还是 30 样本 P95 >5ms。下一步：旁路事件带触发规则与处理分辨率，处理首帧预热，再在该机用 faceRoi 构建复测；不放宽 5ms/20ms 生产门槛。
 - 对端挂断后 SCTP 关闭前，RTC 线程出现两条 `RTC_MEDIA_FAILED`，推断来自数据通道关闭后的 presentation 发送失败（日志无异常类型，属推断）；预期内失败被记为 error，待降级。
 - `libEGL no current context` 均紧随 SurfaceTexture disconnect，属 WebRTC EGL 释放噪音。本次通话无崩溃/ANR。另有 09-10 01:45 WebRTC `DecodingQueue` SIGABRT（进程启动 3s，早于本轮改动，无 abort message），需符号化，未跟进。
+- ROI 检查点已提交并 push：`e07feaa`。
+
+## 处理预算诊断与首帧预热（2026-09-11）
+
+- 超时判定抽出为纯 `PreprocessBudget`：前 3 个处理帧为预热，单帧 ≤50ms 不触发旁路、不进入 P95 窗口；超过 50ms 记 `WARMUP` 并立即旁路。预热后 20ms 单帧（`FRAME`）与 30 样本 P95 >5ms（`P95`）门槛不变，窗口 60。预热只在处理器生命周期开始时计一次，旋转/切源不重置，避免反复获得 50ms 豁免。
+- 代价：通话开头最多 3 帧、每帧最多 50ms 同步阻塞采集线程。这是为区分驱动首帧开销而接受的一次性成本，需真机确认是否可接受。
+- `RTC_COMPUTE_BYPASS` 现记录 `name:budget:<WARMUP|FRAME|P95>:n=<样本数>:us=<本帧>:p95us=<窗口P95>:<宽>x<高>`，下次真机日志即可判断旁路原因与处理分辨率。预热期间 `p95Ms` 为 null（计划日志显示 -1）。
+- 数据通道 presentation/share 发送失败时，只有通道仍为 OPEN 才记 `RTC_MEDIA_FAILED`；挂断竞态导致的关闭不再计为媒体错误。
+- 验证：290 项 JVM 单测（新增 4 项 budget）0 failures/errors/skipped；assembleDebug、assembleDebugAndroidTest、lintDebug、compileReleaseKotlin 通过（`android/app/build/budget-validation.log`）。emulator-5556 `-e computeQuality true` PASS；默认 native 回环在授予 CAMERA/RECORD_AUDIO 后 PASS（首次失败是该模拟器未授权相机，不是代码问题），模拟器首帧超 50ms 触发 WARMUP 旁路，符合预期。未在用户真机安装。
+- 下一步：用户在 nezha 上以 `-Pzisee.faceRoi=true` 构建复测，根据新旁路日志决定：若为 `WARMUP`/`FRAME` 首帧类，考虑初始化时预热 draw；若为稳定 `P95`，需降低处理分辨率或拆分工作，而不是放宽门槛。

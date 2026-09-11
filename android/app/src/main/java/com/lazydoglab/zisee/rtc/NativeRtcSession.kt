@@ -1299,7 +1299,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     }
 
     private fun sendSharePresentation() {
-        if (!sendControl(localShare.encode())) logger.error(AppEvent.RTC_MEDIA_FAILED)
+        if (!sendControl(localShare.encode()) && control?.state() == DataChannel.State.OPEN) logger.error(AppEvent.RTC_MEDIA_FAILED)
     }
 
     /** Bounded text on the shared control channel. A peer that cannot parse a line ignores it. */
@@ -1321,7 +1321,9 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         if (channel.state() != DataChannel.State.OPEN) return
         val mode = if (screenSharing) CameraMode.FACE else presentationMode
         val data = CameraPresentation(mode, cameraEnabled && !screenSharing).encode().toByteArray(Charsets.UTF_8)
-        if (!channel.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(data), false))) logger.error(AppEvent.RTC_MEDIA_FAILED)
+        // A peer hang-up can close the channel between the state check and send; not a media failure.
+        if (!channel.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(data), false)) &&
+            channel.state() == DataChannel.State.OPEN) logger.error(AppEvent.RTC_MEDIA_FAILED)
     }
 
     /**

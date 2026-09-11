@@ -39,7 +39,7 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
     private var index = 0
     private var historyKey = ""
     private var lastTimestamp = 0L
-    private val durations = ArrayDeque<Double>()
+    private val budget = PreprocessBudget()
     private val scenePolicy = ScenePolicy()
     private var analysisBuffer: GlTextureFrameBuffer? = null
     private val analysisPixels = java.nio.ByteBuffer.allocateDirect(16 * 9 * 4)
@@ -98,15 +98,12 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         }
         // Includes GL-thread waiting, analysis and GPU completion; not just CPU submission time.
         val elapsedMs = (elapsedClockNs() - started) / 1_000_000.0
-        durations.addLast(elapsedMs)
-        if (durations.size > 60) durations.removeFirst()
-        val p95 = durations.sorted()[(durations.size * 95 + 99) / 100 - 1]
-        // A gross deadline miss must not wait for 30 samples on an unprofiled/slow GPU.
-        val overload = elapsedMs > 20.0 || (durations.size >= 30 && p95 > 5.0)
+        val breach = budget.record(elapsedMs)
         stats = stats.copy(frames = stats.frames + if (output != null) 1 else 0,
-            bypassed = stats.bypassed + if (output == null) 1 else 0, p95Ms = p95, failed = stats.failed || overload)
+            bypassed = stats.bypassed + if (output == null) 1 else 0, p95Ms = budget.p95Ms, failed = stats.failed || breach != null)
         if (stats.failed) { roi?.close(); roiFaces = null }
-        if (overload) logger.info(AppEvent.RTC_COMPUTE_BYPASS, "$name:budget")
+        if (breach != null) logger.info(AppEvent.RTC_COMPUTE_BYPASS, "$name:budget:$breach:n=${budget.samples}" +
+            ":us=${(elapsedMs * 1000).toLong()}:p95us=${budget.p95Ms?.times(1000)?.toLong() ?: -1}:${buffer.width}x${buffer.height}")
         if (output == null) target.onFrame(frame)
         else {
             val processed = VideoFrame(output, frame.rotation, frame.timestampNs)
