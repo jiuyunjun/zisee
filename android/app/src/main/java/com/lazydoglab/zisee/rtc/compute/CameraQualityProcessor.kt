@@ -7,7 +7,8 @@ import com.lazydoglab.zisee.core.logging.AppLogger
 import org.webrtc.*
 
 data class PreprocessStats(val frames: Long = 0, val bypassed: Long = 0, val p95Ms: Double? = null,
-    val failed: Boolean = false, val cooling: Boolean = false, val retries: Int = 0, val p95Samples: Int = 0)
+    val failed: Boolean = false, val tier: ProcessingTier = ProcessingTier.FULL,
+    val state: GuardState = GuardState.NORMAL, val pressure: ComputePressure = ComputePressure.NONE)
 
 /** One processor per camera source. VideoSource serializes callbacks/setSink. Work runs on a
  * dedicated shared EGL context synchronously: no queued camera frames, no main-thread pixel work.
@@ -39,7 +40,9 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
     private var index = 0
     private var historyKey = ""
     private var lastTimestamp = 0L
-    private val budget = PreprocessBudget()
+    private val guard = ProcessingGuard()
+    /** Auxiliary readbacks (scene, ROI) run only while the guard allows the FULL tier. */
+    @Volatile private var auxAllowed = false
     private var gpuTimer: GpuTimer? = null
     private var preparedWidth = 0
     private var preparedHeight = 0
@@ -85,25 +88,25 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         if (closed) return
         onSourceFrame(frame.timestampNs)
         val arrivalNs = System.nanoTime()
+        // One injectable clock read per side of the frame, so a controlled test clock advances once per frame.
+        val arrivalClockNs = elapsedClockNs()
         val buffer = frame.buffer as? VideoFrame.TextureBuffer
         val config = decision
         val frameEpoch = epoch.get()
-        val nowMs = elapsedClockNs() / 1_000_000
-        val cooling = budget.cooling(nowMs)
-        if (stats.cooling && !cooling) {
-            stats = stats.copy(cooling = false, p95Ms = null, p95Samples = 0)
-            frameStats.clear()
-            logger.info(AppEvent.RTC_COMPUTE_BYPASS, "$name:budget:cooldown_end:try=${budget.retries}")
-        }
-        if (!allowed || config.level == ComputeLevel.C0 || stats.failed || cooling || buffer == null ||
-            frame.buffer.width.toLong() * frame.buffer.height > 1920L * 1080) {
+        // Policy C0 is external pressure (thermal/encoder); the processor's own health is the guard's.
+        val eligible = allowed && config.level != ComputeLevel.C0 &&
+            frame.buffer.width.toLong() * frame.buffer.height <= 1920L * 1080
+        val action = if (eligible && buffer != null) guard.action() else FrameAction.BYPASS
+        if (action == FrameAction.BYPASS || buffer == null) {
+            auxAllowed = false
             resetHistory()
             stats = stats.copy(bypassed = stats.bypassed + 1)
             target.onFrame(frame)
             return
         }
-        val started = elapsedClockNs()
-        // Diagnostic split on the real clock; the budget decision uses [elapsedClockNs].
+        // A shadow frame measures the lightest real workload but the original frame is delivered.
+        val tier = if (action == FrameAction.SHADOW) ProcessingTier.RESIZE_ONLY else guard.tier
+        auxAllowed = tier == ProcessingTier.FULL
         val queuedNs = System.nanoTime()
         var enteredNs = 0L; var submittedNs = 0L; var finishedNs = 0L; var gpuNs: Long? = null
         val output = try {
@@ -111,7 +114,7 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
                 enteredNs = System.nanoTime()
                 resizedThisFrame = false
                 gpuTimer?.begin()
-                try { process(frame, buffer, config, frameEpoch) }
+                try { process(frame, buffer, config, frameEpoch, tier) }
                 // The frame's only GPU sync: completes the output before consumers on other contexts
                 // sample it, and input reads (even on pool exhaustion/errors) before the capturer
                 // can release/reuse the borrowed OES texture.
@@ -124,31 +127,28 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
                 }
             })
         } catch (error: RuntimeException) {
-            stats = stats.copy(failed = true)
+            guard.hardDisable()
             logger.error(AppEvent.RTC_COMPUTE_BYPASS, "gpu")
+            roi?.close(); roiFaces = null
             null
         }
         // Base pipeline only (readbacks run as separate GL tasks); includes GL-thread waiting and
         // GPU completion, not just CPU submission time.
-        val elapsedMs = (elapsedClockNs() - started) / 1_000_000.0
+        val addedMs = (elapsedClockNs() - arrivalClockNs) / 1_000_000.0
         val phases = if (finishedNs == 0L) null else FramePhases((enteredNs - queuedNs) / 1000,
             (submittedNs - enteredNs) / 1000, (finishedNs - submittedNs) / 1000, gpuNs?.div(1000) ?: -1,
             (System.nanoTime() - arrivalNs) / 1000)
-        val breach = budget.record(elapsedMs, nowMs, oneTimeCost = resizedThisFrame)
-        if (budget.lastCounted && phases != null) frameStats.add(phases)
-        stats = stats.copy(frames = stats.frames + if (output != null) 1 else 0,
-            bypassed = stats.bypassed + if (output == null) 1 else 0, p95Ms = budget.p95Ms, p95Samples = budget.samples,
-            failed = stats.failed || budget.exhausted, cooling = budget.coolingActive, retries = budget.retries)
-        if (stats.failed) { roi?.close(); roiFaces = null }
-        if (breach != null) {
-            val p = frameStats.summary()?.p95
-            logger.info(AppEvent.RTC_COMPUTE_BYPASS, "$name:budget:$breach:try=${budget.retries}" +
-                ":cool=${budget.lastCooldownMs ?: -1}:n=${budget.samples}:us=${(elapsedMs * 1000).toLong()}" +
-                ":p95us=${budget.p95Ms?.times(1000)?.toLong() ?: -1}" +
-                ":added95=${p?.addedUs ?: -1}:gpu95=${p?.gpuUs ?: -1}:wait95=${p?.waitUs ?: -1}" +
-                ":submit95=${p?.submitUs ?: -1}:queue95=${p?.queueUs ?: -1}:${buffer.width}x${buffer.height}")
-        }
+        val transition = if (phases == null) null else guard.record(GuardSample(addedMs, gpuNs?.let { it / 1_000_000.0 },
+            phases.waitUs / 1000.0, phases.submitUs / 1000.0, phases.queueUs / 1000.0),
+            arrivalClockNs / 1_000_000, oneTimeCost = resizedThisFrame)
+        if (action == FrameAction.PROCESS && guard.lastCounted && phases != null) frameStats.add(phases)
+        if (transition != null) logTransition(transition, buffer.width, buffer.height)
+        val delivered = action == FrameAction.PROCESS && output != null
+        stats = stats.copy(frames = stats.frames + if (delivered) 1 else 0,
+            bypassed = stats.bypassed + if (delivered) 0 else 1, p95Ms = guard.addedP95Ms,
+            failed = guard.hardDisabled, tier = guard.tier, state = guard.state, pressure = guard.pressure)
         maybeLogStats(buffer.width, buffer.height)
+        if (action == FrameAction.SHADOW) { output?.release(); target.onFrame(frame); return }
         if (output == null) target.onFrame(frame)
         else {
             val processed = VideoFrame(output, frame.rotation, frame.timestampNs)
@@ -156,7 +156,16 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         }
     }
 
-    private fun process(frame: VideoFrame, buffer: VideoFrame.TextureBuffer, config: ComputeDecision, frameEpoch: Long): VideoFrame.TextureBuffer? {
+    private fun logTransition(transition: GuardTransition, width: Int, height: Int) {
+        val evidence = frameStats.summary()?.p95
+        frameStats.clear()
+        logger.info(AppEvent.RTC_COMPUTE_TIER, "$name:${transition.from}>${transition.to}:${transition.cause}" +
+            ":${transition.pressure}:${guard.state}:added95=${evidence?.addedUs ?: -1}:gpu95=${evidence?.gpuUs ?: -1}" +
+            ":wait95=${evidence?.waitUs ?: -1}:${width}x$height")
+    }
+
+    private fun process(frame: VideoFrame, buffer: VideoFrame.TextureBuffer, config: ComputeDecision, frameEpoch: Long,
+                        tier: ProcessingTier): VideoFrame.TextureBuffer? {
         val width = buffer.width; val height = buffer.height
         if (shader == null) shader = CameraQualityShader()
         if (pool == null) pool = ArFramePool(helper.handler) { helper.dispose() }
@@ -167,6 +176,12 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
             pool!!.prepare(width, height)
             preparedWidth = width; preparedHeight = height
             resizedThisFrame = true
+        }
+        if (tier == ProcessingTier.RESIZE_ONLY) {
+            // No history or auxiliary work; a later denoising tier restarts from a clean temporal state.
+            historyCount = 0
+            processedSerial++
+            return pool!!.capture(width, height, finish = false) { shader!!.resize(buffer, width, height); true }
         }
         val matrix = FloatArray(9).also { buffer.transformMatrix.getValues(it) }
         val key = "${epoch.get()}:$width:$height:${frame.rotation}:${matrix.contentHashCode()}"
@@ -188,20 +203,22 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
                 if (historyCount == 0) 0f else config.denoiseStrength)
             true
         }
-        scheduleAux(frame, config, frameEpoch, current.textureId, previous.textureId, width, height)
+        scheduleAux(frame, tier, frameEpoch, current.textureId, previous.textureId, width, height)
         index = (index + 1) % 3
         historyCount = (historyCount + 1).coerceAtMost(2)
         return result
     }
 
     /** Readbacks stall the GL pipeline, so they run as a separate GL task after the frame's own work. */
-    private fun scheduleAux(frame: VideoFrame, config: ComputeDecision, frameEpoch: Long,
+    private fun scheduleAux(frame: VideoFrame, tier: ProcessingTier, frameEpoch: Long,
                             current: Int, previous: Int, width: Int, height: Int) {
         val serial = ++processedSerial
         val analyzer = roi
-        val roiWanted = analyzer != null && config.level >= ComputeLevel.C2 && !roiSamplingFailed
+        val full = tier == ProcessingTier.FULL
+        // Gated by the workload tier and its own measured cost, not by a compute level.
+        val roiWanted = analyzer != null && full && !roiSamplingFailed
         if (analyzer != null && !roiWanted) synchronized(roiLock) { analyzer.configure(null); roiFaces = null }
-        val sceneWanted = !sceneFailed && historyCount > 0 && System.nanoTime() / 1_000_000 - lastAnalysisMs >= 500
+        val sceneWanted = full && !sceneFailed && historyCount > 0 && System.nanoTime() / 1_000_000 - lastAnalysisMs >= 500
         if (!sceneWanted && !roiWanted) return
         val geometry = RoiGeometry(frameEpoch, width, height, frame.rotation)
         val timestampNs = frame.timestampNs
@@ -244,7 +261,7 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
     private fun analyzeRoi(texture: Int, geometry: RoiGeometry, timestampNs: Long, frameEpoch: Long): Boolean {
         val analyzer = roi ?: return false
         synchronized(roiLock) {
-            if (!allowed || closed || frameEpoch != epoch.get() || decision.level < ComputeLevel.C2 || roiSamplingFailed) {
+            if (!allowed || closed || frameEpoch != epoch.get() || !auxAllowed || roiSamplingFailed) {
                 analyzer.configure(null); roiFaces = null; return false
             }
             analyzer.configure(geometry)
@@ -255,7 +272,7 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
             val sampler = roiSampler ?: RoiTextureSampler().also { roiSampler = it }
             val input = sampler.sample(texture, geometry, timestampNs)
             synchronized(roiLock) {
-                if (allowed && !closed && frameEpoch == epoch.get() && decision.level >= ComputeLevel.C2) analyzer.submit(input)
+                if (allowed && !closed && frameEpoch == epoch.get() && auxAllowed) analyzer.submit(input)
                 else input.close()
             }
             true

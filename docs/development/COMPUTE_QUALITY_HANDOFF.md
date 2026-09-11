@@ -207,3 +207,16 @@
 - 决策逻辑本步未改（仍为预热 + 20ms 单帧 + 5ms P95 + 退避），但总时长已不含读回，可直接对比 `d121c2d` 的 5.3/7.8ms。
 - 验证：296 项 JVM 单测（新增统计窗口 3 项；预算测试随阶段拆分调整）0 failures/errors/skipped；assembleDebug、assembleDebugAndroidTest、lintDebug、compileReleaseKotlin 通过（`android/app/build/metrics-step1-validation.log`）。emulator-5556 `-e computeQuality true`（含 ROI 经辅助任务收到输入）、默认 native 回环、`-e arFramePool true` 均 PASS。
 - 真机待测：打 ≥2 分钟通话，取 `RTC_COMPUTE_STATS` 与旁路日志，确认去掉读回后主链总 P95、`added` 分布，以及 `scene` 的实际耗时。这些数据用于第 2 步状态机阈值初值。
+- 第 1 步提交：`9715134`。
+- 真机（15:18 通话）：1080p `added` p50/p95 2.6/4.6ms，`gpu` 1.2/1.2ms，`wait` 2.1/2.8ms，`submit` 0.26/0.99ms，`queue` 0.05/0.5ms；640×360 `added` 2.3/3.0ms，`gpu` 0.8/0.85ms。场景读回每次 p95 1.7–2.4ms（已不在主帧）。旧逻辑两次关闭：一次是**单帧 27ms**（当时 P95 仅 3.0ms），一次是 60 帧 P95 5.31ms（同期 120 帧 `added95` 4.85ms）。按新设计阈值该通话会全程 NORMAL。
+
+### 第 2 步：本地保护状态机
+
+- 新 `ProcessingGuard` 取代 `PreprocessBudget`（冷却/退避/锁死已删除）。工作档 `FULL`（缩放+降噪+场景/ROI 辅助）→ `NO_AUX` → `RESIZE_ONLY`（直接缩放到输出，不写历史）→ `OFF`；状态 NORMAL / DEGRADED / PROBE（=OFF）/ HARD_DISABLED（仅 GPU 异常）。
+- 违规（每次降一档并清空证据）：连续 3 帧 `added` >12ms；5s 内 ≥3 帧 >20ms；≥60 样本时 >12ms 帧占比 >5%；≥60 样本时自身 `gpu` P95 >5ms；预热/尺寸切换帧 >50ms。单个长帧只记录。恢复：同一档 ≥60 样本且满 10s 无违规升一档。OFF 下每 10 帧影子处理 1 帧（跑 RESIZE_ONLY 并计时，交付原帧、输出立即释放），30 个健康样本后回到 RESIZE_ONLY；探测失败只清空证据继续探测，不锁死。
+- 决策用 `added`（可注入时钟，每帧两次读数，控制时钟测试每帧只前进一次）与 timer query 的 `gpu`；`wait/submit/queue` 用于压力分类 `GPU_COMPUTE / GPU_SYNC / CPU_SUBMIT / QUEUE`。目前每次违规统一降一档，按压力选择不同动作留待第 4 步调度器。
+- 解除自锁：NativeRtcSession 不再把处理器 `failed/cooling` 或处理 P95 作为 `cpuLimited`/`preprocessP95Ms` 反馈给策略（`ComputeInput.preprocessP95Ms` 已删除）；策略 C0 只代表外部压力（热、编码器、RTC 报告的 CPU 受限），此时处理器旁路。
+- ROI 与 C2 解绑：场景分析与 ROI 只在 `FULL` 档运行，C1 起即可；`auxAllowed` 在 GL 线程复查。
+- 日志：`RTC_COMPUTE_TIER name:<from>><to>:<cause>:<pressure>:<state>:added95=..:gpu95=..:wait95=..:WxH`（转移前 120 帧证据，随后清空统计窗口）。`RTC_COMPUTE_STATS` 保留。调试详情 `guard=<state>/<tier>/<pressure>`。
+- 验证：301 项 JVM 单测（新增 guard 12 项，删除旧预算 7 项）0 failures/errors/skipped；assembleDebug、assembleDebugAndroidTest、lintDebug、compileReleaseKotlin 通过（`android/app/build/guard-step2-validation.log`）。emulator-5556：`-e computeQuality true` PASS（控制时钟下连续 3 帧 13ms → NO_AUX 且继续处理）；默认 native 回环 PASS，结束 `guard=DEGRADED/RESIZE_ONLY/CPU_SUBMIT`（模拟器首帧慢被逐档降级但不锁死）；`-e arFramePool true` PASS。
+- 真机待测：≥2 分钟通话。预期 front 大部分时间 NORMAL/FULL（C1 起），首次出现 ROI `faces=`；关注 `RTC_COMPUTE_TIER` 是否有来回振荡、影子帧期间画面无闪烁。

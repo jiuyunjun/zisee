@@ -27,7 +27,7 @@ class ComputeQualityPolicyTest {
 
     @Test fun budgetAndPowerCaps() {
         for (input in listOf(good(0).copy(encodeMs = 25.0), good(0).copy(cpuLimited = true),
-            good(0).copy(preprocessP95Ms = 5.1), good(0).copy(forecastHeadroom = 0.91f))) {
+            good(0).copy(forecastHeadroom = 0.91f))) {
             assertEquals(ComputeLevel.C0, ComputeQualityPolicy().update(input).level)
         }
         val p = ComputeQualityPolicy(); warmUp(p)

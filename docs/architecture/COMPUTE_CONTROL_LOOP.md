@@ -81,7 +81,7 @@ HARD_DISABLED：仅 GPU 异常 / 初始化失败
   - `added` > 12ms 的帧占比 > 5%，或
   - `added` > 20ms 的帧在 5s 内 ≥ 3 帧，或连续 3 帧 > 12ms。
   单个长帧只记录不惩罚。阈值为工程初值，第 5 步用真机数据标定。
-- **压力分类**上报（诊断 + 调度依据）：`NONE / GPU_COMPUTE / GPU_SYNC / CPU_SUBMIT / AUX / ENCODER / THERMAL`。`GPU_COMPUTE` 降处理强度/分辨率；`GPU_SYNC` 优先由第 3 步流水线解决，期间降档而不是关闭全部；`AUX` 只降辅助频率。
+- **压力分类**上报（诊断 + 调度依据）：处理器侧 `NONE / GPU_COMPUTE / GPU_SYNC / CPU_SUBMIT / QUEUE`（`QUEUE` 含辅助读回占用 GL 线程与线程调度）；`ENCODER / THERMAL` 由策略的 LOAD/THERMAL 原因表达，不再混入处理器健康度。`GPU_COMPUTE` 降处理强度/分辨率；`GPU_SYNC` 优先由第 3 步流水线解决，期间降档而不是关闭全部；`QUEUE` 由 FULL→NO_AUX 先去掉辅助任务。当前实现统一每次违规降一档，按压力选择不同动作留待第 4 步调度器。
 
 ## 5. 异步流水线（第 3 步）
 

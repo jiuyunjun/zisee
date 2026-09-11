@@ -110,15 +110,21 @@ internal object ComputeQualitySmoke {
                     check(luma(reset) == originalY) { "History survived ownership/rotation change" }
                     reset.release(); retained.removeAt(retained.lastIndex)
                     kotlinx.coroutines.yield()
-                    frameCost.set(21_000_000)
-                    val slow = send(0.3f)
-                    check(processor.stats.cooling && !processor.stats.failed) { "Hard deadline did not pause processing" }
-                    slow.release(); retained.removeAt(retained.lastIndex)
-                    kotlinx.coroutines.yield()
-                    val beforeBypass = processor.stats.frames
-                    val afterFailure = send(0.4f)
-                    check(processor.stats.frames == beforeBypass)
-                    afterFailure.release(); retained.removeAt(retained.lastIndex)
+                    // Three consecutive late frames shed one tier; processing continues at the lighter tier.
+                    frameCost.set(13_000_000)
+                    repeat(3) {
+                        val slow = send(0.3f)
+                        slow.release(); retained.removeAt(retained.lastIndex)
+                        kotlinx.coroutines.yield()
+                    }
+                    check(processor.stats.tier == ProcessingTier.NO_AUX && !processor.stats.failed) {
+                        "Sustained deadline misses did not shed work: ${processor.stats}"
+                    }
+                    frameCost.set(1_000_000)
+                    val beforeShed = processor.stats.frames
+                    val afterShed = send(0.4f)
+                    check(processor.stats.frames == beforeShed + 1) { "Degraded tier stopped processing" }
+                    afterShed.release(); retained.removeAt(retained.lastIndex)
                     processor.setSink(null)
                     processor.close()
                     // Closing must leave the retained output's converter/context alive.

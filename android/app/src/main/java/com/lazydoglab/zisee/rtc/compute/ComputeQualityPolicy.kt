@@ -21,7 +21,6 @@ data class ComputeInput(
     val encodeMs: Double?, // RTC interval mean, NOT a frame P95.
     val fps: Int,
     val cpuLimited: Boolean = false,
-    val preprocessP95Ms: Double? = null,
     val sampleFresh: Boolean = true,
     /** Encode entry through callback P95 includes codec scheduling, unlike the RTC interval mean. */
     val encodeCallbackP95Ms: Double? = null,
@@ -52,11 +51,10 @@ class ComputeQualityPolicy {
         val headroom = input.forecastHeadroom?.takeIf { it.isFinite() && it >= 0f }
         val encode = input.encodeCallbackP95Ms?.takeIf { it.isFinite() && it >= 0 }
             ?: input.encodeMs?.takeIf { it.isFinite() && it >= 0 }
-        val preprocess = input.preprocessP95Ms?.takeIf { it.isFinite() && it >= 0 }
         val frameBudget = 1_000.0 / input.fps.coerceIn(1, 60)
         val (ceiling, reason) = when {
             (input.thermalStatus ?: 0) >= 3 || (headroom ?: 0f) >= 0.9f -> ComputeLevel.C0 to ComputeReason.THERMAL
-            input.cpuLimited || (encode ?: 0.0) >= frameBudget * 0.7 || (preprocess ?: 0.0) > 5.0 -> ComputeLevel.C0 to ComputeReason.LOAD
+            input.cpuLimited || (encode ?: 0.0) >= frameBudget * 0.7 -> ComputeLevel.C0 to ComputeReason.LOAD
             input.powerSave || (input.batteryPercent ?: 100) <= 15 -> ComputeLevel.C1 to ComputeReason.POWER
             (input.thermalStatus ?: 0) >= 2 || (headroom ?: 0f) >= 0.8f -> ComputeLevel.C1 to ComputeReason.THERMAL
             !input.sampleFresh || gap || headroom == null || encode == null || input.thermalStatus == null ||

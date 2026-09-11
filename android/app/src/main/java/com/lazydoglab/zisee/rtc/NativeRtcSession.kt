@@ -542,7 +542,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         "front" to frontQualityProcessor, "back" to backQualityProcessor).mapNotNull { (name, processor) ->
         processor?.let {
             val stats = it.stats
-            name to "${it.decision.level}/${it.decision.reason} ${it.scene.mode} p95=${stats.p95Ms?.toInt() ?: -1}ms frames=${stats.frames} bypass=${stats.bypassed} failed=${stats.failed} cooling=${stats.cooling} retries=${stats.retries} roi=${it.roiDiagnostic}"
+            name to "${it.decision.level}/${it.decision.reason} ${it.scene.mode} p95=${stats.p95Ms?.toInt() ?: -1}ms frames=${stats.frames} bypass=${stats.bypassed} failed=${stats.failed} guard=${stats.state}/${stats.tier}/${stats.pressure} roi=${it.roiDiagnostic}"
         }
     }.toMap()
 
@@ -572,9 +572,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 track.fps?.let { it > 0 } == true && nowMs - track.sampledAtMs in 0..3_000
             val next = policy.update(environment.copy(nowMs = nowMs, encodeMs = track?.encodeMs,
                 fps = track?.fps?.toInt()?.coerceAtLeast(1) ?: 30,
-                cpuLimited = track?.qualityLimitation == "cpu" || processor.stats.failed || processor.stats.cooling,
-                // Current window only: a retry's first few samples must not stand in for a P95.
-                preprocessP95Ms = processor.stats.p95Ms?.takeIf { processor.stats.p95Samples >= 30 },
+                // The processor's own health stays with its guard; feeding it back here deadlocked recovery.
+                cpuLimited = track?.qualityLimitation == "cpu",
                 sampleFresh = fresh,
                 encodeCallbackP95Ms = timings.filter { it.trackId == id && it.samples >= 10 }
                     .mapNotNull { it.callbackP95Ms }.maxOrNull()))
