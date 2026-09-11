@@ -71,11 +71,11 @@ internal fun ArCallControls(state: CallUiState, model: CallViewModel) {
             TextButton(onClick = { confirmRevoke = true }) { Text("暂停对方标记权限") }
         }
     } else if (collaboration.remote != null) {
-        Text("对方已开启现场。加入只会打开标记工具，不会启动你的 ARCore 或摄像头。")
+        Text("对方已开启现场，标记工具会自动连接。你可以直接在对方画面上放置标记。")
         if (collaboration.joined) {
             TextButton(onClick = model::leaveRemoteAr) { Text("退出标记") }
         } else {
-            TextButton(enabled = collaboration.connected, onClick = model::joinRemoteAr) { Text("加入对方标记") }
+            TextButton(enabled = collaboration.connected, onClick = model::joinRemoteAr) { Text("重新连接标记") }
         }
     } else {
         TextButton(enabled = !sharing && activity != null && state.cameraEnabled && state.showMe.mode != CameraMode.STARTING &&
@@ -90,7 +90,7 @@ internal fun ArCallControls(state: CallUiState, model: CallViewModel) {
     }
     if (explanation) AlertDialog(onDismissRequest = { explanation = false }, title = { Text("开启我的 AR 现场") },
         text = { Column {
-            Text("AR 会切换到后置摄像头并将现场画面发送给通话对方；前摄和双摄会暂停，结束后恢复。对方加入后可以共同放置标记。相机和运动传感器用于本机环境跟踪。")
+            Text("AR 会切换到后置摄像头并将现场画面发送给通话对方；前摄和双摄会暂停，结束后恢复。对方会自动进入标记模式，你可以暂停对方的标记权限。相机和运动传感器用于本机环境跟踪。")
             Text("此功能使用 Google 提供的 Google Play Services for AR（ARCore），其数据处理受 Google 隐私政策约束。")
             TextButton(onClick = { uri.openUri("https://policies.google.com/privacy") }) { Text("Google 隐私政策") }
             TextButton(onClick = { uri.openUri("https://developers.google.com/ar/develop/terms") }) { Text("ARCore 条款") }
