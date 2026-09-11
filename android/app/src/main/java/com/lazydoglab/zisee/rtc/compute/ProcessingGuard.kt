@@ -46,6 +46,13 @@ class ProcessingGuard(private val warmupFrames: Int = 3) {
     private var tierSinceMs: Long? = null
     private var tierEnteredMs: Long? = null
     private var probeCountdown = 0
+    private var lastSampleMs: Long? = null
+
+    /** Stop/ownership changes and external bypass invalidate evidence, not the current safety tier. */
+    fun interruptEvidence() {
+        window.clear(); longFrames.clear(); consecutiveLate = 0; lastCounted = false
+        tierSinceMs = null; tierEnteredMs = null; lastSampleMs = null
+    }
 
     /** Healthy time the next climb needs; null at FULL (nothing above) and OFF (probe decides). */
     fun climbDelayMs(): Long? =
@@ -66,6 +73,10 @@ class ProcessingGuard(private val warmupFrames: Int = 3) {
     /** [oneTimeCost] marks a frame that reallocated textures for a new size: bounded like warmup. */
     fun record(sample: GuardSample, nowMs: Long, oneTimeCost: Boolean = false): GuardTransition? {
         if (hardDisabled) return null
+        if (oneTimeCost || lastSampleMs?.let { nowMs - it !in 0..MAX_SAMPLE_GAP_MS } == true) {
+            interruptEvidence()
+        }
+        lastSampleMs = nowMs
         if (tierSinceMs == null) tierSinceMs = nowMs
         val entered = tierEnteredMs ?: nowMs.also { tierEnteredMs = it }
         // A tier held long enough has proven itself; forget its earlier failures.
@@ -164,5 +175,7 @@ class ProcessingGuard(private val warmupFrames: Int = 3) {
         const val MAX_CLIMB_MS = 60_000L
         const val SUSTAIN_MS = 60_000L
         const val MAX_FAILURES = 4
+        // Allows sparse OFF probes (one in ten camera frames), but never counts a stopped camera.
+        const val MAX_SAMPLE_GAP_MS = 3_000L
     }
 }

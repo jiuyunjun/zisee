@@ -23,6 +23,8 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
     @Volatile var decision = ComputeDecision(ComputeLevel.C1, ComputeReason.STARTUP)
     @Volatile private var allowed = true
     private val epoch = java.util.concurrent.atomic.AtomicLong()
+    private val evidenceEpoch = java.util.concurrent.atomic.AtomicLong()
+    private var observedEvidenceEpoch = 0L // Capture-thread only, like the guard.
     private val roiLock = Any()
     private val roi = roiDetector?.let { detector ->
         RoiAnalyzer(detector, { stage -> logger.error(AppEvent.RTC_COMPUTE_BYPASS, "$name:roi:$stage") })
@@ -103,7 +105,8 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
 
     /** Call on RTC owner before changing camera/AR ownership, so an AR frame is never filtered. */
     fun setAllowed(value: Boolean) { if (allowed != value) { allowed = value; resetHistory() } }
-    fun resetHistory() { synchronized(roiLock) { epoch.incrementAndGet(); roi?.configure(null); roiFaces = null } }
+    fun resetHistory() { evidenceEpoch.incrementAndGet(); invalidateHistory() }
+    private fun invalidateHistory() { synchronized(roiLock) { epoch.incrementAndGet(); roi?.configure(null); roiFaces = null } }
     override fun setSink(sink: VideoSink?) { this.sink = sink }
     override fun onCapturerStarted(success: Boolean) { resetHistory() }
     override fun onCapturerStopped() { resetHistory() }
@@ -125,11 +128,18 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         // Policy C0 is external pressure (thermal/encoder); the processor's own health is the guard's.
         val eligible = allowed && config.level != ComputeLevel.C0 &&
             frame.buffer.width.toLong() * frame.buffer.height <= 1920L * 1080
+        val currentEvidenceEpoch = evidenceEpoch.get()
+        if (currentEvidenceEpoch != observedEvidenceEpoch || !eligible || buffer == null) {
+            observedEvidenceEpoch = currentEvidenceEpoch
+            guard.interruptEvidence()
+            frameStats.clear(); submitSplit.clear(); schedSplit.clear()
+        }
         val action = if (eligible && buffer != null) guard.action() else FrameAction.BYPASS
         if (action == FrameAction.BYPASS || buffer == null) {
             auxAllowed = false
-            resetHistory()
-            stats = stats.copy(bypassed = stats.bypassed + 1)
+            // The nine normal bypass frames between OFF probes must preserve probe evidence.
+            invalidateHistory()
+            stats = stats.copy(bypassed = stats.bypassed + 1, p95Ms = guard.addedP95Ms)
             target.onFrame(frame)
             return
         }

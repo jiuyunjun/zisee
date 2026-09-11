@@ -185,4 +185,53 @@ class ProcessingGuardTest {
         assertEquals(FrameAction.BYPASS, guard.action())
         assertNull(guard.record(ok(60.0), 0))
     }
+
+    @Test fun stoppedCameraCannotAuthorizeImmediateRecovery() {
+        val guard = ProcessingGuard(warmupFrames = 0)
+        guard.shedOnce(0)
+        repeat(60) { guard.record(ok(), (it + 1) * 33L) }
+        assertNull(guard.record(ok(), 62_000))
+        assertEquals(ProcessingTier.NO_AUX, guard.tier)
+        val recoveredAt = guard.healthyUntilClimb(62_000)
+        assertTrue(recoveredAt >= 72_000)
+    }
+
+    @Test fun explicitInterruptionPreservesTierFailuresAndHardDisable() {
+        val guard = ProcessingGuard(warmupFrames = 0)
+        guard.shedOnce(0)
+        val climbedAt = guard.healthyUntilClimb(0)
+        guard.shedOnce(climbedAt)
+        assertEquals(20_000L, guard.climbDelayMs())
+        repeat(60) { guard.record(ok(), climbedAt + (it + 1) * 33L) }
+        guard.interruptEvidence()
+        assertNull(guard.addedP95Ms)
+        assertEquals(ProcessingTier.NO_AUX, guard.tier)
+        assertEquals(20_000L, guard.climbDelayMs())
+        assertNull(guard.record(ok(), climbedAt + 2_000))
+        assertTrue(guard.healthyUntilClimb(climbedAt + 2_000) >= climbedAt + 22_000)
+        guard.hardDisable()
+        guard.interruptEvidence()
+        assertEquals(FrameAction.BYPASS, guard.action())
+    }
+
+    @Test fun offProbeEvidenceExpiresButNormalSparseProbesCanRecover() {
+        val guard = ProcessingGuard(warmupFrames = 0)
+        repeat(3) { guard.shedOnce(0) }
+        repeat(29) { guard.record(ok(), it * 667L) }
+        assertNull(guard.record(ok(), 80_000))
+        assertEquals(ProcessingTier.OFF, guard.tier)
+        repeat(28) { assertNull(guard.record(ok(), 80_000 + (it + 1) * 667L)) }
+        assertEquals("probe_ok", guard.record(ok(), 80_000 + 29 * 667L)!!.cause)
+    }
+
+    @Test fun resizeAndBackwardsClockRestartEvidence() {
+        for (resize in listOf(false, true)) {
+            val guard = ProcessingGuard(warmupFrames = 0)
+            guard.shedOnce(1_000)
+            repeat(60) { guard.record(ok(), 1_000 + (it + 1) * 33L) }
+            val resumedAt = if (resize) 3_000L else 0L
+            assertNull(guard.record(ok(), resumedAt, oneTimeCost = resize))
+            assertTrue(guard.healthyUntilClimb(resumedAt) >= resumedAt + 10_000)
+        }
+    }
 }
