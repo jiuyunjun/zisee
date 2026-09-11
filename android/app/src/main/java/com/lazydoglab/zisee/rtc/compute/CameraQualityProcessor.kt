@@ -68,6 +68,14 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
     private var processedSize: String? = null
     private var lastResizeNs = 0L
     private var lastFrameTimestampNs = 0L
+    /** GL-thread scheduler counters: splits submit into on-CPU, runqueue wait and blocked sleep. */
+    private var schedStat: ThreadSchedStat? = null
+    private val schedStart = LongArray(2)
+    private val schedEnd = LongArray(2)
+    @Volatile private var subCpuUs = -1L
+    @Volatile private var subRunqUs = -1L
+    @Volatile private var glThreadPriority = Int.MIN_VALUE
+    private val schedSplit = SplitWindow(2)
     private val scenePolicy = ScenePolicy()
     private var analysisBuffer: GlTextureFrameBuffer? = null
     private val analysisPixels = java.nio.ByteBuffer.allocateDirect(16 * 9 * 4)
@@ -83,6 +91,8 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
                 shader = CameraQualityShader()
                 shader!!.prepare()
                 gpuTimer = GpuTimer.createOrNull()
+                schedStat = ThreadSchedStat.openOrNull()
+                glThreadPriority = android.os.Process.getThreadPriority(android.os.Process.myTid())
             } catch (error: RuntimeException) {
                 roi?.close()
                 try { shader?.close() } finally { helper.dispose() }
@@ -135,6 +145,7 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         val output = try {
             ThreadUtils.invokeAtFrontUninterruptibly(helper.handler, java.util.concurrent.Callable {
                 enteredNs = System.nanoTime()
+                val schedStarted = schedStat?.read(schedStart) == true
                 resizedThisFrame = false
                 split.fill(0)
                 outFresh = false
@@ -149,6 +160,10 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
                     gpuTimer?.end()
                     submittedNs = System.nanoTime()
                     split[SPLIT_TIMER_END] = (submittedNs - endStarted) / 1000
+                    if (schedStarted && schedStat?.read(schedEnd) == true) {
+                        subCpuUs = (schedEnd[0] - schedStart[0]) / 1000
+                        subRunqUs = (schedEnd[1] - schedStart[1]) / 1000
+                    } else { subCpuUs = -1; subRunqUs = -1 }
                     GLES20.glFinish()
                     finishedNs = System.nanoTime()
                     gpuNs = gpuTimer?.resultNs()
@@ -164,6 +179,7 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         // GPU completion, not just CPU submission time.
         val resumedNs = System.nanoTime()
         val splitRow = split.copyOf()
+        val schedRow = longArrayOf(subCpuUs, subRunqUs)
         val frameFresh = outFresh
         if (resizedThisFrame) {
             val size = "${buffer.width}x${buffer.height}"
@@ -183,11 +199,12 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
             arrivalClockNs / 1_000_000, oneTimeCost = resizedThisFrame)
         if (phases != null && addedMs > ProcessingGuard.LATE_MS) {
             logLate(phases, splitRow, action, tier, auxBusyAtArrival, auxAgoMs, detectorBusyAtArrival,
-                LateContext(arrivalNs, frameAgeMs, frameDeltaMs, frameFresh), buffer.width, buffer.height)
+                LateContext(arrivalNs, frameAgeMs, frameDeltaMs, frameFresh, schedRow[0], schedRow[1]), buffer.width, buffer.height)
         }
         if (action == FrameAction.PROCESS && guard.lastCounted && phases != null) {
             frameStats.add(phases)
             submitSplit.add(splitRow)
+            if (schedRow[0] >= 0) schedSplit.add(schedRow)
         }
         if (transition != null) logTransition(transition, buffer.width, buffer.height)
         val delivered = action == FrameAction.PROCESS && output != null
@@ -210,6 +227,7 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         val sub = submitSplit.p95()?.joinToString("/") ?: "-1"
         frameStats.clear()
         submitSplit.clear()
+        schedSplit.clear()
         logger.info(AppEvent.RTC_COMPUTE_TIER, "$name:${transition.from}>${transition.to}:${transition.cause}" +
             ":${transition.pressure}:${guard.state}:climb=${guard.climbDelayMs() ?: -1}:late=$late/$samples" +
             ":added95=${p?.addedUs ?: -1}:pre95=${p?.preUs ?: -1}:queue95=${p?.queueUs ?: -1}" +
@@ -218,7 +236,8 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
     }
 
     /** One line per late frame (rate-limited) so a device log shows where each late frame's time went. */
-    private class LateContext(val arrivalNs: Long, val ageMs: Long, val deltaMs: Long, val outFresh: Boolean)
+    private class LateContext(val arrivalNs: Long, val ageMs: Long, val deltaMs: Long, val outFresh: Boolean,
+                              val subCpuUs: Long, val subRunqUs: Long)
 
     private fun logLate(p: FramePhases, sub: LongArray, action: FrameAction, tier: ProcessingTier, auxBusy: Boolean,
                         auxAgoMs: Long, detectorBusy: Boolean, context: LateContext, width: Int, height: Int) {
@@ -231,7 +250,11 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
             ":wait=${p.waitUs}:resume=${p.resumeUs}:gpu=${p.gpuUs}:aux=$aux:auxUs=$lastAuxUs" +
             ":detector=${if (detectorBusy) "busy" else "idle"}:age=${context.ageMs}ms:fdelta=${context.deltaMs}ms" +
             ":sinceResize=${if (lastResizeNs == 0L) -1 else (context.arrivalNs - lastResizeNs) / 1_000_000}ms" +
-            ":outFresh=${context.outFresh}:${width}x$height")
+            ":outFresh=${context.outFresh}" +
+            // Submit wall time = on CPU + waiting for a CPU (preempted) + blocked (lock/fence sleep).
+            (if (context.subCpuUs < 0) ":subSched=unavailable" else ":subCpu=${context.subCpuUs}" +
+                ":subRunq=${context.subRunqUs}:subSleep=${p.submitUs - context.subCpuUs - context.subRunqUs}") +
+            ":${width}x$height")
     }
 
     private fun lap(field: Int) {
@@ -412,7 +435,8 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
             ":gpu=${pair { it.gpuUs }}:sub95($SPLIT_LABEL)=${submitSplit.p95()?.joinToString("/") ?: "-1"}" +
             ":scene=${sceneCost.summary()}:roi=${roiCost.summary()}" +
             ":det=${roi?.detectCost?.summary() ?: "0/-1"}:faces=${roiFaces ?: -1}" +
-            ":climb=${guard.climbDelayMs() ?: -1}:${width}x$height")
+            ":climb=${guard.climbDelayMs() ?: -1}:sched95(cpu/runq)=${schedSplit.p95()?.joinToString("/") ?: "-1"}" +
+            ":glPrio=$glThreadPriority:${width}x$height")
     }
 
     private companion object {
@@ -440,6 +464,7 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         ThreadUtils.invokeAtFrontUninterruptibly(helper.handler) {
             roiSampler?.close(); roiSampler = null
             gpuTimer?.close(); gpuTimer = null
+            schedStat?.close(); schedStat = null
             shader?.close(); shader = null
             history.forEach { it.release() }; history = emptyList()
             analysisBuffer?.release(); analysisBuffer = null

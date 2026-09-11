@@ -262,3 +262,17 @@
   - `RTC_COMPUTE_LATE` 增加 `age`（到达时相机帧已过去的 ms，时间戳与 `System.nanoTime` 同为单调时钟）、`fdelta`（与上一帧时间戳间隔）、`sinceResize`（距上次处理尺寸变化）、`outFresh`（本帧输出槽是否首次以当前尺寸写入，即可能重新分配）。
 - 验证：327 项 JVM 单测 0 failures/errors/skipped；assembleDebug、assembleDebugAndroidTest、lintDebug、compileReleaseKotlin 通过（`android/app/build/flush-resize-diag-validation.log`）。emulator-5556 `-e computeQuality true`、默认 native 回环 PASS。
 - 真机待测：看迟到帧落在 `hist/out` 还是 `hflush/oflush`；`sinceResize` 是否普遍很小；`outFresh=true` 是否与 `out` 卡顿对应；`age` 是否在卡顿帧上偏小（帧到得过早 → fence 假设）。
+- flush/尺寸诊断提交：`4f8deb0`。
+
+### 线程调度诊断（2026-09-11）
+
+- 真机（16:25、16:30 两通，`4f8deb0`）排除结论：
+  - **与尺寸切换无关**：迟到帧 `sinceResize` 普遍数秒到数十秒，`outFresh` 全为 false（输出槽没有重新分配）。
+  - **不是提交阻塞**：`hflush`/`oflush` 0.1–1ms，10–21ms 完整落在 `hist` 或 `out` 的绘制调用内部。
+  - **不是相机 fence**：`age` 6–19ms 无异常；且大量卡顿落在不读取 OES 的降噪 `out`。
+  - **与工作量无关**：RESIZE_ONLY 同样卡 15–16ms，而自身 `gpu` 0.8–2ms。
+  - 卡顿时长集中在 15–16ms；屏幕 120Hz（8.3ms/帧），约两个刷新周期，无法据此定论。
+- 剩余假设：①GL 线程（`Quality-<name>`，普通优先级）在 ML Kit/编码/渲染争用下被抢占；②同进程其他 GL 线程（预览/远端渲染 swap 等）持有驱动锁，本线程在绘制调用中睡眠等待。
+- 本步诊断：新增 `ThreadSchedStat`，GL 线程初始化时打开 `/proc/thread-self/schedstat`（格式 `cpu_ns runqueue_wait_ns timeslices`，真机已确认可读）；每帧在 submit 起止各读一次，把 submit 墙钟拆成 `subCpu`（在 CPU 上）、`subRunq`（可运行但在等 CPU → 被抢占）、`subSleep = submit - cpu - runq`（阻塞睡眠 → 锁/fence）。`RTC_COMPUTE_LATE` 追加这三项（不可读时 `subSched=unavailable`）；`RTC_COMPUTE_STATS` 追加 `sched95(cpu/runq)` 与 GL 线程优先级 `glPrio`。
+- 验证：329 项 JVM 单测（新增 schedstat 解析 2 项）0 failures/errors/skipped；assembleDebug、assembleDebugAndroidTest、lintDebug、compileReleaseKotlin 通过（`android/app/build/schedstat-diag-validation.log`）。emulator-5556 `-e computeQuality true`、默认 native 回环 PASS。
+- 真机待测：卡顿帧 `subRunq` 大 → 提高 GL 线程优先级（如 `THREAD_PRIORITY_DISPLAY`）或降低 ML Kit worker 优先级；`subSleep` 大 → 驱动锁/隐式同步，需配合渲染线程 swap 时间或第 3 步异步流水线；`subCpu` 大 → 驱动 CPU 工作本身。
