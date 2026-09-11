@@ -51,6 +51,9 @@ class RoiAnalyzer(
     private data class Result(val geometry: RoiGeometry, val timestampNs: Long,
         val startedNs: Long, val boxes: List<RoiBox>)
 
+    /** Detector inference time on the worker, for diagnostics (competes with capture/GL for CPU). */
+    val detectCost = LatencyWindow()
+
     val state: RoiState get() = synchronized(lock) {
         when { closed -> RoiState.CLOSED; failed -> RoiState.FAILED; busy -> RoiState.BUSY; else -> RoiState.READY }
     }
@@ -96,7 +99,9 @@ class RoiAnalyzer(
 
     private fun analyze(input: RoiInput, startedNs: Long, submittedRevision: Long) {
         try {
+            val detectStarted = clockNs()
             val boxes = detector.detect(input)
+            detectCost.add((clockNs() - detectStarted) / 1000)
             // Reject malformed/oversized output rather than accidentally treating a face as background.
             require(boxes.size <= MAX_REGIONS && boxes.all { it.valid() })
             val snapshot = Result(input.geometry, input.timestampNs, startedNs, boxes.toList())

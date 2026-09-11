@@ -104,6 +104,54 @@ class ProcessingGuardTest {
         assertEquals(ComputePressure.NONE, guard.pressure)
     }
 
+    private fun ProcessingGuard.healthyUntilClimb(from: Long): Long {
+        var now = from
+        while (true) { now += 33; if (record(ok(), now) != null) return now }
+    }
+
+    @Test fun repeatedFailuresOfATierDoubleItsClimbDelay() {
+        val guard = ProcessingGuard(warmupFrames = 0)
+        var shedAt = 0L
+        for (expected in listOf(10_000L, 20_000L, 40_000L)) {
+            guard.shedOnce(shedAt)
+            assertEquals(expected, guard.climbDelayMs())
+            val climbedAt = guard.healthyUntilClimb(shedAt)
+            assertTrue(climbedAt - shedAt in expected..expected + 100)
+            assertEquals(ProcessingTier.FULL, guard.tier)
+            shedAt = climbedAt
+        }
+        guard.shedOnce(shedAt)
+        assertEquals(60_000L, guard.climbDelayMs())
+    }
+
+    @Test fun sustainedTierForgetsEarlierFailures() {
+        val guard = ProcessingGuard(warmupFrames = 0)
+        guard.shedOnce(0)
+        var now = guard.healthyUntilClimb(0)
+        guard.shedOnce(now)
+        assertEquals(20_000L, guard.climbDelayMs())
+        now = guard.healthyUntilClimb(now)
+        val end = now + 60_000
+        while (now < end) { now += 33; assertNull(guard.record(ok(), now)) }
+        guard.shedOnce(now)
+        assertEquals(10_000L, guard.climbDelayMs())
+    }
+
+    @Test fun externalPressureShedsOnlyAuxiliaryWork() {
+        val guard = ProcessingGuard(warmupFrames = 0)
+        val external = GuardSample(13.0, 1.0, waitMs = 1.0, submitMs = 0.5, queueMs = 0.1, externalMs = 9.0)
+        repeat(2) { guard.record(external, 0) }
+        val dropAux = guard.record(external, 0)!!
+        assertEquals(ProcessingTier.NO_AUX, dropAux.to)
+        assertEquals(ComputePressure.EXTERNAL, dropAux.pressure)
+        repeat(2) { guard.record(external, 100) }
+        val held = guard.record(external, 100)!!
+        assertEquals(ProcessingTier.NO_AUX, held.from)
+        assertEquals(ProcessingTier.NO_AUX, held.to)
+        assertEquals("consecutive_held", held.cause)
+        assertEquals(ProcessingTier.NO_AUX, guard.tier)
+    }
+
     @Test fun offProbesOnSparseShadowFramesAndRecovers() {
         val guard = ProcessingGuard(warmupFrames = 0)
         repeat(3) { guard.shedOnce(0) }

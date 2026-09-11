@@ -53,6 +53,11 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
     private var lastStatsLogNs = 0L
     private var processedSerial = 0L
     private var sceneFailed = false
+    @Volatile private var auxRunning = false
+    @Volatile private var lastAuxEndNs = 0L
+    @Volatile private var lastAuxUs = 0L
+    private var lateLogWindowNs = 0L
+    private var lateLogCount = 0
     private val scenePolicy = ScenePolicy()
     private var analysisBuffer: GlTextureFrameBuffer? = null
     private val analysisPixels = java.nio.ByteBuffer.allocateDirect(16 * 9 * 4)
@@ -107,6 +112,10 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         // A shadow frame measures the lightest real workload but the original frame is delivered.
         val tier = if (action == FrameAction.SHADOW) ProcessingTier.RESIZE_ONLY else guard.tier
         auxAllowed = tier == ProcessingTier.FULL
+        // Context for late-frame diagnosis: was an auxiliary GL task or detector inference competing?
+        val auxBusyAtArrival = auxRunning
+        val auxAgoMs = if (lastAuxEndNs == 0L) -1 else (arrivalNs - lastAuxEndNs) / 1_000_000
+        val detectorBusyAtArrival = roi?.state == RoiState.BUSY
         val queuedNs = System.nanoTime()
         var enteredNs = 0L; var submittedNs = 0L; var finishedNs = 0L; var gpuNs: Long? = null
         val output = try {
@@ -134,13 +143,19 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         }
         // Base pipeline only (readbacks run as separate GL tasks); includes GL-thread waiting and
         // GPU completion, not just CPU submission time.
+        val resumedNs = System.nanoTime()
         val addedMs = (elapsedClockNs() - arrivalClockNs) / 1_000_000.0
-        val phases = if (finishedNs == 0L) null else FramePhases((enteredNs - queuedNs) / 1000,
-            (submittedNs - enteredNs) / 1000, (finishedNs - submittedNs) / 1000, gpuNs?.div(1000) ?: -1,
-            (System.nanoTime() - arrivalNs) / 1000)
+        val phases = if (finishedNs == 0L) null else FramePhases(preUs = (queuedNs - arrivalNs) / 1000,
+            queueUs = (enteredNs - queuedNs) / 1000, submitUs = (submittedNs - enteredNs) / 1000,
+            waitUs = (finishedNs - submittedNs) / 1000, resumeUs = (resumedNs - finishedNs) / 1000,
+            gpuUs = gpuNs?.div(1000) ?: -1, addedUs = (resumedNs - arrivalNs) / 1000)
         val transition = if (phases == null) null else guard.record(GuardSample(addedMs, gpuNs?.let { it / 1_000_000.0 },
-            phases.waitUs / 1000.0, phases.submitUs / 1000.0, phases.queueUs / 1000.0),
+            waitMs = phases.waitUs / 1000.0, submitMs = phases.submitUs / 1000.0, queueMs = phases.queueUs / 1000.0,
+            externalMs = (phases.preUs + phases.resumeUs) / 1000.0),
             arrivalClockNs / 1_000_000, oneTimeCost = resizedThisFrame)
+        if (phases != null && addedMs > ProcessingGuard.LATE_MS) {
+            logLate(phases, action, tier, auxBusyAtArrival, auxAgoMs, detectorBusyAtArrival, buffer.width, buffer.height)
+        }
         if (action == FrameAction.PROCESS && guard.lastCounted && phases != null) frameStats.add(phases)
         if (transition != null) logTransition(transition, buffer.width, buffer.height)
         val delivered = action == FrameAction.PROCESS && output != null
@@ -157,11 +172,27 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
     }
 
     private fun logTransition(transition: GuardTransition, width: Int, height: Int) {
-        val evidence = frameStats.summary()?.p95
+        val p = frameStats.summary()?.p95
+        val late = frameStats.countOver((ProcessingGuard.LATE_MS * 1000).toLong())
+        val samples = frameStats.size
         frameStats.clear()
         logger.info(AppEvent.RTC_COMPUTE_TIER, "$name:${transition.from}>${transition.to}:${transition.cause}" +
-            ":${transition.pressure}:${guard.state}:added95=${evidence?.addedUs ?: -1}:gpu95=${evidence?.gpuUs ?: -1}" +
-            ":wait95=${evidence?.waitUs ?: -1}:${width}x$height")
+            ":${transition.pressure}:${guard.state}:climb=${guard.climbDelayMs() ?: -1}:late=$late/$samples" +
+            ":added95=${p?.addedUs ?: -1}:pre95=${p?.preUs ?: -1}:queue95=${p?.queueUs ?: -1}" +
+            ":submit95=${p?.submitUs ?: -1}:wait95=${p?.waitUs ?: -1}:resume95=${p?.resumeUs ?: -1}" +
+            ":gpu95=${p?.gpuUs ?: -1}:${width}x$height")
+    }
+
+    /** One line per late frame (rate-limited) so a device log shows where each late frame's time went. */
+    private fun logLate(p: FramePhases, action: FrameAction, tier: ProcessingTier, auxBusy: Boolean, auxAgoMs: Long,
+                        detectorBusy: Boolean, width: Int, height: Int) {
+        val now = System.nanoTime()
+        if (now - lateLogWindowNs > LATE_LOG_WINDOW_NS) { lateLogWindowNs = now; lateLogCount = 0 }
+        if (++lateLogCount > LATE_LOG_MAX) return
+        val aux = if (auxBusy) "running" else "${auxAgoMs}ms_ago"
+        logger.info(AppEvent.RTC_COMPUTE_LATE, "$name:$action:$tier:added=${p.addedUs}:pre=${p.preUs}" +
+            ":queue=${p.queueUs}:submit=${p.submitUs}:wait=${p.waitUs}:resume=${p.resumeUs}:gpu=${p.gpuUs}" +
+            ":aux=$aux:auxUs=$lastAuxUs:detector=${if (detectorBusy) "busy" else "idle"}:${width}x$height")
     }
 
     private fun process(frame: VideoFrame, buffer: VideoFrame.TextureBuffer, config: ComputeDecision, frameEpoch: Long,
@@ -225,10 +256,19 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         helper.handler.post {
             // A newer frame may already be overwriting these history textures: skip, never read them.
             if (closed || shader == null || serial != processedSerial || frameEpoch != epoch.get()) return@post
-            if (sceneWanted) analyzeScene(current, previous, width, height)
-            if (roiWanted) {
-                val started = System.nanoTime()
-                if (analyzeRoi(current, geometry, timestampNs, frameEpoch)) roiCost.add((System.nanoTime() - started) / 1000)
+            val auxStarted = System.nanoTime()
+            auxRunning = true
+            try {
+                if (sceneWanted) analyzeScene(current, previous, width, height)
+                if (roiWanted) {
+                    val started = System.nanoTime()
+                    if (analyzeRoi(current, geometry, timestampNs, frameEpoch)) roiCost.add((System.nanoTime() - started) / 1000)
+                }
+            } finally {
+                val ended = System.nanoTime()
+                lastAuxUs = (ended - auxStarted) / 1000
+                lastAuxEndNs = ended
+                auxRunning = false
             }
         }
     }
@@ -289,14 +329,19 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         val summary = frameStats.summary()?.takeIf { it.samples >= 30 } ?: return
         lastStatsLogNs = now
         fun pair(select: (FramePhases) -> Long) = "${select(summary.p50)}/${select(summary.p95)}"
-        logger.info(AppEvent.RTC_COMPUTE_STATS, "$name:${decision.level}:n=${summary.samples}" +
-            ":added=${pair { it.addedUs }}:gpu=${pair { it.gpuUs }}:wait=${pair { it.waitUs }}" +
-            ":submit=${pair { it.submitUs }}:queue=${pair { it.queueUs }}" +
-            ":scene=${sceneCost.summary()}:roi=${roiCost.summary()}:${width}x$height")
+        logger.info(AppEvent.RTC_COMPUTE_STATS, "$name:${decision.level}:${guard.tier}:n=${summary.samples}" +
+            ":late=${frameStats.countOver((ProcessingGuard.LATE_MS * 1000).toLong())}" +
+            ":added=${pair { it.addedUs }}:pre=${pair { it.preUs }}:queue=${pair { it.queueUs }}" +
+            ":submit=${pair { it.submitUs }}:wait=${pair { it.waitUs }}:resume=${pair { it.resumeUs }}" +
+            ":gpu=${pair { it.gpuUs }}:scene=${sceneCost.summary()}:roi=${roiCost.summary()}" +
+            ":det=${roi?.detectCost?.summary() ?: "0/-1"}:faces=${roiFaces ?: -1}" +
+            ":climb=${guard.climbDelayMs() ?: -1}:${width}x$height")
     }
 
     private companion object {
         const val STATS_LOG_INTERVAL_NS = 10_000_000_000L
+        const val LATE_LOG_WINDOW_NS = 10_000_000_000L
+        const val LATE_LOG_MAX = 10
     }
 
     /** Detach from VideoSource first. Pool defers EGL teardown until the last output is released. */

@@ -1,7 +1,12 @@
 package com.lazydoglab.zisee.rtc.compute
 
-/** Real-clock split of one base-pipeline frame in microseconds; [gpuUs] is -1 without timer queries. */
-data class FramePhases(val queueUs: Long, val submitUs: Long, val waitUs: Long, val gpuUs: Long, val addedUs: Long)
+/**
+ * Contiguous real-clock split of one base-pipeline frame, microseconds:
+ * arrival →[pre] queued →[queue] GL start →[submit] submitted →[wait] GPU done →[resume] caller.
+ * [gpuUs] is the timer-query execution time (-1 when unavailable); [addedUs] is the whole span.
+ */
+data class FramePhases(val preUs: Long, val queueUs: Long, val submitUs: Long, val waitUs: Long,
+    val resumeUs: Long, val gpuUs: Long, val addedUs: Long)
 
 data class PhaseSummary(val samples: Int, val p50: FramePhases, val p95: FramePhases)
 
@@ -19,17 +24,24 @@ class ComputeStatsWindow(private val capacity: Int = 120) {
 
     fun clear() = frames.clear()
 
+    fun countOver(addedUs: Long): Int = frames.count { it.addedUs > addedUs }
+
     fun summary(): PhaseSummary? {
         if (frames.isEmpty()) return null
         val gpu = frames.map { it.gpuUs }.filter { it >= 0 }
-        fun at(pct: Int) = FramePhases(percentile(frames.map { it.queueUs }, pct),
-            percentile(frames.map { it.submitUs }, pct), percentile(frames.map { it.waitUs }, pct),
-            if (gpu.isEmpty()) -1 else percentile(gpu, pct), percentile(frames.map { it.addedUs }, pct))
+        fun at(pct: Int) = FramePhases(
+            preUs = percentile(frames.map { it.preUs }, pct),
+            queueUs = percentile(frames.map { it.queueUs }, pct),
+            submitUs = percentile(frames.map { it.submitUs }, pct),
+            waitUs = percentile(frames.map { it.waitUs }, pct),
+            resumeUs = percentile(frames.map { it.resumeUs }, pct),
+            gpuUs = if (gpu.isEmpty()) -1 else percentile(gpu, pct),
+            addedUs = percentile(frames.map { it.addedUs }, pct))
         return PhaseSummary(frames.size, at(50), at(95))
     }
 }
 
-/** Auxiliary task cost. Written on the GL thread, read for logs on the capture thread. */
+/** Auxiliary/detector cost. Thread-safe: written on GL/worker threads, read for logs elsewhere. */
 class LatencyWindow(private val capacity: Int = 30) {
     private val values = ArrayDeque<Long>()
 

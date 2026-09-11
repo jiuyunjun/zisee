@@ -220,3 +220,22 @@
 - 日志：`RTC_COMPUTE_TIER name:<from>><to>:<cause>:<pressure>:<state>:added95=..:gpu95=..:wait95=..:WxH`（转移前 120 帧证据，随后清空统计窗口）。`RTC_COMPUTE_STATS` 保留。调试详情 `guard=<state>/<tier>/<pressure>`。
 - 验证：301 项 JVM 单测（新增 guard 12 项，删除旧预算 7 项）0 failures/errors/skipped；assembleDebug、assembleDebugAndroidTest、lintDebug、compileReleaseKotlin 通过（`android/app/build/guard-step2-validation.log`）。emulator-5556：`-e computeQuality true` PASS（控制时钟下连续 3 帧 13ms → NO_AUX 且继续处理）；默认 native 回环 PASS，结束 `guard=DEGRADED/RESIZE_ONLY/CPU_SUBMIT`（模拟器首帧慢被逐档降级但不锁死）；`-e arFramePool true` PASS。
 - 真机待测：≥2 分钟通话。预期 front 大部分时间 NORMAL/FULL（C1 起），首次出现 ROI `faces=`；关注 `RTC_COMPUTE_TIER` 是否有来回振荡、影子帧期间画面无闪烁。
+- 第 2 步提交：`25a392a`。
+
+### 第 2 步真机结果与诊断增强
+
+- 真机（15:35 通话）：首次全程以 FULL 为主，C1→C2（15:35:43）→ 短暂 C3；ROI 首次在真机运行（30 次取样，人脸数当时只在 UI 调试详情里，日志无）。640×360/960×540 `added` p95 ≈4ms，`gpu` 0.8–1.4ms。
+- 暴露的问题：
+  1. 1280×720 下 `added` p95 10–14ms，但 `gpu` 仅 2.4ms，p95 各段之和约 8ms。旧计时缺两段：到达→排队、GL 完成→调用线程恢复；ML Kit 推理同时在跑，唤醒延迟可能在这里（未证实）。旧分类 `CPU_SUBMIT` 不可靠。
+  2. 外部压力下级联降档：FULL>NO_AUX（miss_rate）后 1.4s、0.3s 内再以 `consecutive` 降到 RESIZE_ONLY、OFF——自身工作已很轻仍迟到，降档无效。
+  3. FULL↔NO_AUX 10s 周期振荡。
+  4. 720p 辅助读回变贵：场景 p95 12ms，ROI 取样 p95 18ms（GL 线程同步）。
+- 本步修改（均在 `rtc/compute`，不涉及 `ar/`；另一 agent 正在改 AR）：
+  - `FramePhases` 改为首尾相接的七段：`pre`（到达→排队）/`queue`/`submit`/`wait`/`resume`（GPU 完成→调用线程恢复）/`gpu`（timer）/`added`。`pre + resume` 记为外部耗时 `externalMs`。
+  - 压力分类改为按**迟到帧**各段耗时之和取最大：`GPU_SYNC / CPU_SUBMIT / QUEUE / EXTERNAL`，自身 gpu P95 >5ms 仍为 `GPU_COMPUTE`。`EXTERNAL` 时 FULL 仍降到 NO_AUX（去掉辅助任务可缓解 CPU/GL 争用），NO_AUX 及以下改为 `<cause>_held`：清空证据、不降档（`TIER` 日志 from==to）。
+  - 防振荡：某档每次失败使下次重新进入它的等待加倍（10→20→40s，上限 60s）；在该档连续停留 60s 后清零。`climbDelayMs()` 进日志。
+  - 新增 `RTC_COMPUTE_LATE`（每帧 `added` >12ms，每 10s 最多 10 行）：`name:<action>:<tier>:added:pre:queue:submit:wait:resume:gpu:aux=<running|Nms_ago>:auxUs:detector=<busy|idle>:WxH`。
+  - `RTC_COMPUTE_STATS` 增加 `tier`、`late`（窗口内迟到帧数）、`pre`、`resume`、`det`（ML Kit 推理次数/p95，来自 `RoiAnalyzer.detectCost`）、`faces`、`climb`。`RTC_COMPUTE_TIER` 增加 `climb`、`late=n/窗口`、各段 p95。
+- 验证：321 项 JVM 单测 0 failures/errors/skipped（含另一 agent 同期新增的 AR 测试；本步新增 guard 3 项、统计断言更新）；assembleDebug、assembleDebugAndroidTest、lintDebug、compileReleaseKotlin 通过（`android/app/build/guard-diag-validation.log`，构建包含另一 agent 未提交的 AR 改动）。emulator-5556 `-e computeQuality true`、默认 native 回环 PASS（回环结束 `DEGRADED/RESIZE_ONLY`，未锁死）；本步未改 `ArFramePool`，未跑 `arFramePool`。
+- 提交状态：本地 main 上有另一 agent 尚未 push 的 AR 提交在本步之前，本步只本地 commit，**未 push**，等用户决定。
+- 真机待测：看 `RTC_COMPUTE_LATE` 中迟到帧的时间落在哪一段，以及迟到时 `aux`/`detector` 是否在运行；确认 720p 下是否为 `EXTERNAL`、是否不再级联到 OFF、FULL 重入等待是否随失败加倍。

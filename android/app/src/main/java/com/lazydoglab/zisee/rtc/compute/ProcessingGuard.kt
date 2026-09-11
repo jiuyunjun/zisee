@@ -3,14 +3,18 @@ package com.lazydoglab.zisee.rtc.compute
 /** Workload tiers, ordered lightest to heaviest. */
 enum class ProcessingTier { OFF, RESIZE_ONLY, NO_AUX, FULL }
 enum class GuardState { NORMAL, DEGRADED, PROBE, HARD_DISABLED }
-/** Dominant cost when work was shed; QUEUE includes GL-thread blocking by auxiliary readbacks. */
-enum class ComputePressure { NONE, GPU_COMPUTE, GPU_SYNC, CPU_SUBMIT, QUEUE }
+/**
+ * Where late frames spent their time. QUEUE: waiting for the GL thread (incl. auxiliary readbacks).
+ * EXTERNAL: scheduling outside our own work (before queueing, or waking after the GPU finished).
+ */
+enum class ComputePressure { NONE, GPU_COMPUTE, GPU_SYNC, CPU_SUBMIT, QUEUE, EXTERNAL }
 enum class FrameAction { BYPASS, SHADOW, PROCESS }
 
 /** One measured frame in milliseconds; [gpuMs] is null when timer queries are unavailable. */
 data class GuardSample(val addedMs: Double, val gpuMs: Double?, val waitMs: Double = 0.0,
-    val submitMs: Double = 0.0, val queueMs: Double = 0.0)
+    val submitMs: Double = 0.0, val queueMs: Double = 0.0, val externalMs: Double = 0.0)
 
+/** [from] == [to] means the violation was held rather than shed (external pressure). */
 data class GuardTransition(val from: ProcessingTier, val to: ProcessingTier, val cause: String,
     val pressure: ComputePressure)
 
@@ -36,10 +40,17 @@ class ProcessingGuard(private val warmupFrames: Int = 3) {
 
     private val window = ArrayDeque<GuardSample>()
     private val longFrames = ArrayDeque<Long>()
+    private val failures = IntArray(ProcessingTier.entries.size)
     private var consecutiveLate = 0
     private var warmupSeen = 0
     private var tierSinceMs: Long? = null
+    private var tierEnteredMs: Long? = null
     private var probeCountdown = 0
+
+    /** Healthy time the next climb needs; null at FULL (nothing above) and OFF (probe decides). */
+    fun climbDelayMs(): Long? =
+        if (tier == ProcessingTier.OFF || tier == ProcessingTier.FULL) null
+        else climbDelayFor(ProcessingTier.entries[tier.ordinal + 1])
 
     /** Call once per eligible frame. At OFF only every [PROBE_INTERVAL]th frame is shadow-processed. */
     fun action(): FrameAction = when {
@@ -56,6 +67,9 @@ class ProcessingGuard(private val warmupFrames: Int = 3) {
     fun record(sample: GuardSample, nowMs: Long, oneTimeCost: Boolean = false): GuardTransition? {
         if (hardDisabled) return null
         if (tierSinceMs == null) tierSinceMs = nowMs
+        val entered = tierEnteredMs ?: nowMs.also { tierEnteredMs = it }
+        // A tier held long enough has proven itself; forget its earlier failures.
+        if (nowMs - entered >= SUSTAIN_MS) failures[tier.ordinal] = 0
         lastCounted = !oneTimeCost && warmupSeen >= warmupFrames
         if (!lastCounted) {
             if (!oneTimeCost) warmupSeen++
@@ -81,28 +95,40 @@ class ProcessingGuard(private val warmupFrames: Int = 3) {
         return when {
             tier == ProcessingTier.OFF && window.size >= PROBE_SAMPLES -> climb(nowMs, "probe_ok")
             tier != ProcessingTier.OFF && tier != ProcessingTier.FULL && window.size >= MIN_WINDOW &&
-                nowMs - since >= CLIMB_AFTER_MS -> climb(nowMs, "stable")
+                nowMs - since >= climbDelayFor(ProcessingTier.entries[tier.ordinal + 1]) -> climb(nowMs, "stable")
             else -> null
         }
     }
 
-    /** At OFF a failed probe only restarts the evidence: probing continues, nothing locks. */
     private fun shed(nowMs: Long, cause: String, pressure: ComputePressure): GuardTransition? {
         val from = tier
         this.pressure = pressure
         resetEvidence(nowMs)
+        // At OFF a failed probe only restarts the evidence: probing continues, nothing locks.
         if (from == ProcessingTier.OFF) return null
+        // Late frames dominated by scheduling outside our work: dropping auxiliary tasks can relieve
+        // CPU/GL contention, but shedding the base pipeline would not make those frames earlier.
+        if (pressure == ComputePressure.EXTERNAL && from <= ProcessingTier.NO_AUX) {
+            return GuardTransition(from, from, "${cause}_held", pressure)
+        }
+        failures[from.ordinal] = minOf(failures[from.ordinal] + 1, MAX_FAILURES)
         tier = ProcessingTier.entries[from.ordinal - 1]
+        tierEnteredMs = nowMs
         return GuardTransition(from, tier, cause, pressure)
     }
 
     private fun climb(nowMs: Long, cause: String): GuardTransition {
         val from = tier
         tier = ProcessingTier.entries[from.ordinal + 1]
+        tierEnteredMs = nowMs
         if (tier == ProcessingTier.FULL) pressure = ComputePressure.NONE
         resetEvidence(nowMs)
         return GuardTransition(from, tier, cause, pressure)
     }
+
+    /** Each recent failure of the target tier doubles the wait before re-entering it. */
+    private fun climbDelayFor(target: ProcessingTier): Long =
+        minOf(CLIMB_AFTER_MS shl maxOf(failures[target.ordinal] - 1, 0), MAX_CLIMB_MS)
 
     private fun resetEvidence(nowMs: Long) {
         window.clear(); longFrames.clear(); consecutiveLate = 0; tierSinceMs = nowMs; probeCountdown = 0
@@ -111,14 +137,14 @@ class ProcessingGuard(private val warmupFrames: Int = 3) {
     private fun classify(samples: List<GuardSample>): ComputePressure {
         val gpu = samples.mapNotNull { it.gpuMs }
         if (gpu.isNotEmpty() && p95(gpu) > GPU_P95_MS) return ComputePressure.GPU_COMPUTE
-        val wait = p95(samples.map { it.waitMs })
-        val submit = p95(samples.map { it.submitMs })
-        val queue = p95(samples.map { it.queueMs })
-        return when (maxOf(wait, submit, queue)) {
-            wait -> ComputePressure.GPU_SYNC
-            submit -> ComputePressure.CPU_SUBMIT
-            else -> ComputePressure.QUEUE
-        }
+        // Attribute the late frames' time to where it was actually spent.
+        val late = samples.filter { it.addedMs > LATE_MS }.ifEmpty { samples }
+        return linkedMapOf(
+            ComputePressure.GPU_SYNC to late.sumOf { it.waitMs },
+            ComputePressure.CPU_SUBMIT to late.sumOf { it.submitMs },
+            ComputePressure.QUEUE to late.sumOf { it.queueMs },
+            ComputePressure.EXTERNAL to late.sumOf { it.externalMs },
+        ).maxBy { it.value }.key
     }
 
     private fun p95(values: List<Double>): Double = values.sorted()[(values.size * 95 + 99) / 100 - 1]
@@ -135,5 +161,8 @@ class ProcessingGuard(private val warmupFrames: Int = 3) {
         const val PROBE_SAMPLES = 30
         const val PROBE_INTERVAL = 10
         const val CLIMB_AFTER_MS = 10_000L
+        const val MAX_CLIMB_MS = 60_000L
+        const val SUSTAIN_MS = 60_000L
+        const val MAX_FAILURES = 4
     }
 }
