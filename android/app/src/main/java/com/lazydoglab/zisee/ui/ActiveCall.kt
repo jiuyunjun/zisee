@@ -494,15 +494,20 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                         }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (localMode in setOf(CameraMode.FACE, CameraMode.BACK_ONLY) && !sharing && !state.remoteShare.sharing) {
-                            Box(Modifier.size(48.dp).clip(CircleShape).background(Color(0xFF0C1216).copy(alpha = 0.5f))
+                        if (!sharing) {
+                            val showMeEnabled = state.cameraEnabled && !starting
+                            Box(Modifier.size(48.dp).clip(CircleShape)
+                                .background(if (localScene) CallAccent else Color(0xFF0C1216).copy(alpha = 0.5f))
                                 .border(1.dp, CallText.copy(alpha = 0.10f), CircleShape)
-                                .clickable(enabled = state.cameraEnabled && !starting) { interaction++; onSwitch() }
-                                .semantics { role = Role.Button; contentDescription = "切换前后摄像头" },
+                                .clickable(enabled = showMeEnabled) { interaction++; onShowMe() }
+                                .semantics { role = Role.Button
+                                    contentDescription = if (localScene) "切回人像" else "展示现场" },
                                 contentAlignment = Alignment.Center) {
                                 Canvas(Modifier.size(20.dp)) {
                                     scale(size.width / 24f, size.width / 24f, Offset.Zero) {
-                                        callIcon("swap", if (state.cameraEnabled && !starting) CallText else CallFaint)
+                                        callIcon("show",
+                                            if (!showMeEnabled) CallFaint else if (localScene) CallAccentInk else CallText,
+                                            knockout = if (localScene) CallAccent else Color(0xFF0C1216))
                                     }
                                 }
                             }
@@ -541,17 +546,17 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                             modifier = Modifier.weight(1f),
                             enabled = !sharing, showLabel = true,
                             description = if (sharing) "屏幕共享期间摄像头已暂停" else if (state.cameraEnabled) "点按关闭摄像头" else "摄像头已关闭，点按开启") { interaction++; onCamera() }
-                        DockButton(if (localScene) "看我" else "给你看", "show", active = localScene && !sharing,
-                            modifier = Modifier.weight(1f),
-                            available = !localScene, enabled = state.cameraEnabled && !starting && !sharing,
-                            showLabel = true, description = if (sharing) "屏幕共享期间无法开启现场" else "点按${if (localScene) "切回人像" else "展示现场"}") { interaction++; onShowMe() }
+                        DockButton("翻转", "swap", modifier = Modifier.weight(1f),
+                            enabled = !sharing && state.cameraEnabled && !starting &&
+                                localMode in setOf(CameraMode.FACE, CameraMode.BACK_ONLY),
+                            showLabel = true, description = "切换前后摄像头") { interaction++; onSwitch() }
                         DockButton("更多", "more", modifier = Modifier.weight(1f), showLabel = true) { interaction++; more = true }
                         DockButton("挂断", "end", modifier = Modifier.weight(1f), danger = true, showLabel = true, action = onEnd)
                     }
                 }
             }
         }
-        if (more) CallOptions(state, onDismiss = { more = false; interaction++ }, onSwitch = onSwitch,
+        if (more) CallOptions(state, onDismiss = { more = false; interaction++ },
             onNoiseMode = onNoiseMode, sharing = sharing,
             onStartShare = onStartShare, onStopShare = onStopShare,
             onSetScreenContentMode = onSetScreenContentMode,
@@ -566,7 +571,7 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-private fun CallOptions(state: CallUiState, onDismiss: () -> Unit, onSwitch: () -> Unit,
+private fun CallOptions(state: CallUiState, onDismiss: () -> Unit,
     onNoiseMode: (com.lazydoglab.zisee.rtc.audio.processing.NoiseSuppressionMode) -> Unit,
     sharing: Boolean, onStartShare: () -> Unit, onStopShare: () -> Unit,
     onSetScreenContentMode: (com.lazydoglab.zisee.rtc.ScreenContentMode) -> Unit,
@@ -592,13 +597,6 @@ private fun CallOptions(state: CallUiState, onDismiss: () -> Unit, onSwitch: () 
                     onDismiss(); if (sharing) onStopShare() else onStartShare()
                 }
                 Text(shareBlocker ?: "共享期间摄像头会暂停，停止后自动恢复；对方不能操作你的手机。",
-                    style = MaterialTheme.typography.bodySmall, color = CallMuted)
-                FullWidthAction("切换前后摄像头",
-                    enabled = !sharing && state.cameraEnabled && state.showMe.mode !in setOf(CameraMode.STARTING, CameraMode.AR)) {
-                    onDismiss(); onSwitch()
-                }
-                Text(if (sharing) "停止共享后才能切换摄像头。" else
-                    "支持双摄时「给你看」会同时展示人像与现场，否则使用后摄。",
                     style = MaterialTheme.typography.bodySmall, color = CallMuted)
                 if (sharing && state.screenShare.phase == com.lazydoglab.zisee.screen.ScreenSharePhase.ACTIVE) {
                     Text("共享画面质量", style = MaterialTheme.typography.titleSmall)
@@ -732,7 +730,7 @@ private fun VideoTile(feed: com.lazydoglab.zisee.rtc.VideoFeed?, live: Boolean, 
     onArStroke: ((com.lazydoglab.zisee.ar.annotation.ArStrokeInput) -> Unit)? = null) {
     // The picture rounds itself inside the renderer; only the placeholder can be clipped out here,
     // because it is ordinary Compose drawing rather than a TextureView's own layer.
-    if (live && feed != null) VideoRenderer(feed, modifier, corner, onArTap, onArStroke)
+    if (live && feed != null) VideoRenderer(feed, modifier, corner, onArTap = onArTap, onArStroke = onArStroke)
     // The main tile already sits on the call surface's own background; only a thumbnail needs its
     // placeholder painted, so the base surface is not redrawn under a live full-screen picture.
     else Box(if (!thumbnail) modifier

@@ -47,7 +47,13 @@ class CallNotifications(private val context: Context) {
         val open = PendingIntent.getActivity(
             context,
             invite.callId.hashCode(),
-            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            Intent(context, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                .putExtra(EXTRA_CALL_ID, invite.callId)
+                .putExtra(EXTRA_CALLER_ID, invite.callerId)
+                .putExtra(EXTRA_CALLER_NAME, invite.callerName)
+                .putExtra(EXTRA_MEDIA_TYPE, invite.mediaType)
+                .putExtra(EXTRA_EXPIRES_AT, invite.expiresAt.toString()),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val caller = invite.callerName.ifBlank { context.getString(R.string.calls_incoming_unknown_caller) }
@@ -70,5 +76,28 @@ class CallNotifications(private val context: Context) {
 
     companion object {
         const val INCOMING_CHANNEL = "calls.incoming"
+        private const val EXTRA_CALL_ID = "extra_call_id"
+        private const val EXTRA_CALLER_ID = "extra_caller_id"
+        private const val EXTRA_CALLER_NAME = "extra_caller_name"
+        private const val EXTRA_MEDIA_TYPE = "extra_media_type"
+        private const val EXTRA_EXPIRES_AT = "extra_expires_at"
+
+        /**
+         * Rebuilds the invite carried by a notification tap, so the caller can be rung
+         * immediately instead of waiting on the next idle poll to rediscover the same call.
+         */
+        fun ringingInvite(intent: Intent): CallInvite? {
+            val callId = intent.getStringExtra(EXTRA_CALL_ID) ?: return null
+            val callerId = intent.getStringExtra(EXTRA_CALLER_ID) ?: return null
+            val expiresAt = intent.getStringExtra(EXTRA_EXPIRES_AT)?.let {
+                try { java.time.Instant.parse(it) } catch (error: java.time.format.DateTimeParseException) { return null }
+            } ?: return null
+            return CallInvite(
+                callId = callId, callerId = callerId,
+                callerName = intent.getStringExtra(EXTRA_CALLER_NAME).orEmpty(),
+                mediaType = intent.getStringExtra(EXTRA_MEDIA_TYPE)?.takeIf { it.isNotBlank() } ?: "video",
+                expiresAt = expiresAt,
+            )
+        }
     }
 }

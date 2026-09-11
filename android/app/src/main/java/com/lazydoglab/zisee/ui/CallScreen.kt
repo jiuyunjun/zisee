@@ -2,6 +2,7 @@ package com.lazydoglab.zisee.ui
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -34,6 +35,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -43,7 +45,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.scale
@@ -64,6 +68,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import com.lazydoglab.zisee.BuildConfig
 import com.lazydoglab.zisee.call.CallUiState
 import com.lazydoglab.zisee.call.CallViewModel
@@ -72,6 +77,8 @@ import com.lazydoglab.zisee.call.state.CallPhase
 import com.lazydoglab.zisee.invite.InviteLink
 import com.lazydoglab.zisee.rtc.TextureViewRenderer
 import com.lazydoglab.zisee.rtc.VideoFeed
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 /**
  * Invite.dc.html: the call surface, entered only once a call or an invitation actually exists.
@@ -176,23 +183,59 @@ private fun InvitePending(invite: String, onClose: () -> Unit) {
     }
 }
 
-/** No incoming-call mock exists; built from the shared avatar + Foundations control-ball pattern. */
+/**
+ * No incoming-call mock exists; built from the shared avatar + Foundations control-ball pattern.
+ * The background is the caller's own front camera once permission and a first frame are in, so
+ * deciding whether to answer looks like the call surface itself rather than a static card; a
+ * denied or unavailable camera falls back to the plain avatar it always showed.
+ */
 @Composable
 private fun IncomingCall(peerName: String, busy: Boolean, onAccept: () -> Unit, onReject: () -> Unit) {
-    Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 20.dp),
-        horizontalAlignment = Alignment.CenterHorizontally) {
-        Spacer(Modifier.weight(1f))
-        PersonAvatar(peerName, size = 108.dp)
-        Spacer(Modifier.height(22.dp))
-        Text(peerName, fontSize = 27.sp, fontWeight = FontWeight.Medium, letterSpacing = (-0.3).sp)
-        Spacer(Modifier.height(10.dp))
-        Text("Zisee 视频来电", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.weight(1f))
-        Row(horizontalArrangement = Arrangement.spacedBy(56.dp)) {
-            ControlBall("拒绝", "end", danger = true, enabled = !busy, onClick = onReject)
-            ControlBall("接听", "camera", accent = true, enabled = !busy, onClick = onAccept)
+    val context = LocalContext.current
+    var cameraGranted by remember { mutableStateOf(
+        ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
+    val cameraPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()) { granted -> cameraGranted = granted }
+    LaunchedEffect(Unit) { if (!cameraGranted) cameraPermission.launch(Manifest.permission.CAMERA) }
+    var previewFeed by remember { mutableStateOf<VideoFeed?>(null) }
+    // Keyed on `busy` (the accept tap) as well as the leave-composition case: NativeRtcSession
+    // opens the same front camera moments after accept, so this must let go of it right away
+    // rather than waiting for IncomingCall to actually leave composition.
+    if (cameraGranted && !busy) {
+        DisposableEffect(Unit) {
+            val preview = com.lazydoglab.zisee.rtc.FrontCameraPreview(context.applicationContext)
+            val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate)
+            val starting = scope.launch { if (preview.start()) previewFeed = preview.feed }
+            onDispose {
+                previewFeed = null
+                starting.cancel()
+                // This composition's scope is being disposed with it, so the close has to outlive
+                // that cancellation; it cancels the scope itself only once the camera is released.
+                scope.launch { preview.close() }.invokeOnCompletion { scope.cancel() }
+            }
         }
-        Spacer(Modifier.height(48.dp))
+    }
+    Box(Modifier.fillMaxSize().background(CallInk)) {
+        previewFeed?.let { feed ->
+            VideoRenderer(feed, Modifier.fillMaxSize(), crop = true)
+            Box(Modifier.fillMaxSize().background(Brush.verticalGradient(
+                listOf(Color.Black.copy(alpha = 0.1f), Color.Black.copy(alpha = 0.6f)))))
+        }
+        Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally) {
+            Spacer(Modifier.weight(1f))
+            if (previewFeed == null) PersonAvatar(peerName, size = 108.dp)
+            Spacer(Modifier.height(22.dp))
+            Text(peerName, fontSize = 27.sp, fontWeight = FontWeight.Medium, letterSpacing = (-0.3).sp, color = CallText)
+            Spacer(Modifier.height(10.dp))
+            Text("Zisee 视频来电", fontSize = 15.sp, color = CallText.copy(alpha = 0.72f))
+            Spacer(Modifier.weight(1f))
+            Row(horizontalArrangement = Arrangement.spacedBy(56.dp)) {
+                ControlBall("拒绝", "end", danger = true, enabled = !busy, onClick = onReject)
+                ControlBall("接听", "camera", accent = true, enabled = !busy, onClick = onAccept)
+            }
+            Spacer(Modifier.height(48.dp))
+        }
     }
 }
 
@@ -271,7 +314,7 @@ private fun ControlBall(label: String, icon: String, danger: Boolean = false, ac
  * texture composites as nothing and the tile goes transparent. See [TextureViewRenderer].
  */
 @Composable
-internal fun VideoRenderer(feed: VideoFeed, modifier: Modifier, corner: Dp = 0.dp,
+internal fun VideoRenderer(feed: VideoFeed, modifier: Modifier, corner: Dp = 0.dp, crop: Boolean = false,
     onArTap: ((com.lazydoglab.zisee.rtc.TextureViewRenderer.DisplayedArFrame,
         com.lazydoglab.zisee.ar.annotation.VideoPoint) -> Unit)? = null,
     onArStroke: ((com.lazydoglab.zisee.ar.annotation.ArStrokeInput) -> Unit)? = null) {
@@ -285,14 +328,18 @@ internal fun VideoRenderer(feed: VideoFeed, modifier: Modifier, corner: Dp = 0.d
         val displayedState = renderer?.displayedArFrame
         val displayed = if (displayedState != null) displayedState.collectAsState().value else null
         var box by remember(feed) { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
-        // The call surface supplies the bars behind a tile smaller than its box.
-        Box(modifier.onSizeChanged { box = it }, contentAlignment = Alignment.Center) {
+        // The call surface supplies the bars behind a tile smaller than its box; a full-bleed
+        // background (the incoming-call screen) instead crops to fill it, so this clips the
+        // overflow rather than letting it spill past the box's own bounds.
+        Box(modifier.onSizeChanged { box = it }.let { if (crop) it.clipToBounds() else it },
+            contentAlignment = Alignment.Center) {
             BoxWithConstraints(Modifier.matchParentSize(), contentAlignment = Alignment.Center) {
                 // Compose imposes EXACT dimensions, so size the surface to the upright frame itself
                 // and leave bars to its parent, rather than distorting a stretched-to-fit surface.
                 val aspect = geometry?.aspectRatio ?: (maxWidth.value / maxHeight.value.coerceAtLeast(1f))
-                val width = minOf(maxWidth, maxHeight * aspect)
-                val height = minOf(maxHeight, width / aspect.coerceAtLeast(0.001f))
+                val width = if (crop) maxOf(maxWidth, maxHeight * aspect) else minOf(maxWidth, maxHeight * aspect)
+                val height = if (crop) maxOf(maxHeight, width / aspect.coerceAtLeast(0.001f))
+                    else minOf(maxHeight, width / aspect.coerceAtLeast(0.001f))
                 AndroidView(factory = { context -> TextureViewRenderer(context).also { renderer = it; feed.attach(it) } },
                     modifier = Modifier.size(width, height),
                     update = {},

@@ -73,6 +73,7 @@ private enum class Page { HOME, SETTINGS }
 class CallHomeActions(
     val activeCall: Boolean = false,
     val contacts: List<com.lazydoglab.zisee.call.Contact> = emptyList(),
+    val contactsLoaded: Boolean = false,
     val pendingInvite: String = "",
     val notice: String = "",
     val contactsStatus: String = "",
@@ -216,6 +217,11 @@ private fun WelcomeScreen(save: SaveState, onSaveName: (String) -> Unit) {
  * Main.dc.html / HomeLight.dc.html: no per-user greeting line in the design, so this omits the one
  * the old layout had. Its actions place the call themselves — camera and microphone are asked for
  * here, at the tap, so nothing turns a camera on without one.
+ *
+ * Once any contact exists, the point of opening Zisee is almost always to call one of them, so
+ * they lead the page in a grouped card; inviting someone new or entering a code drops to a small
+ * secondary row below. With no contacts yet, starting a call is the only thing to do, so that
+ * takes the lead instead — the original layout, unchanged.
  */
 @Composable
 private fun HomeScreen(call: CallHomeActions?, onSettings: () -> Unit) {
@@ -240,25 +246,10 @@ private fun HomeScreen(call: CallHomeActions?, onSettings: () -> Unit) {
         permissions.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
     }
     val busy = granting != null || call?.activeCall == true
+    val contacts = call?.contacts.orEmpty()
 
-    Spacer(Modifier.height(20.dp))
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
-        Brand()
-        RoundIcon("gear", stringResource(R.string.settings), onClick = onSettings)
-    }
-    Spacer(Modifier.height(46.dp))
-    if (pending.isNotEmpty() && !pendingDismissed) {
-        PendingInvite(busy = busy, onDismiss = { pendingDismissed = true },
-            onOpen = { withCameraAndMic { call?.onJoin(pending) } })
-    } else {
-        Text(stringResource(R.string.home_headline), fontSize = 26.sp, lineHeight = 38.sp, letterSpacing = (-0.2).sp)
-        Spacer(Modifier.height(30.dp))
-        // This publishes an invitation to be scanned or opened; it does not dial anyone, so it
-        // says so rather than promising a call that nobody is on the other end of yet.
-        PrimaryPill(stringResource(R.string.invite_peer), icon = "camera", height = 62.dp,
-            enabled = configured && !busy, onClick = { withCameraAndMic { call?.onInvite() } })
-        Spacer(Modifier.height(12.dp))
-        SecondaryPill(stringResource(R.string.join_call), icon = "code", onClick = { showJoin = !showJoin })
+    @Composable
+    fun NewCallRow() {
         AnimatedVisibility(showJoin) {
             Column(Modifier.padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 CodeField(code, onValueChange = { code = it })
@@ -270,25 +261,65 @@ private fun HomeScreen(call: CallHomeActions?, onSettings: () -> Unit) {
         if (BuildConfig.BACKEND_URL.isEmpty()) Text(stringResource(R.string.backend_missing_call),
             Modifier.padding(top = 10.dp), fontSize = 12.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
-    // Both "the call ended" and "permissions were refused" land here; neither is loud enough to
-    // deserve the error colour, and the destructive-looking red would misread on the ordinary one.
-    if (!call?.notice.isNullOrEmpty()) Text(call.notice, Modifier.padding(top = 14.dp),
-        fontSize = 12.5.sp, lineHeight = 20.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    Spacer(Modifier.height(42.dp))
-    SectionLabel(stringResource(R.string.recent))
-    Spacer(Modifier.height(12.dp))
-    val contacts = call?.contacts.orEmpty()
-    if (contacts.isEmpty()) {
-        Text(stringResource(R.string.no_recent_calls), fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    } else {
-        Column {
-            contacts.forEach { contact ->
+
+    Spacer(Modifier.height(20.dp))
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
+        Brand()
+        RoundIcon("gear", stringResource(R.string.settings), onClick = onSettings)
+    }
+    val pendingVisible = pending.isNotEmpty() && !pendingDismissed
+    // Contacts start empty until the first fetch resolves; deciding the layout on that
+    // not-yet-loaded emptiness would show the old hero layout and then jump to the contacts-first
+    // one a moment later for anyone who actually has contacts. Holding here for a beat avoids it.
+    val loadingContacts = call != null && !call.contactsLoaded
+    Spacer(Modifier.height(if (!pendingVisible && !loadingContacts && contacts.isNotEmpty()) 32.dp else 46.dp))
+    if (pendingVisible) {
+        PendingInvite(busy = busy, onDismiss = { pendingDismissed = true },
+            onOpen = { withCameraAndMic { call?.onJoin(pending) } })
+    } else if (loadingContacts) {
+        Box(Modifier.fillMaxWidth().padding(vertical = 80.dp), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+        }
+    } else if (contacts.isNotEmpty()) {
+        SectionLabel(stringResource(R.string.contacts_section))
+        Spacer(Modifier.height(12.dp))
+        ContactsCard {
+            contacts.forEachIndexed { index, contact ->
+                if (index > 0) SettingsDivider()
                 ContactRow(contact, enabled = configured && !busy,
                     onCall = { withCameraAndMic { call?.onCallContact(contact.identityId) } },
                     onRemove = { call?.onRemoveContact(contact.identityId) })
             }
         }
+        Spacer(Modifier.height(28.dp))
+        SectionLabel(stringResource(R.string.start_new_call))
+        Spacer(Modifier.height(12.dp))
+        // This publishes an invitation to be scanned or opened; it does not dial anyone, so it
+        // says so rather than promising a call that nobody is on the other end of yet.
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            SecondaryPill(stringResource(R.string.invite_peer), icon = "camera", modifier = Modifier.weight(1f),
+                enabled = configured && !busy, onClick = { withCameraAndMic { call?.onInvite() } })
+            SecondaryPill(stringResource(R.string.join_call), icon = "code", modifier = Modifier.weight(1f),
+                onClick = { showJoin = !showJoin })
+        }
+        NewCallRow()
+    } else {
+        Text(stringResource(R.string.home_headline), fontSize = 26.sp, lineHeight = 38.sp, letterSpacing = (-0.2).sp)
+        Spacer(Modifier.height(30.dp))
+        PrimaryPill(stringResource(R.string.invite_peer), icon = "camera", height = 62.dp,
+            enabled = configured && !busy, onClick = { withCameraAndMic { call?.onInvite() } })
+        Spacer(Modifier.height(12.dp))
+        SecondaryPill(stringResource(R.string.join_call), icon = "code", onClick = { showJoin = !showJoin })
+        NewCallRow()
+        Spacer(Modifier.height(42.dp))
+        SectionLabel(stringResource(R.string.contacts_section))
+        Spacer(Modifier.height(12.dp))
+        Text(stringResource(R.string.no_recent_calls), fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
+    // Both "the call ended" and "permissions were refused" land here; neither is loud enough to
+    // deserve the error colour, and the destructive-looking red would misread on the ordinary one.
+    if (!call?.notice.isNullOrEmpty()) Text(call.notice, Modifier.padding(top = 14.dp),
+        fontSize = 12.5.sp, lineHeight = 20.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     if (!call?.contactsStatus.isNullOrEmpty()) Text(call.contactsStatus, Modifier.padding(top = 8.dp),
         fontSize = 12.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     Spacer(Modifier.height(28.dp))
@@ -298,6 +329,12 @@ private fun HomeScreen(call: CallHomeActions?, onSettings: () -> Unit) {
     Spacer(Modifier.height(24.dp))
     Text(stringResource(R.string.slogan), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
         modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+}
+
+@Composable
+private fun ContactsCard(content: @Composable () -> Unit) {
+    Column(Modifier.fillMaxWidth().clip(StandardCardShape).background(MaterialTheme.colorScheme.surface)
+        .padding(horizontal = 18.dp)) { content() }
 }
 
 /** InviteOpen.dc.html, adapted: the caller's identity is unknown until the invitation is redeemed. */
@@ -323,14 +360,14 @@ private fun PendingInvite(busy: Boolean, onOpen: () -> Unit, onDismiss: () -> Un
 /** Main.dc.html contact row: avatar, name, one-tap call. Removal has no mock; kept small and muted. */
 @Composable
 private fun ContactRow(contact: com.lazydoglab.zisee.call.Contact, enabled: Boolean, onCall: () -> Unit, onRemove: () -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-        IdentityAvatar(contact.displayName, size = 48.dp)
+    Row(Modifier.fillMaxWidth().padding(vertical = 16.dp), verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+        IdentityAvatar(contact.displayName, size = 56.dp)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(contact.displayName, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+            Text(contact.displayName, fontSize = 18.sp, fontWeight = FontWeight.Medium)
             Text(stringResource(R.string.contact_call_hint), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        RoundIcon("camera", stringResource(R.string.call_contact, contact.displayName),
+        RoundIcon("camera", stringResource(R.string.call_contact, contact.displayName), size = 52.dp, iconSize = 21.dp,
             tint = MaterialTheme.colorScheme.primary,
             background = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
             enabled = enabled, onClick = onCall)
@@ -487,12 +524,13 @@ private fun IdentityAvatar(name: String, size: androidx.compose.ui.unit.Dp) {
 @Composable
 private fun RoundIcon(icon: String, description: String, tint: Color = MaterialTheme.colorScheme.onSurfaceVariant,
     background: Color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f), enabled: Boolean = true,
+    size: androidx.compose.ui.unit.Dp = 44.dp, iconSize: androidx.compose.ui.unit.Dp = 19.dp,
     onClick: () -> Unit) {
     val dim = if (enabled) 1f else 0.4f
-    Box(Modifier.size(44.dp).clip(CircleShape).background(background.copy(alpha = background.alpha * dim))
+    Box(Modifier.size(size).clip(CircleShape).background(background.copy(alpha = background.alpha * dim))
         .clickable(enabled = enabled, onClick = onClick)
         .semantics { role = Role.Button; contentDescription = description }, contentAlignment = Alignment.Center) {
-        Canvas(Modifier.size(19.dp)) { scale(size.width / 24f, size.width / 24f, Offset.Zero) { callIcon(icon, tint.copy(alpha = tint.alpha * dim)) } }
+        Canvas(Modifier.size(iconSize)) { scale(this.size.width / 24f, this.size.width / 24f, Offset.Zero) { callIcon(icon, tint.copy(alpha = tint.alpha * dim)) } }
     }
 }
 
@@ -513,12 +551,14 @@ private fun PrimaryPill(label: String, icon: String? = null, height: androidx.co
 }
 
 @Composable
-private fun SecondaryPill(label: String, icon: String? = null, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().height(52.dp).clip(PillShape)
-        .border(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.13f), PillShape)
-        .clickable(onClick = onClick).semantics { role = Role.Button; contentDescription = label },
+private fun SecondaryPill(label: String, icon: String? = null, modifier: Modifier = Modifier,
+    enabled: Boolean = true, onClick: () -> Unit) {
+    val dim = if (enabled) 1f else 0.4f
+    Row(modifier.fillMaxWidth().height(52.dp).clip(PillShape)
+        .border(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.13f * dim), PillShape)
+        .clickable(enabled = enabled, onClick = onClick).semantics { role = Role.Button; contentDescription = label },
         horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-        val ink = MaterialTheme.colorScheme.onSurfaceVariant
+        val ink = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = dim)
         if (icon != null) {
             Canvas(Modifier.size(18.dp)) { scale(size.width / 24f, size.width / 24f, Offset.Zero) { callIcon(icon, ink) } }
             Spacer(Modifier.width(8.dp))

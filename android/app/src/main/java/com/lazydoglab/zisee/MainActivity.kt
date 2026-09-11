@@ -48,11 +48,15 @@ class MainActivity : ComponentActivity() {
     /** An invite from a link, held until an identity exists to place the call with. */
     private val opened = MutableStateFlow<String?>(null)
 
+    /** An invite carried by a notification tap, held until an identity exists to ring with. */
+    private val ringing = MutableStateFlow<com.lazydoglab.zisee.push.CallInvite?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         callPip = CallPictureInPicture(this)
         enableEdgeToEdge()
         opened.value = InviteLink.token(intent?.dataString)
+        ringing.value = com.lazydoglab.zisee.push.CallNotifications.ringingInvite(intent)
         setContent {
             // Android 13+ gates notifications behind a runtime grant; without it a
             // woken process cannot show the incoming-call notification (CALL_DELIVERY.md §18).
@@ -82,6 +86,9 @@ class MainActivity : ComponentActivity() {
             val invite by opened.collectAsStateWithLifecycle()
             var minimized by rememberSaveable { mutableStateOf(false) }
             LaunchedEffect(call.busy) { if (!call.busy) minimized = false }
+            // Ending the call from the PiP hang-up action only updates call state; the OS keeps
+            // the floating PiP frame open until the Activity itself closes, so close it here.
+            LaunchedEffect(call.busy, inPip) { if (!call.busy && inPip) finish() }
             // Home may enter PiP even for a local AR field: onPause ends that field while PiP
             // continues to show the peer. The in-app minimize action has a stricter AR guard.
             val sharing = call.shareConsent != null || call.screenShare.phase in setOf(
@@ -104,6 +111,15 @@ class MainActivity : ComponentActivity() {
             }
             LaunchedEffect(identity) {
                 (identity as? IdentityState.Ready)?.let { callModel.observeIdentity(it.identity) }
+            }
+            val ring by ringing.collectAsStateWithLifecycle()
+            // Rings immediately from the notification's own payload rather than waiting for the
+            // idle poll to rediscover the same call over the network a few seconds later.
+            LaunchedEffect(ring, identity) {
+                val pending = ring ?: return@LaunchedEffect
+                if (identity !is IdentityState.Ready) return@LaunchedEffect
+                ringing.value = null
+                callModel.ring(pending)
             }
             LaunchedEffect(call.shareConsent) {
                 if (call.shareConsent == null) return@LaunchedEffect
@@ -133,7 +149,7 @@ class MainActivity : ComponentActivity() {
             fun release(action: () -> Unit): () -> Unit = { viewModel.disconnectBackend(); action() }
             val actions = CallHomeActions(
                 activeCall = call.busy,
-                contacts = call.contacts, pendingInvite = call.pendingInvite,
+                contacts = call.contacts, contactsLoaded = call.contactsLoaded, pendingInvite = call.pendingInvite,
                 notice = call.notice, contactsStatus = call.contactsStatus,
                 onInvite = release(callModel::createInvite),
                 onJoin = { code -> viewModel.disconnectBackend(); callModel.join(code) },
@@ -165,6 +181,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         InviteLink.token(intent.dataString)?.let { opened.value = it }
+        com.lazydoglab.zisee.push.CallNotifications.ringingInvite(intent)?.let { ringing.value = it }
     }
 
     override fun onStart() {

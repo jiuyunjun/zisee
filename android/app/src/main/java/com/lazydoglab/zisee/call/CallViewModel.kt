@@ -53,6 +53,9 @@ data class CallUiState(
     val machine: CallState = CallState(), val local: VideoFeed? = null, val remote: VideoFeed? = null,
     val cameraEnabled: Boolean = true, val muted: Boolean = false, val stats: MediaStats = MediaStats(),
     val pendingInvite: String = "", val contacts: List<Contact> = emptyList(), val contactsStatus: String = "",
+    /** False until the first fetch resolves, so the home screen can hold its layout rather than
+     * showing (and then reflowing away from) the empty state while contacts are still loading. */
+    val contactsLoaded: Boolean = false,
     val peerName: String = "对方",
     val localBack: VideoFeed? = null, val remoteBack: VideoFeed? = null,
     val showMe: com.lazydoglab.zisee.rtc.ShowMeState = com.lazydoglab.zisee.rtc.ShowMeState(),
@@ -113,6 +116,18 @@ class CallViewModel(application: Application, private val container: AppContaine
     fun callContact(peer: String) = begin(null, contact = peer)
     fun removeContact(peer: String) { removals.trySend(peer) }
 
+    /**
+     * Rings the answer screen straight from a notification tap, instead of waiting for the next
+     * idle poll (up to a few seconds away) to rediscover the same call over `call.sync`. The
+     * fabricated snapshot only carries the call id needed to ask the backend for the real one;
+     * [begin] re-confirms it against the server on its very first loop iteration.
+     */
+    fun ring(invite: com.lazydoglab.zisee.push.CallInvite) {
+        if (!invite.expiresAt.isAfter(Instant.now())) return
+        val owner = identity ?: return
+        begin(null, incoming = RemoteCall(invite.callId, invite.callerId, owner.identityId, "ringing"))
+    }
+
     private fun startIdle() {
         val api = container.backendApi ?: return
         val owner = identity ?: return
@@ -135,7 +150,7 @@ class CallViewModel(application: Application, private val container: AppContaine
                         removals.tryReceive().getOrNull()?.let { calls.removeContact(token, it); refreshAt = 0 }
                         if (System.nanoTime() >= refreshAt) {
                             val contacts = calls.contacts(token)
-                            mutable.update { it.copy(contacts = contacts, contactsStatus = "") }
+                            mutable.update { it.copy(contacts = contacts, contactsStatus = "", contactsLoaded = true) }
                             refreshAt = System.nanoTime() + 15_000_000_000L
                         }
                         val snapshot = transport.exchange("call.sync")
@@ -333,7 +348,18 @@ class CallViewModel(application: Application, private val container: AppContaine
         return arActivation.begin()
     }
 
-    fun arNotice(message: String) { mutable.update { it.copy(arNotice = message) } }
+    private var arNoticeToken = 0
+
+    // Notices are transient feedback, not a modal error: without a self-clear they would stay
+    // pinned on screen until some unrelated AR event happened to overwrite them.
+    fun arNotice(message: String) {
+        val token = ++arNoticeToken
+        mutable.update { it.copy(arNotice = message) }
+        if (message.isNotBlank()) viewModelScope.launch {
+            kotlinx.coroutines.delay(4_000)
+            if (arNoticeToken == token) mutable.update { it.copy(arNotice = "") }
+        }
+    }
 
     fun startAr(request: Long, rotation: Int, width: Int, height: Int) {
         val media = rtc ?: return
