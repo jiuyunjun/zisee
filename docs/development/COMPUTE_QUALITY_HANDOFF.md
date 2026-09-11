@@ -196,3 +196,14 @@
 - `d121c2d` 真机：960×540 总 P95 5.3ms（gpu95 1.4ms，wait95 3.0ms），720p 7.8ms（gpu95 2.6ms）；冷却结束后回到 C1 约 1s 即再次超标，front 实际在「C1 1–2s / C0 数十秒」间振荡。
 - 用户评审指出问题在控制环而非阈值：盲目恢复、LOAD 混淆多种压力、总时长口径、每帧 glFinish 屏障、读回污染 P95、单帧 20ms 惩罚过重、指数退避不适合连续负载、等级与功能捆绑、双摄无全局预算。用户决定不调阈值（A/B 均不选），先落实设计再实现。
 - 设计：[控制环重构设计](../architecture/COMPUTE_CONTROL_LOOP.md)。实施顺序：1 指标与辅助任务拆出主路径 → 2 本地状态机（NORMAL/DEGRADED/PROBE/HARD_DISABLED）替代冷却/退避/锁死与 `cpuLimited` 反馈 → 3 fence 异步流水线（先 javap 核对 VideoSource 线程约定）→ 4 双摄全局预算与功能独立调度 → 5 真机标定阈值。
+- 设计提交：`6828028`。
+
+### 第 1 步：指标与辅助任务拆出主路径
+
+- 场景分析（16×9 读回）与 ROI 取样（C2+，640×360 读回）不再在主帧 GL 任务里执行，改为主帧完成后 post 到同一 GL 线程的独立任务。若执行前已有更新的帧被处理（`processedSerial` 变化）或 epoch 变化，则跳过，不读取可能正被覆盖的历史纹理；场景分析未执行时下一帧重新调度。场景分析 GL 错误只关闭场景分析（`name:aux:scene`），不再让整条处理链失败。
+- 辅助任务仍会占用 GL 线程，其阻塞体现在下一帧的 `queue`，但不再进入主帧的 `gpu`/`wait`/预算总时长。ES3 PBO 异步读回留待需要时再做。
+- 新指标（真实时钟，us）：`queue`、`submit`、`wait`、`gpu`（timer query，仅缩放+降噪）、`added`（进入处理器到输出交付下游）。`ComputeStatsWindow` 保存最近 120 个主处理帧（预热/尺寸切换帧不计），辅助任务各自 `LatencyWindow`（30 次）。
+- 新周期日志 `RTC_COMPUTE_STATS`，处理中每 10s 至多一行、≥30 样本才输出：`name:<level>:n=..:added=p50/p95:gpu=p50/p95:wait=p50/p95:submit=p50/p95:queue=p50/p95:scene=<次数>/<p95>:roi=<次数>/<p95>:WxH`。旁路日志字段改为 `added95/gpu95/wait95/submit95/queue95`（120 帧窗口）。
+- 决策逻辑本步未改（仍为预热 + 20ms 单帧 + 5ms P95 + 退避），但总时长已不含读回，可直接对比 `d121c2d` 的 5.3/7.8ms。
+- 验证：296 项 JVM 单测（新增统计窗口 3 项；预算测试随阶段拆分调整）0 failures/errors/skipped；assembleDebug、assembleDebugAndroidTest、lintDebug、compileReleaseKotlin 通过（`android/app/build/metrics-step1-validation.log`）。emulator-5556 `-e computeQuality true`（含 ROI 经辅助任务收到输入）、默认 native 回环、`-e arFramePool true` 均 PASS。
+- 真机待测：打 ≥2 分钟通话，取 `RTC_COMPUTE_STATS` 与旁路日志，确认去掉读回后主链总 P95、`added` 分布，以及 `scene` 的实际耗时。这些数据用于第 2 步状态机阈值初值。

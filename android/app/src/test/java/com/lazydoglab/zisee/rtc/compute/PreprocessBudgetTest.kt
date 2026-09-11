@@ -9,7 +9,7 @@ import org.junit.Test
 class PreprocessBudgetTest {
     @Test fun warmupFramesMayExceedFrameLimitButStayBounded() {
         val budget = PreprocessBudget()
-        repeat(3) { assertNull(budget.record(40.0, 0)) }
+        repeat(3) { assertNull(budget.record(40.0, 0)); assertFalse(budget.lastCounted) }
         assertEquals(0, budget.samples)
         assertNull(budget.p95Ms)
         assertEquals(BudgetBreach.WARMUP, PreprocessBudget().record(50.1, 0))
@@ -18,7 +18,7 @@ class PreprocessBudgetTest {
     @Test fun warmupOutliersDoNotPoisonSteadyStateP95() {
         val budget = PreprocessBudget()
         repeat(3) { budget.record(45.0, 0) }
-        repeat(30) { assertNull(budget.record(1.0, 0)) }
+        repeat(30) { assertNull(budget.record(1.0, 0)); assertTrue(budget.lastCounted) }
         assertEquals(1.0, budget.p95Ms!!, 0.0)
     }
 
@@ -67,24 +67,17 @@ class PreprocessBudgetTest {
         assertFalse(budget.cooling(30_000))
         assertEquals(0, budget.samples)
         assertNull(budget.p95Ms)
-        assertNull(budget.phaseP95())
         assertNull(budget.record(45.0, 30_000))
+        assertFalse(budget.lastCounted)
     }
 
     @Test fun sizeChangeFrameGetsOneBoundedAllowance() {
         val budget = PreprocessBudget(warmupFrames = 0)
         assertNull(budget.record(45.0, 0, oneTimeCost = true))
+        assertFalse(budget.lastCounted)
         assertEquals(0, budget.samples)
         assertEquals(BudgetBreach.FRAME, budget.record(21.0, 0))
+        assertTrue(budget.lastCounted)
         assertEquals(BudgetBreach.WARMUP, PreprocessBudget(warmupFrames = 0).record(50.1, 0, oneTimeCost = true))
-    }
-
-    @Test fun phaseP95IgnoresUnknownGpuTimes() {
-        val budget = PreprocessBudget(warmupFrames = 0)
-        repeat(20) { budget.record(1.0, 0, FramePhases(100, 200, 300, -1)) }
-        assertEquals(FramePhases(100, 200, 300, -1), budget.phaseP95())
-        budget.record(1.0, 0, FramePhases(900, 200, 300, 50))
-        assertEquals(50L, budget.phaseP95()!!.gpuUs)
-        assertEquals(100L, budget.phaseP95()!!.queueUs)
     }
 }
