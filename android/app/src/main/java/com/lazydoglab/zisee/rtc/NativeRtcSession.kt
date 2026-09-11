@@ -1684,6 +1684,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             if (released) return@withContext
             released = true
             arStopRequested = true
+            mutableLocalArStrokeSupported.value = false
             arStarting?.await() // Keep sources/factory/EGL alive while GL startup is in flight.
             statsJob?.cancel(); statsJob = null
             // Before anything else: hanging up must not leave the user's screen being captured.
