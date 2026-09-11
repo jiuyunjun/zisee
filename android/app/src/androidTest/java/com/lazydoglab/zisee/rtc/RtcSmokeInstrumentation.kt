@@ -27,6 +27,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
     private var thumbnailSwaps = false
     private var arTap = false
     private var computeQuality = false
+    private var faceRoi = false
     private var encoderTiming = false
     private var codecCapabilities = false
     private var capabilities = false
@@ -49,6 +50,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
         thumbnailSwaps = arguments?.getString("thumbnailSwaps") == "true"
         arTap = arguments?.getString("arTap") == "true"
         computeQuality = arguments?.getString("computeQuality") == "true"
+        faceRoi = arguments?.getString("faceRoi") == "true"
         encoderTiming = arguments?.getString("encoderTiming") == "true"
         codecCapabilities = arguments?.getString("codecCapabilities") == "true"
         capabilities = arguments?.getString("capabilities") == "true"
@@ -70,6 +72,12 @@ class RtcSmokeInstrumentation : Instrumentation() {
     override fun onStart() {
         val output = Bundle()
         try {
+            if (faceRoi) {
+                RoiDetectorSmoke.run(targetContext, context)
+                output.putString("stream", "PASS: GPU RGBA input, uniform negatives and public portrait face ROI at four rotations; no general accuracy/performance claim\n")
+                finish(Activity.RESULT_OK, output)
+                return
+            }
             if (codecCapabilities) {
                 PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(targetContext).createInitializationOptions())
                 val egl = EglBase.create()

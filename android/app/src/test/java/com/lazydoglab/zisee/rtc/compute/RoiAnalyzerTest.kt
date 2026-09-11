@@ -92,6 +92,8 @@ class RoiAnalyzerTest {
             assertTrue(analyzer.submit(Input(geometry))); awaitIdle(analyzer)
             assertEquals(emptyList<RoiBox>(), analyzer.regions(geometry, 100))
             clock.set(499_999_999); assertFalse(analyzer.canSubmit())
+            analyzer.configure(null); analyzer.configure(geometry.copy(generation = 2))
+            assertFalse(analyzer.canSubmit())
             clock.set(500_000_000); assertTrue(analyzer.canSubmit())
             analyzer.configure(null); assertNull(analyzer.regions(geometry, 100))
         }
@@ -129,6 +131,19 @@ class RoiAnalyzerTest {
         RoiAnalyzer(detector, { assertEquals("detect", it); failure.countDown() }).use { analyzer ->
             analyzer.configure(geometry); analyzer.submit(input); await(failure)
             assertEquals(RoiState.FAILED, analyzer.state)
+        }
+        await(detector.closed)
+        assertEquals(1, input.releases.get())
+    }
+
+    @Test fun missingNativeLibraryFailsClosedWithoutLeakingInput() {
+        val failure = CountDownLatch(1)
+        val detector = Detector { throw UnsatisfiedLinkError("optional ABI unavailable") }
+        val input = Input(geometry)
+        RoiAnalyzer(detector, { assertEquals("detector_linkage", it); failure.countDown() }).use { analyzer ->
+            analyzer.configure(geometry); analyzer.submit(input); await(failure)
+            assertEquals(RoiState.FAILED, analyzer.state)
+            assertFalse(analyzer.canSubmit())
         }
         await(detector.closed)
         assertEquals(1, input.releases.get())

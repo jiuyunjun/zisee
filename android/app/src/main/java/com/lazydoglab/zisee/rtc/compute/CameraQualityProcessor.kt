@@ -15,12 +15,21 @@ data class PreprocessStats(val frames: Long = 0, val bypassed: Long = 0, val p95
  */
 class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLogger, private val name: String,
     private val onSourceFrame: (Long) -> Unit = {},
+    roiDetector: RoiDetector? = RoiDetectorProvider.create(),
     private val elapsedClockNs: () -> Long = System::nanoTime) : VideoProcessor, AutoCloseable {
     private val helper = requireNotNull(SurfaceTextureHelper.create("Quality-$name", shared))
     private var sink: VideoSink? = null
     @Volatile var decision = ComputeDecision(ComputeLevel.C1, ComputeReason.STARTUP)
     @Volatile private var allowed = true
     private val epoch = java.util.concurrent.atomic.AtomicLong()
+    private val roiLock = Any()
+    private val roi = roiDetector?.let { detector ->
+        RoiAnalyzer(detector, { stage -> logger.error(AppEvent.RTC_COMPUTE_BYPASS, "$name:roi:$stage") })
+    }
+    private var roiSampler: RoiTextureSampler? = null
+    @Volatile private var roiSamplingFailed = false
+    @Volatile private var roiFaces: Int? = null
+    val roiDiagnostic: String get() = roi?.let { "${it.state}/faces=${roiFaces ?: -1}/readbackFailed=$roiSamplingFailed" } ?: "OFF"
     @Volatile private var closed = false
     @Volatile var stats = PreprocessStats(); private set
     private var shader: CameraQualityShader? = null
@@ -46,6 +55,7 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
                 shader = CameraQualityShader()
                 shader!!.prepare()
             } catch (error: RuntimeException) {
+                roi?.close()
                 try { shader?.close() } finally { helper.dispose() }
                 throw error
             }
@@ -53,8 +63,8 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
     }
 
     /** Call on RTC owner before changing camera/AR ownership, so an AR frame is never filtered. */
-    fun setAllowed(value: Boolean) { if (allowed != value) { allowed = value; epoch.incrementAndGet() } }
-    fun resetHistory() { epoch.incrementAndGet() }
+    fun setAllowed(value: Boolean) { if (allowed != value) { allowed = value; resetHistory() } }
+    fun resetHistory() { synchronized(roiLock) { epoch.incrementAndGet(); roi?.configure(null); roiFaces = null } }
     override fun setSink(sink: VideoSink?) { this.sink = sink }
     override fun onCapturerStarted(success: Boolean) { resetHistory() }
     override fun onCapturerStopped() { resetHistory() }
@@ -65,9 +75,10 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         onSourceFrame(frame.timestampNs)
         val buffer = frame.buffer as? VideoFrame.TextureBuffer
         val config = decision
+        val frameEpoch = epoch.get()
         if (!allowed || config.level == ComputeLevel.C0 || stats.failed || buffer == null ||
             frame.buffer.width.toLong() * frame.buffer.height > 1920L * 1080) {
-            epoch.incrementAndGet()
+            resetHistory()
             stats = stats.copy(bypassed = stats.bypassed + 1)
             target.onFrame(frame)
             return
@@ -75,7 +86,7 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         val started = elapsedClockNs()
         val output = try {
             ThreadUtils.invokeAtFrontUninterruptibly(helper.handler, java.util.concurrent.Callable {
-                try { process(frame, buffer, config) }
+                try { process(frame, buffer, config, frameEpoch) }
                 // Even pool exhaustion/errors may have queued input reads. Complete them before
                 // the capturer can release/reuse the borrowed OES texture.
                 finally { GLES20.glFinish() }
@@ -94,6 +105,7 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         val overload = elapsedMs > 20.0 || (durations.size >= 30 && p95 > 5.0)
         stats = stats.copy(frames = stats.frames + if (output != null) 1 else 0,
             bypassed = stats.bypassed + if (output == null) 1 else 0, p95Ms = p95, failed = stats.failed || overload)
+        if (stats.failed) { roi?.close(); roiFaces = null }
         if (overload) logger.info(AppEvent.RTC_COMPUTE_BYPASS, "$name:budget")
         if (output == null) target.onFrame(frame)
         else {
@@ -102,7 +114,7 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         }
     }
 
-    private fun process(frame: VideoFrame, buffer: VideoFrame.TextureBuffer, config: ComputeDecision): VideoFrame.TextureBuffer? {
+    private fun process(frame: VideoFrame, buffer: VideoFrame.TextureBuffer, config: ComputeDecision, frameEpoch: Long): VideoFrame.TextureBuffer? {
         val width = buffer.width; val height = buffer.height
         if (shader == null) shader = CameraQualityShader()
         if (pool == null) pool = ArFramePool(helper.handler) { helper.dispose() }
@@ -112,6 +124,7 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         if (historyKey != key || frame.timestampNs - lastTimestamp !in 1..250_000_000) {
             historyKey = key; historyCount = 0
             scenePolicy.reset(); sceneDecision = SceneDecision(); sceneSampleMs = 0
+            synchronized(roiLock) { roi?.configure(null); roiFaces = null }
         }
         lastTimestamp = frame.timestampNs
         val current = history[index]
@@ -119,6 +132,7 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, current.frameBufferId)
         try { shader!!.resize(buffer, width, height) }
         finally { GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0) }
+        analyzeRoi(current.textureId, frame, config, frameEpoch)
         val previous = if (historyCount >= 1) history[(index + 2) % 3] else current
         val older = if (historyCount >= 2) history[(index + 1) % 3] else previous
         val nowMs = System.nanoTime() / 1_000_000
@@ -148,11 +162,37 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         return result
     }
 
+    private fun analyzeRoi(texture: Int, frame: VideoFrame, config: ComputeDecision, frameEpoch: Long) {
+        val analyzer = roi ?: return
+        val geometry = RoiGeometry(frameEpoch, frame.buffer.width, frame.buffer.height, frame.rotation)
+        synchronized(roiLock) {
+            if (!allowed || closed || frameEpoch != epoch.get() || config.level < ComputeLevel.C2 || roiSamplingFailed) {
+                analyzer.configure(null); roiFaces = null; return
+            }
+            analyzer.configure(geometry)
+            roiFaces = analyzer.regions(geometry, frame.timestampNs)?.size
+        }
+        if (!analyzer.canSubmit()) return
+        try {
+            val sampler = roiSampler ?: RoiTextureSampler().also { roiSampler = it }
+            val input = sampler.sample(texture, geometry, frame.timestampNs)
+            synchronized(roiLock) {
+                if (allowed && !closed && frameEpoch == epoch.get() && decision.level >= ComputeLevel.C2) analyzer.submit(input)
+                else input.close()
+            }
+        } catch (_: RuntimeException) {
+            roiSamplingFailed = true; roiFaces = null; analyzer.close()
+            logger.error(AppEvent.RTC_COMPUTE_BYPASS, "$name:roi:readback")
+        }
+    }
+
     /** Detach from VideoSource first. Pool defers EGL teardown until the last output is released. */
     override fun close() {
         if (closed) return
         closed = true
+        roi?.close(); roiFaces = null
         ThreadUtils.invokeAtFrontUninterruptibly(helper.handler) {
+            roiSampler?.close(); roiSampler = null
             shader?.close(); shader = null
             history.forEach { it.release() }; history = emptyList()
             analysisBuffer?.release(); analysisBuffer = null

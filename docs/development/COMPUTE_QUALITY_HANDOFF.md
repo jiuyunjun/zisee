@@ -63,7 +63,7 @@
 | C4 Burst | 策略 API 与超时/冷却单测存在；没有产品入口，也不提升分辨率/码率，不能宣称完整 Burst 功能 |
 | 高质量缩放/降噪 | 已接前后摄；16 tap 面积采样和运动/边缘门控，不是光流补偿或 AI SR |
 | Scene/low-light | 亮度/运动启发式已接入 ACTIVE camera plan 的发送 FPS；未做曝光控制、人脸/手部识别 |
-| ROI/complexity | ROI 已有独立可测的有界异步分析基础设施，尚未接入 detector/相机/GPU；QP map/complexity 仍需要可维护的 WebRTC MediaCodec 配置扩展，以及能力检测/拒绝回退和设备验证 |
+| ROI/complexity | ROI 已有 opt-in Debug bundled ML Kit 检测、相机有界输入和数量诊断；尚未做背景处理/QP map，默认 APK 不含 SDK。complexity 仍需 WebRTC 扩展和设备验证 |
 | Codec profile/QP/P95 encode | Java 硬件路径已增加 encode→callback P50/P95/P99 和可选逐帧 QP；原生软件不可观测时保持未知/RTC mean。纯 MediaCodec 内部耗时与 DeviceProfile 尚未实现 |
 | Receiver SR/去伪影 | 未实现；没有引入模型或伪装双线性缩放为 SR；需要独立 receiver budget 和窗口可见性策略 |
 | P3 ML concealment | 未实现；设计本身列为可选，不生成不存在的内容 |
@@ -140,3 +140,22 @@
 - 下一步：选定可显式释放、依赖及隐私可接受的 detector，提供有界低分辨率输入适配，接入 source 生命周期和 compute budget 后，再实现 ROI 的 GPU 背景处理。当前还不具备端到端 ROI 功能。
 - 验证通过：281 项 JVM 单测（新增 7 项 ROI，0 failures/errors/skipped）、assembleDebug、compileReleaseKotlin、lintDebug。日志为未入库的 `android/app/build/compute-roi-validation.log`；本步未修改 GPU 或硬件调用，未安装用户真机，也未宣称真机性能或人脸检测效果。
 - 本步提交意图：`feat: add bounded asynchronous ROI analysis lifecycle`。
+
+## ROI 检测器与相机输入接入（2026-09-11）
+
+- 上一检查点 `8d7814d` 已提交并 push。
+- 接入说明和 SDK 条款/遥测/构建隔离见 [Face ROI 检测实验](../architecture/FACE_ROI_EXPERIMENT.md)。
+- 新增默认 false 的 `zisee.faceRoi`；仅 opt-in Debug 引入 bundled ML Kit 16.1.7。Release 始终使用无依赖 provider。不是默认开启人脸检测，也不是已验收的 ROI 画质优化。
+- CameraQualityProcessor 在 C2+ 从校正后的 RGB 纹理提供最多 640×360 的低频快照，worker 负责 RGBA→正向 ARGB/旋转/检测；双 source 独立，停采/切源/AR/C0 和失败均使结果不可用。调试详情增加 ROI 状态与有效框数量。
+- 生命周期接入时修正 geometry 更新可绕过限频的问题；即使频繁切换也保留最近提交时间。显式处理可选 detector 的 native linkage 失败。
+- 新增 RGBA 方向/色序/尺寸上限/释放纯测试与 `-e faceRoi true` 仪器路径。使用公开 NASA 人像，覆盖 GPU 取样后四种旋转的实际检测框；不使用用户媒体作为 fixture。
+- 未做背景降质或 QP map；独立推理延迟预算、真实人脸召回率和持续热/功耗验收仍待完成。GPU P95 只包含取样/readback，不包含异步模型推理。
+- 验证通过：默认与 `-Pzisee.faceRoi=true` 两种构建均完成 assembleDebug、assembleDebugAndroidTest、lintDebug；compileReleaseKotlin 通过；286 项 JVM 单测 0 failures/errors/skipped。日志为未入库的 `android/app/build/roi-*.log`。
+- 提交意图：`feat: wire opt-in face ROI detection into camera processing`。
+
+## 真机日志观察（2026-09-11，Xiaomi nezha，API 36）
+
+- 12:56 通话中 `RTC_COMPUTE_BYPASS front:budget` 在相机启动约 0.5s 后触发，`p95us=5742`，本次通话锁定旁路。降噪/缩放未生效，C2+ 才启动的 ROI 也从未执行；日志无 ML Kit 活动。该次通话**不能**作为 ROI 真机验证。
+- 旁路日志只记录 `budget`，无法区分单帧 >20ms（首帧驱动/分配开销）还是 30 样本 P95 >5ms。下一步：旁路事件带触发规则与处理分辨率，处理首帧预热，再在该机用 faceRoi 构建复测；不放宽 5ms/20ms 生产门槛。
+- 对端挂断后 SCTP 关闭前，RTC 线程出现两条 `RTC_MEDIA_FAILED`，推断来自数据通道关闭后的 presentation 发送失败（日志无异常类型，属推断）；预期内失败被记为 error，待降级。
+- `libEGL no current context` 均紧随 SurfaceTexture disconnect，属 WebRTC EGL 释放噪音。本次通话无崩溃/ANR。另有 09-10 01:45 WebRTC `DecodingQueue` SIGABRT（进程启动 3s，早于本轮改动，无 abort message），需符号化，未跟进。

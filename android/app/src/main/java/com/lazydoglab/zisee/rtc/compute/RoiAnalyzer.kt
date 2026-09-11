@@ -58,7 +58,8 @@ class RoiAnalyzer(
     /** null disables analysis for C0, screen/AR sources, or unavailable geometry. */
     fun configure(value: RoiGeometry?) = synchronized(lock) {
         require(value == null || (value.width > 0 && value.height > 0 && value.rotation in listOf(0, 90, 180, 270)))
-        if (geometry != value) { geometry = value; revision++; result = null; lastStartedNs = null }
+        // Switching geometry invalidates results, but must not bypass the global sampling budget.
+        if (geometry != value) { geometry = value; revision++; result = null }
     }
 
     fun canSubmit(): Boolean = synchronized(lock) { admissible(clockNs()) }
@@ -105,6 +106,9 @@ class RoiAnalyzer(
             }
         } catch (_: Exception) {
             fail("detect")
+        } catch (_: LinkageError) {
+            // Optional detector native libraries may be unavailable on a particular ABI/device.
+            fail("detector_linkage")
         } finally {
             releaseInput(input)
             synchronized(lock) { busy = false }

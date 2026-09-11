@@ -28,7 +28,20 @@ internal object ComputeQualitySmoke {
         // NativeRtcSession smoke uses the production clock and validates the actual fallback.
         val elapsedClock = java.util.concurrent.atomic.AtomicLong()
         val frameCost = java.util.concurrent.atomic.AtomicLong(1_000_000)
-        val processor = CameraQualityProcessor(root.eglBaseContext, logger, "test") {
+        val roiSeen = CompletableDeferred<Unit>()
+        val roiClosed = CompletableDeferred<Unit>()
+        val roiDetector = object : RoiDetector {
+            override fun detect(input: RoiInput): List<RoiBox> {
+                check(input is RgbaRoiInput && input.width == 32 && input.height == 32)
+                val pixels = input.uprightArgb()
+                check(pixels.size == 32 * 32)
+                pixels.fill(0)
+                roiSeen.complete(Unit)
+                return emptyList()
+            }
+            override fun close() { roiClosed.complete(Unit) }
+        }
+        val processor = CameraQualityProcessor(root.eglBaseContext, logger, "test", roiDetector = roiDetector) {
             elapsedClock.addAndGet(frameCost.get())
         }
         val retained = mutableListOf<VideoFrame>()
@@ -119,5 +132,6 @@ internal object ComputeQualitySmoke {
             root.release()
         }
         withTimeout(5_000) { drained.await() }
+        withTimeout(5_000) { roiSeen.await(); roiClosed.await() }
     }
 }

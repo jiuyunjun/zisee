@@ -542,7 +542,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         "front" to frontQualityProcessor, "back" to backQualityProcessor).mapNotNull { (name, processor) ->
         processor?.let {
             val stats = it.stats
-            name to "${it.decision.level}/${it.decision.reason} ${it.scene.mode} p95=${stats.p95Ms?.toInt() ?: -1}ms frames=${stats.frames} bypass=${stats.bypassed} failed=${stats.failed}"
+            name to "${it.decision.level}/${it.decision.reason} ${it.scene.mode} p95=${stats.p95Ms?.toInt() ?: -1}ms frames=${stats.frames} bypass=${stats.bypassed} failed=${stats.failed} roi=${it.roiDiagnostic}"
         }
     }.toMap()
 
