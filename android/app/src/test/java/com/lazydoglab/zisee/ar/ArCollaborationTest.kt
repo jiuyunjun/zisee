@@ -24,14 +24,14 @@ class ArCollaborationTest {
         override suspend fun close() { closes++ }
     }
 
-    @Test fun `ready does not permit commands until explicit join is acknowledged`() = runBlocking {
+    @Test fun `new ready automatically joins but does not permit commands until acknowledged`() = runBlocking {
         val sent = mutableListOf<ArMessage>()
         val guide = ArCollaboration { sent.add(it) }
         guide.connected()
         guide.receive(ArMessage.Ready(epoch, true))
+        assertEquals(listOf(ArMessage.Join(epoch)), sent)
         assertFalse(guide.create(UUID.randomUUID(), MarkerKind.PIN, request()))
         assertFalse(guide.join(UUID.randomUUID()))
-        assertTrue(guide.join(epoch))
         assertFalse(guide.clear())
         guide.receive(ArMessage.Joined(UUID.randomUUID()))
         assertFalse(guide.state.value.joined)
@@ -41,6 +41,24 @@ class ArCollaborationTest {
         guide.close()
         assertFalse(guide.state.value.connected)
         assertFalse(guide.clear())
+    }
+
+    @Test fun `manual leave suppresses automatic rejoin until a new field session`() = runBlocking {
+        val sent = mutableListOf<ArMessage>()
+        val guide = ArCollaboration { sent.add(it) }
+        guide.connected()
+        guide.receive(ArMessage.Ready(epoch, true))
+        guide.receive(ArMessage.Joined(epoch))
+
+        guide.leave()
+        guide.receive(ArMessage.Ready(epoch, true))
+        assertEquals(listOf(ArMessage.Join(epoch), ArMessage.Leave(epoch)), sent)
+        assertFalse(guide.state.value.joined)
+
+        guide.receive(ArMessage.Ended(epoch))
+        val next = UUID.randomUUID()
+        guide.receive(ArMessage.Ready(next, false))
+        assertEquals(ArMessage.Join(next), sent.last())
     }
 
     @Test fun `field ignores unsolicited mutations and stale sessions`() = runBlocking {
@@ -171,12 +189,13 @@ class ArCollaborationTest {
 
     @Test fun `field clear and revoke are reflected by the guide`() = runBlocking {
         val fieldSent = mutableListOf<ArMessage>()
+        val guideSent = mutableListOf<ArMessage>()
         val field = ArCollaboration { fieldSent.add(it) }
-        val guide = ArCollaboration { true }
+        val guide = ArCollaboration { guideSent.add(it) }
         field.connected(); guide.connected()
         assertTrue(field.attach(Field(epoch)))
         guide.receive(ArMessage.Ready(epoch, true))
-        assertTrue(guide.join(epoch))
+        assertEquals(listOf(ArMessage.Join(epoch)), guideSent)
         field.receive(ArMessage.Join(epoch))
         guide.receive(ArMessage.Joined(epoch))
         assertTrue(field.state.value.fieldPeerJoined)
@@ -188,6 +207,8 @@ class ArCollaborationTest {
         guide.receive(ArMessage.Leave(epoch))
         assertFalse(field.state.value.fieldPeerJoined)
         assertFalse(guide.state.value.joined)
+        guide.receive(ArMessage.Ready(epoch, true))
+        assertEquals(listOf(ArMessage.Join(epoch)), guideSent)
         field.close(); guide.close()
     }
 

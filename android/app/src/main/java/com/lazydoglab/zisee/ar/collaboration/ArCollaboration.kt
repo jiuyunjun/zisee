@@ -20,7 +20,7 @@ data class ArCollaborationState(
     val ownershipLost: Boolean = false,
 )
 
-/** Serialized by the transport owner. An offer does not start AR or automatically accept guidance. */
+/** Serialized by the transport owner. A remote field is joined automatically without starting local AR. */
 class ArCollaboration(private val localWinsFieldConflict: Boolean = false,
     private val send: (ArMessage) -> Boolean) {
     private val mutable = MutableStateFlow(ArCollaborationState())
@@ -28,6 +28,7 @@ class ArCollaboration(private val localWinsFieldConflict: Boolean = false,
     private var local: ArFieldEndpoint? = null
     private var peerJoined = false
     private var joining: UUID? = null
+    private var autoJoinSuppressed: UUID? = null
     private val pending = LinkedHashSet<UUID>()
     private val retired = HashSet<UUID>()
     private var closed = false
@@ -63,16 +64,20 @@ class ArCollaboration(private val localWinsFieldConflict: Boolean = false,
         } finally { old.close() }
     }
 
-    /** Explicit guide-side opt-in; matching Joined must arrive before any mutation can be sent. */
+    /** Manual retry after a failed automatic join; matching Joined must arrive before mutations. */
     fun join(sessionId: UUID): Boolean {
         if (!state.value.connected || state.value.remote?.sessionId != sessionId) return false
         if (!send(ArMessage.Join(sessionId))) return false
         joining = sessionId
+        autoJoinSuppressed = null
         return true
     }
 
     fun leave() {
-        state.value.remote?.let { if (state.value.connected) send(ArMessage.Leave(it.sessionId)) }
+        state.value.remote?.let {
+            autoJoinSuppressed = it.sessionId
+            if (state.value.connected) send(ArMessage.Leave(it.sessionId))
+        }
         joining = null; pending.clear()
         mutable.value = mutable.value.copy(joined = false, pendingMarkers = 0, lastResult = null)
     }
@@ -114,6 +119,7 @@ class ArCollaboration(private val localWinsFieldConflict: Boolean = false,
                     if (localWinsFieldConflict) return
                     mutable.value = mutable.value.copy(remote = message, joined = false,
                         pendingMarkers = 0, lastResult = null, ownershipLost = true)
+                    autoJoin(message.sessionId)
                     return
                 }
                 val previous = state.value.remote
@@ -123,6 +129,7 @@ class ArCollaboration(private val localWinsFieldConflict: Boolean = false,
                 joining = null; pending.clear()
                 mutable.value = mutable.value.copy(remote = message, joined = false, pendingMarkers = 0,
                     lastResult = null, ownershipLost = false)
+                autoJoin(message.sessionId)
             }
             is ArMessage.Join -> if (message.sessionId == local?.sessionId) {
                 peerJoined = send(ArMessage.Joined(message.sessionId))
@@ -135,6 +142,7 @@ class ArCollaboration(private val localWinsFieldConflict: Boolean = false,
             is ArMessage.Leave -> when (message.sessionId) {
                 local?.sessionId -> { peerJoined = false; mutable.value = mutable.value.copy(fieldPeerJoined = false) }
                 state.value.remote?.sessionId -> {
+                    autoJoinSuppressed = message.sessionId
                     joining = null; pending.clear()
                     mutable.value = mutable.value.copy(joined = false, pendingMarkers = 0, lastResult = null)
                 }
@@ -142,6 +150,7 @@ class ArCollaboration(private val localWinsFieldConflict: Boolean = false,
             }
             is ArMessage.Ended -> if (message.sessionId == state.value.remote?.sessionId) {
                 retire(message.sessionId)
+                if (autoJoinSuppressed == message.sessionId) autoJoinSuppressed = null
                 joining = null; pending.clear()
                 mutable.value = mutable.value.copy(remote = null, joined = false, pendingMarkers = 0,
                     lastResult = null, ownershipLost = false)
@@ -169,6 +178,11 @@ class ArCollaboration(private val localWinsFieldConflict: Boolean = false,
         }
     }
 
+    private fun autoJoin(sessionId: UUID) {
+        if (autoJoinSuppressed == sessionId) return
+        if (send(ArMessage.Join(sessionId))) joining = sessionId
+    }
+
     private fun retire(id: UUID) {
         // Bound replay tombstones over a call; reaching the limit requires a new call.
         check(retired.size < 64) { "AR session budget exhausted" }
@@ -179,7 +193,8 @@ class ArCollaboration(private val localWinsFieldConflict: Boolean = false,
         if (closed) return
         closed = true
         val old = local
-        local = null; peerJoined = false; joining = null; pending.clear(); retired.clear()
+        local = null; peerJoined = false; joining = null; autoJoinSuppressed = null
+        pending.clear(); retired.clear()
         mutable.value = ArCollaborationState()
         old?.close()
     }
