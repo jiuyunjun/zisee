@@ -1,18 +1,13 @@
 # Face ROI 检测实验
 
-状态：2026-09-11，显式 opt-in Debug 实验。已接相机检测和诊断，尚未改变编码 QP 或背景处理。
+状态：2026-09-11，Debug 默认开启的实验。已接相机检测和诊断，尚未改变编码 QP 或背景处理。
 
 ## 构建隔离
 
-从 `android` 构建：
-
-```powershell
-./gradlew.bat '-Pzisee.faceRoi=true' :app:assembleDebug :app:assembleDebugAndroidTest
-```
-
-默认 `zisee.faceRoi=false`。开启时，Debug source set 使用 `src/roiEnabled/java`，依赖 bundled
-`com.google.mlkit:face-detection:16.1.7`；普通 Debug 和所有 Release 使用 `src/roiDisabled/java`，
-没有该依赖和 ML Kit initializer。即使传 true，Release 也不包含检测器。
+Debug 默认 `zisee.faceRoi=true`，普通 `./gradlew.bat :app:assembleDebug` 即包含检测器：Debug source set 使用
+`src/roiEnabled/java`，依赖 bundled `com.google.mlkit:face-detection:16.1.7`。A/B 对照或需要排除 SDK 时传
+`'-Pzisee.faceRoi=false'`，改用 `src/roiDisabled/java`，没有该依赖和 ML Kit initializer。
+Release 始终使用 `src/roiDisabled/java`，无论开关如何都不包含检测器。
 `zisee.computeQuality=false` 时普通通话不安装相机处理器，但 faceRoi=true 的 APK 仍含 SDK；
 要排除 SDK 和它的初始化行为，必须关闭 faceRoi 构建开关。
 

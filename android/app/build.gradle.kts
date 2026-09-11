@@ -11,8 +11,8 @@ plugins {
 val backendUrl = providers.gradleProperty("zisee.backendUrl").orElse("").get()
 val localBackend = providers.gradleProperty("zisee.localBackend").orElse("false").get().toBooleanStrict()
 val computeQuality = providers.gradleProperty("zisee.computeQuality").orElse("true").get().toBooleanStrict()
-// Experimental SDK has its own telemetry/terms; exclude it entirely from ordinary APKs.
-val faceRoi = providers.gradleProperty("zisee.faceRoi").orElse("false").get().toBooleanStrict()
+// Debug-only: the SDK has its own telemetry/terms, so release never links it (see sourceSets below).
+val faceRoi = providers.gradleProperty("zisee.faceRoi").orElse("true").get().toBooleanStrict()
 require(backendUrl.isEmpty() || backendUrl.matches(Regex("https://[A-Za-z0-9.-]+(:[0-9]+)?/?"))) {
     "zisee.backendUrl must be an HTTPS origin without credentials, path or query"
 }

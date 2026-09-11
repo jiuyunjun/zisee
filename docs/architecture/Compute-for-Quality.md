@@ -6,7 +6,7 @@
 
 > 已增加 Android MediaCodec 能力快照，与 WebRTC hardware formats 分开显示。硬件标志、complexity range、分辨率/FPS 都是设备声明，不是经过热稳定性验证的 DeviceProfile。
 
-> ROI 已推进到显式 opt-in Debug 的人脸检测与相机取样诊断，默认构建不含检测 SDK；背景处理和 QP map 尚未实现。构建开关、SDK 遥测与验证边界见 [Face ROI 检测实验](FACE_ROI_EXPERIMENT.md)。
+> ROI 已推进到 Debug 默认开启的人脸检测与相机取样诊断，Release 不含检测 SDK；背景处理和 QP map 尚未实现。构建开关、SDK 遥测与验证边界见 [Face ROI 检测实验](FACE_ROI_EXPERIMENT.md)。
 
 ## 1. 目标
 

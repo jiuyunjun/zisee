@@ -63,7 +63,7 @@
 | C4 Burst | 策略 API 与超时/冷却单测存在；没有产品入口，也不提升分辨率/码率，不能宣称完整 Burst 功能 |
 | 高质量缩放/降噪 | 已接前后摄；16 tap 面积采样和运动/边缘门控，不是光流补偿或 AI SR |
 | Scene/low-light | 亮度/运动启发式已接入 ACTIVE camera plan 的发送 FPS；未做曝光控制、人脸/手部识别 |
-| ROI/complexity | ROI 已有 opt-in Debug bundled ML Kit 检测、相机有界输入和数量诊断；尚未做背景处理/QP map，默认 APK 不含 SDK。complexity 仍需 WebRTC 扩展和设备验证 |
+| ROI/complexity | ROI 已有 Debug 默认开启的 bundled ML Kit 检测、相机有界输入和数量诊断；尚未做背景处理/QP map，Release APK 不含 SDK。complexity 仍需 WebRTC 扩展和设备验证 |
 | Codec profile/QP/P95 encode | Java 硬件路径已增加 encode→callback P50/P95/P99 和可选逐帧 QP；原生软件不可观测时保持未知/RTC mean。纯 MediaCodec 内部耗时与 DeviceProfile 尚未实现 |
 | Receiver SR/去伪影 | 未实现；没有引入模型或伪装双线性缩放为 SR；需要独立 receiver budget 和窗口可见性策略 |
 | P3 ML concealment | 未实现；设计本身列为可选，不生成不存在的内容 |
@@ -168,4 +168,5 @@
 - `RTC_COMPUTE_BYPASS` 现记录 `name:budget:<WARMUP|FRAME|P95>:n=<样本数>:us=<本帧>:p95us=<窗口P95>:<宽>x<高>`，下次真机日志即可判断旁路原因与处理分辨率。预热期间 `p95Ms` 为 null（计划日志显示 -1）。
 - 数据通道 presentation/share 发送失败时，只有通道仍为 OPEN 才记 `RTC_MEDIA_FAILED`；挂断竞态导致的关闭不再计为媒体错误。
 - 验证：290 项 JVM 单测（新增 4 项 budget）0 failures/errors/skipped；assembleDebug、assembleDebugAndroidTest、lintDebug、compileReleaseKotlin 通过（`android/app/build/budget-validation.log`）。emulator-5556 `-e computeQuality true` PASS；默认 native 回环在授予 CAMERA/RECORD_AUDIO 后 PASS（首次失败是该模拟器未授权相机，不是代码问题），模拟器首帧超 50ms 触发 WARMUP 旁路，符合预期。未在用户真机安装。
-- 下一步：用户在 nezha 上以 `-Pzisee.faceRoi=true` 构建复测，根据新旁路日志决定：若为 `WARMUP`/`FRAME` 首帧类，考虑初始化时预热 draw；若为稳定 `P95`，需降低处理分辨率或拆分工作，而不是放宽门槛。
+- 用户要求不再依赖构建参数：`zisee.faceRoi` 默认改为 true，普通 Debug 即含 ML Kit 检测器；`-Pzisee.faceRoi=false` 仅用于 A/B 或排除 SDK。Release source set 仍固定为无依赖 provider，推广前的隐私披露要求不变。
+- 下一步：用户在 nezha 上用普通 Debug 构建复测，根据新旁路日志决定：若为 `WARMUP`/`FRAME` 首帧类，考虑初始化时预热 draw；若为稳定 `P95`，需降低处理分辨率或拆分工作，而不是放宽门槛。
