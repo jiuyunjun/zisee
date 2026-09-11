@@ -422,7 +422,13 @@ class CallViewModel(application: Application, private val container: AppContaine
                         when (next.phase) {
                             com.lazydoglab.zisee.ar.annotation.ArStrokePhase.APPEND -> {
                                 if (!media.appendArStroke(identity, input.id, next.samples)) {
-                                    arNotice("表面不连续或绘制已达上限，请重新起笔。"); break
+                                    finished = media.endArStroke(identity, input.id, false)
+                                    if (finished && rtc === media) {
+                                        arOwnMarkers.addLast(input.sessionId to input.id)
+                                        mutable.update { it.copy(arOwnMarkerCount = arOwnMarkers.size) }
+                                    }
+                                    arNotice(if (finished) "已保留画好的部分，请在新表面重新起笔。" else "这里没有连续表面，请重新起笔。")
+                                    break
                                 }
                             }
                             com.lazydoglab.zisee.ar.annotation.ArStrokePhase.END -> {

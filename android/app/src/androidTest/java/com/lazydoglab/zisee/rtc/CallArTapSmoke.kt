@@ -55,6 +55,24 @@ internal object CallArTapSmoke {
             check(lines.any { "AR_TAP frame=" in it || "AR_TAP outside" in it || "AR_TAP placed" in it }) {
                 "Tap at $x,$y never reached the marker layer:\n${lines.joinToString("\n")}"
             }
+            fun findPen(node: android.view.accessibility.AccessibilityNodeInfo?): android.view.accessibility.AccessibilityNodeInfo? {
+                if (node == null) return null
+                if (node.contentDescription?.toString() == "手绘") return node
+                for (i in 0 until node.childCount) findPen(node.getChild(i))?.let { return it }
+                return null
+            }
+            val pen = requireNotNull(findPen(automation.rootInActiveWindow)) { "Drawing tool missing" }
+            check(pen.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK))
+            test.waitForIdleSync()
+            val strokeDown = SystemClock.uptimeMillis()
+            for (action in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP)) {
+                val event = MotionEvent.obtain(strokeDown, SystemClock.uptimeMillis(), action, x + if (action == MotionEvent.ACTION_DOWN) 0f else 30f, y, 0)
+                event.source = InputDevice.SOURCE_TOUCHSCREEN
+                try { check(automation.injectInputEvent(event, true)) } finally { event.recycle() }
+                SystemClock.sleep(60)
+            }
+            test.waitForIdleSync()
+            check("stroke=" in shell("logcat -d -s Zisee:I")) { "Switching to drawing retained tap handler" }
             return lines.joinToString("\n") { it.substringAfter("Zisee").trim() }
         } finally { test.runOnMainSync { activity.finish() } }
     }

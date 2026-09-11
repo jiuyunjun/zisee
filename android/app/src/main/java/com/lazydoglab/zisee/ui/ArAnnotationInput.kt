@@ -39,7 +39,7 @@ internal fun ArAnnotationInput(modifier: Modifier, width: Float, height: Float,
     LaunchedEffect(previewVersion, drawing) { if (!drawing) { delay(700); preview = emptyList() } }
     fun point(offset: Offset, frame: TextureViewRenderer.DisplayedArFrame) = VideoPointMapper.fromViewport(
         offset.x, offset.y, width, height, frame.geometry, frame.mirrored, VideoPointMapper.Scale.FIT)
-    val gestures = if (onStroke == null) Modifier.pointerInput(width, height) {
+    val gestures = if (onStroke == null) Modifier.pointerInput(width, height, false) {
         detectTapGestures { offset ->
             preview = listOf(offset); previewVersion++
             val frame = frameState.value
@@ -49,10 +49,12 @@ internal fun ArAnnotationInput(modifier: Modifier, width: Float, height: Float,
                 if (frame == null) "frame=none" else if (mapped == null) "outside" else "placed")
             if (frame != null && mapped != null) tapState.value?.invoke(frame, mapped)
         }
-    } else Modifier.pointerInput(width, height) {
+    } else Modifier.pointerInput(width, height, true) {
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
             val first = frameState.value
+            com.lazydoglab.zisee.core.logging.AndroidAppLogger.info(
+                com.lazydoglab.zisee.core.logging.AppEvent.AR_TAP, if (first == null) "stroke=frame-none" else "stroke=begin")
             val mapped = first?.let { point(down.position, it) }
             if (first == null || mapped == null) return@awaitEachGesture
             val id = UUID.randomUUID()
