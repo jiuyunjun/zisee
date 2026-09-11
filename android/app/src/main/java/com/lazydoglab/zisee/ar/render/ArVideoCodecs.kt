@@ -7,6 +7,7 @@ class ArEncoderFactory(shared: EglBase.Context,
     private val decorateHardware: ((VideoCodecInfo, VideoEncoder) -> VideoEncoder)? = null) : VideoEncoderFactory {
     private val defaults = DefaultVideoEncoderFactory(shared, true, true)
     private val hardware = HardwareVideoEncoderFactory(shared, true, true)
+    fun hardwareFormats(): Set<String> = hardware.supportedCodecs.map { it.name }.toSet()
     override fun getSupportedCodecs(): Array<VideoCodecInfo> = defaults.supportedCodecs
     override fun createEncoder(info: VideoCodecInfo): VideoEncoder? {
         val h264 = info.name.equals("H264", ignoreCase = true)

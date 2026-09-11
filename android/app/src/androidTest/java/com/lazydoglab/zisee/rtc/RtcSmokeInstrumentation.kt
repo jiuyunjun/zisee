@@ -28,6 +28,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
     private var arTap = false
     private var computeQuality = false
     private var encoderTiming = false
+    private var codecCapabilities = false
     private var capabilities = false
     private var orientationPreview = false
     private var callUiPreview = false
@@ -49,6 +50,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
         arTap = arguments?.getString("arTap") == "true"
         computeQuality = arguments?.getString("computeQuality") == "true"
         encoderTiming = arguments?.getString("encoderTiming") == "true"
+        codecCapabilities = arguments?.getString("codecCapabilities") == "true"
         capabilities = arguments?.getString("capabilities") == "true"
         orientationPreview = arguments?.getString("orientationPreview") == "true"
         callUiPreview = arguments?.getString("callUiPreview") == "true"
@@ -68,6 +70,19 @@ class RtcSmokeInstrumentation : Instrumentation() {
     override fun onStart() {
         val output = Bundle()
         try {
+            if (codecCapabilities) {
+                PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(targetContext).createInitializationOptions())
+                val egl = EglBase.create()
+                try {
+                    val formats = com.lazydoglab.zisee.ar.render.ArEncoderFactory(egl.eglBaseContext).hardwareFormats()
+                    val snapshot = com.lazydoglab.zisee.rtc.compute.CodecCapabilityProbe.read(
+                        com.lazydoglab.zisee.core.logging.AndroidAppLogger, formats)
+                    check(snapshot.components.isNotEmpty() && snapshot.failedQueries == 0) { "Codec declaration probe incomplete" }
+                    output.putString("stream", "PASS: runtime codec declarations, not a performance benchmark\n" + snapshot.diagnosticLines().joinToString("\n") + "\n")
+                } finally { egl.release() }
+                finish(Activity.RESULT_OK, output)
+                return
+            }
             if (computeQuality) {
                 ComputeOesSmoke.run()
                 ComputeQualitySmoke.run(targetContext)

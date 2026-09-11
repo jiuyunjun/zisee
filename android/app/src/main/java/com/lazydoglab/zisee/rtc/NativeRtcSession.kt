@@ -54,6 +54,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private val computeTelemetry = ComputeTelemetry(context, logger)
     private val encoderTelemetry = EncoderTelemetry()
     private val frameSources = FrameSourceRegistry()
+    private var codecCapabilities: CodecCapabilitySnapshot? = null
     private var audioSource: AudioSource? = null
     private var videoTrack: VideoTrack? = null
     private var audioTrack: AudioTrack? = null
@@ -275,13 +276,19 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             // ADAPTER_TYPE_LOOPBACK is package private in the SDK; the value tracks the native one.
             networkIgnoreMask = LOOPBACK_ADAPTER
         }
+        val encoderFactory = com.lazydoglab.zisee.ar.render.ArEncoderFactory(shared,
+            if (BuildConfig.VIDEO_COMPUTE_QUALITY) { info, encoder ->
+                MeasuredVideoEncoder(encoder, info.name, encoderTelemetry, frameSources)
+            } else null)
+        if (BuildConfig.VIDEO_COMPUTE_QUALITY) {
+            val formats = try { encoderFactory.hardwareFormats() }
+                catch (error: RuntimeException) { logger.error(AppEvent.RTC_COMPUTE_CAPABILITY_FAILED); null }
+            codecCapabilities = CodecCapabilityProbe.read(logger, formats)
+        }
         factory = PeerConnectionFactory.builder().setAudioDeviceModule(audioModule)
             .setAudioProcessingFactory(processingFactory)
             .setOptions(options)
-            .setVideoEncoderFactory(com.lazydoglab.zisee.ar.render.ArEncoderFactory(shared,
-                if (BuildConfig.VIDEO_COMPUTE_QUALITY) { info, encoder ->
-                    MeasuredVideoEncoder(encoder, info.name, encoderTelemetry, frameSources)
-                } else null))
+            .setVideoEncoderFactory(encoderFactory)
             .setVideoDecoderFactory(com.lazydoglab.zisee.ar.render.ArDecoderFactory(shared)).createPeerConnectionFactory()
         val servers = iceServers.map { entry ->
             PeerConnection.IceServer.builder(entry.urls)
@@ -510,6 +517,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                     sampledStats.value = observed.copy(quality = appliedQuality ?: VideoQuality.HD,
                         computeQuality = computeDiagnostics(),
                         encoderTiming = encoderTelemetry.snapshot(System.nanoTime()),
+                        codecCapabilities = codecCapabilities,
                         audioProcessing = audioProcessing.stats(), audioDevice = callAudio.state.value,
                         audioBandwidth = audioBandwidth.mode)
                     missing = false

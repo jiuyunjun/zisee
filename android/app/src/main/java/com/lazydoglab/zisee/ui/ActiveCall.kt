@@ -647,6 +647,11 @@ private fun CallOptions(state: CallUiState, onDismiss: () -> Unit, onSwitch: () 
                         "P50/95/99 ${timing.callbackP50Ms?.toInt()}/${timing.callbackP95Ms?.toInt()}/${timing.callbackP99Ms?.toInt()} ms · QP ${timing.qpMean?.toInt() ?: "—"}",
                         style = MaterialTheme.typography.bodySmall, color = CallMuted)
                 }
+                stats.codecCapabilities?.let { capability ->
+                    Text("WebRTC 硬编声明 ${capability.webRtcHardwareFormats?.sorted()?.joinToString()?.ifEmpty { "无" } ?: "未知"} · " +
+                        "Android codec ${capability.components.size} 项（声明值，非实测）",
+                        style = MaterialTheme.typography.bodySmall, color = CallMuted)
+                }
                 val processing = stats.audioProcessing
                 Text("音频 ${stats.audioDevice.state} · 输入 ${stats.audioDevice.input} · 输出 ${stats.audioDevice.output}\n" +
                     "AEC 软件 · ${processing.engine} · ${processing.state}\n" +

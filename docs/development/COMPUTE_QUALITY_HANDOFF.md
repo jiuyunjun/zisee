@@ -110,3 +110,13 @@
 - 新增 `-e encoderTiming true` 仪器路径：合成 AR RGB→H264→RTP→decode，既验证 AR identity 保留又要求真实 Java 编码回调能归属 back track。模拟器执行 **FAIL: H264 unavailable**，止于前置 codec 能力检查（尚未进入编码）；不是测得 encoder callback 成功，必须在支持 H264 的真机补测。
 - `-e computeQuality true` 在新版本回归 PASS。软件回退 native 回环也 PASS（实际收帧、ICE restart、资源释放；模拟器首帧过预算退出增强）。没有为通过测试强开不支持的 H264，也没有把硬件失败改成测试成功。
 - 本步提交意图：`feat: observe per-track encoder callback latency and qp`。接下来实现设备能力记录与测量画像的明确分层，不盲目启用 complexity。
+
+## 设备能力快照进行中
+
+- 编码观测已提交并 push：`07d6fb1 feat: observe per-track encoder callback latency and qp`。
+- 新增 CodecCapabilityProbe：读取 MediaCodecList REGULAR_CODECS 的 H264/H265/VP8/VP9/AV1 编码器/解码器；API 29+ 去除 alias，读取 OEM 硬件/软件声明；低版本保持 UNKNOWN。
+- 记录 Surface input、complexity range、CQ/VBR/CBR、声明支持的 360p/540p/720p/1080p30/1080p60、maxInstances；WebRTC hardwareFormats 独立列出，不能按 codec 名字推断选中了哪个 Android component。
+- 仅在 debug compute 开启时、RTC worker 初始化阶段读取，不创建 MediaCodec 实例、不改变协商顺序。查询失败记录事件并保留不完整状态，不抛到通话主流程。
+- 新增 `-e codecCapabilities true` 仪器路径输出能力表，模拟器 **PASS**：SDK 37，15 项组件，failedQueries=0，WebRTC hardwareFormats 为空。系统有 c2.android.avc.encoder，但声明为 SOFTWARE，解释了此前 H264 instrumentation 的前置失败。系统有软件 AV1/HEVC complexity range，也不能据此启用手机软件慢编码。
+- Debug/AndroidTest 构建、Release Kotlin 编译、272 单测、lint 均通过。WebRTC 格式读取失败显示 UNKNOWN，与成功读取但列表为空（none）明确区分。
+- 本步只读取声明，不做 benchmark、不自动改 codec/complexity、不持久化用户或设备标识。提交意图：`feat: expose runtime video codec capability declarations`。
