@@ -14,6 +14,7 @@ internal class CameraQualityShader : AutoCloseable {
     private var rgb: GlShader? = null
     private var temporal: GlShader? = null
     private var analysis: GlShader? = null
+    private val roiUniforms = FloatArray(8 * 4)
 
     /** Compile/link during call setup, before the first live camera frame has a deadline. */
     fun prepare() {
@@ -54,7 +55,8 @@ internal class CameraQualityShader : AutoCloseable {
         if (check) GlUtil.checkNoGLES2Error("quality resize")
     }
 
-    fun denoise(current: Int, previous: Int, older: Int, width: Int, height: Int, strength: Float, check: Boolean = true) {
+    fun denoise(current: Int, previous: Int, older: Int, width: Int, height: Int, strength: Float,
+        roi: RoiBackgroundPlan? = null, check: Boolean = true) {
         val shader = temporal ?: GlShader(VERTEX, TEMPORAL).also { temporal = it }
         use(shader, width, height)
         listOf(current, previous, older).forEachIndexed { index, id ->
@@ -64,6 +66,14 @@ internal class CameraQualityShader : AutoCloseable {
         }
         GLES20.glUniform2f(shader.getUniformLocation("texel"), 1f / width, 1f / height)
         GLES20.glUniform1f(shader.getUniformLocation("strength"), strength)
+        roi?.boxes?.forEachIndexed { index, box ->
+            val offset = index * 4
+            roiUniforms[offset] = box.left; roiUniforms[offset + 1] = box.top
+            roiUniforms[offset + 2] = box.right; roiUniforms[offset + 3] = box.bottom
+        }
+        GLES20.glUniform1i(shader.getUniformLocation("roiCount"), roi?.boxes?.size ?: 0)
+        GLES20.glUniform1f(shader.getUniformLocation("rotation"), (roi?.rotation ?: 0).toFloat())
+        GLES20.glUniform4fv(shader.getUniformLocation("roiRects[0]"), 8, roiUniforms, 0)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         for (index in 2 downTo 0) {
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0 + index)
@@ -126,7 +136,31 @@ internal class CameraQualityShader : AutoCloseable {
             uniform sampler2D older;
             uniform vec2 texel;
             uniform float strength;
+            uniform int roiCount;
+            uniform float rotation;
+            uniform vec4 roiRects[8];
             float difference(vec3 a, vec3 b) { vec3 d = abs(a-b); return max(d.r, max(d.g, d.b)); }
+            vec2 upright(vec2 p) {
+                if (rotation < 45.0) return vec2(p.x, 1.0-p.y);
+                if (rotation < 135.0) return vec2(p.y, p.x);
+                if (rotation < 225.0) return vec2(1.0-p.x, p.y);
+                return vec2(1.0-p.y, 1.0-p.x);
+            }
+            float faceProtection(vec2 p) {
+                float protection = 0.0;
+                for (int i = 0; i < 8; i++) {
+                    if (i < roiCount) {
+                        vec4 r = roiRects[i];
+                        vec2 feather = max((r.zw-r.xy)*0.15, vec2(0.025));
+                        float insideX = smoothstep(r.x-feather.x,r.x+feather.x,p.x) *
+                            (1.0-smoothstep(r.z-feather.x,r.z+feather.x,p.x));
+                        float insideY = smoothstep(r.y-feather.y,r.y+feather.y,p.y) *
+                            (1.0-smoothstep(r.w-feather.y,r.w+feather.y,p.y));
+                        protection = max(protection, insideX*insideY);
+                    }
+                }
+                return protection;
+            }
             void main() {
                 vec3 c = texture2D(source, uv).rgb;
                 vec3 p = texture2D(previous, uv).rgb;
@@ -138,6 +172,10 @@ internal class CameraQualityShader : AutoCloseable {
                 float weight = strength * (1.0-smoothstep(0.025,0.10,motion));
                 weight *= (1.0-0.75*smoothstep(0.04,0.18,edge));
                 weight *= mix(1.0,0.6,smoothstep(0.15,0.55,luma));
+                // Preserve the detected face path; spend up to 35% more temporal smoothing on
+                // background only. Unknown/empty ROI sets roiCount=0 and changes no pixels.
+                if (roiCount > 0) weight = min(0.85,
+                    weight * mix(1.35,1.0,faceProtection(upright(uv))));
                 // No future frames, recursive accumulation, sharpening, invented detail or gain.
                 gl_FragColor = vec4(mix(c, (p*2.0+o)/3.0, weight), 1.0);
             }

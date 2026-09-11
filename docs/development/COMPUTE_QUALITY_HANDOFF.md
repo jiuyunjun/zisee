@@ -312,3 +312,12 @@
   - HWUI（`dumpsys gfxinfo`）：janky 1.09%，GPU p99 5ms，界面线程本身基本健康。
 - 当前判断（待对照实验确认）：EglRenderer 往 TextureView 的 SurfaceTexture `eglSwapBuffers` 时等待 HWUI 归还缓冲而阻塞，期间持有 EGL share group / 驱动锁；我们的处理 context 与渲染器、编码器同一 share group（为共享输出纹理），于是在任意绘制调用中睡眠等待。可解释：与工作量无关、落在哪个 pass 不固定、12–17ms、`subSleep` 占主导。
 - 待用户决定（`TextureViewRenderer` 含 AR 帧身份逻辑，由另一 agent 负责）：A. Debug 开关把本地预览降帧（`EglRenderer.setFpsReduction`）或暂停本地预览渲染做对照；B. 确认后根治：预览帧率随窗口尺寸、改 SurfaceView（失去圆角裁剪）、或预览不与处理共享 share group；C. 不碰渲染器，只做第 3 步异步流水线（不阻塞相机线程，但锁等待仍计入延迟）。建议先 A。
+
+### ROI 背景差异与 QP map（2026-09-12）
+
+- `FULL` 档现在读取同 geometry、双时钟均未超过 500ms 的非空人脸结果。shader 将编码纹理坐标按 0/90/180/270 度映射到检测坐标，脸部保持原有时域权重，框外背景最多增加 35%，边缘羽化。未知、空、过期、切源、AR 接管和降级档均不启用差异处理。
+- `PreprocessStats.roiAppliedFrames` 和调试详情的 `applied=` 用于确认 ROI 真正进入 GL 帧；不记录框坐标。
+- `RoiQpMapPlanner` 生成标准 16×16 block 的有符号偏移：face `-3`、background `+1`，覆盖非 16 倍数尺寸并做防御性拷贝。`CodecCapabilityProbe` 在 API 35+ 记录 encoder `FEATURE_Roi`。
+- 当前固定 WebRTC artifact 的 `HardwareVideoEncoder` 在包内构造并私有持有 `MediaCodecWrapper`，factory 也没有逐帧 format/codec hook。禁止用反射穿透；因此 map 目前是经过测试的编码器接入边界，尚未调用 `PARAMETER_KEY_QP_OFFSET_MAP`。要真正生效需引入可维护的 encoder adapter/fork。
+- 待验收：模拟器 GPU smoke 应证明 ROI uniform/rotation shader 可编译运行；真机需要真人脸、运动、暗光和多人对照，并确认背景降噪不会造成拖影。QP transport 需 API 35 且编码器声明 ROI 的真机，在 fork 接入后检查输出 QP/码率/编码耗时，不能仅凭 capability 声明验收。
+- 验证：350 项 JVM 单测 0 failures/errors/skipped；assembleDebug、assembleDebugAndroidTest、lintDebug、compileReleaseKotlin 通过。emulator-5554 的 `-e computeQuality true`（含非空 ROI 真正进入 GL shader）、`-e faceRoi true`（真实 ML Kit 样本四方向）和默认 native camera/ICE/encode/decode 回环均 PASS。以上仍不是实体设备画质或 `FEATURE_Roi` 支持证据。

@@ -18,6 +18,7 @@ data class CodecCapability(
     val surfaceInput: Boolean?,
     val complexityMin: Int?,
     val complexityMax: Int?,
+    val roiEncoding: Boolean?,
     val bitrateModes: Set<String>,
     val formats: List<DeclaredVideoFormat>,
     val maxInstances: Int,
@@ -32,9 +33,10 @@ data class CodecCapabilitySnapshot(
     fun diagnosticLines(): List<String> = listOf(
         "Android declarations SDK=$sdkInt failed=$failedQueries; WebRTC HW=${webRtcHardwareFormats?.sorted()?.joinToString()?.ifEmpty { "none" } ?: "unknown"}",
         "complexity configuration through current WebRTC: unavailable; declared support is not a benchmark",
+        "standard ROI QP-map transport through current WebRTC: unavailable; API 35 codec support is declaration only",
     ) + components.map {
         "${if (it.encoder) "enc" else "dec"} ${it.codec} ${it.component} ${it.acceleration} " +
-            "surface=${it.surfaceInput ?: "n/a"} complexity=${it.complexityMin ?: "?"}..${it.complexityMax ?: "?"} " +
+            "surface=${it.surfaceInput ?: "n/a"} complexity=${it.complexityMin ?: "?"}..${it.complexityMax ?: "?"} roi=${it.roiEncoding ?: "n/a"} " +
             "modes=${it.bitrateModes.sorted().joinToString()} instances=${it.maxInstances} formats=${it.formats.joinToString()}"
     }
 }
@@ -78,7 +80,11 @@ object CodecCapabilityProbe {
                         ).filterValues { encoder.isBitrateModeSupported(it) }.keys
                         components.add(CodecCapability(info.name.take(100), name, info.isEncoder, acceleration,
                             if (info.isEncoder) MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface in caps.colorFormats else null,
-                            complexity?.lower, complexity?.upper, modes,
+                            complexity?.lower, complexity?.upper,
+                            if (info.isEncoder && Build.VERSION.SDK_INT >= 35)
+                                caps.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_Roi)
+                            else if (info.isEncoder) false else null,
+                            modes,
                             ladder.filter { video.areSizeAndRateSupported(it.width, it.height, it.fps.toDouble()) },
                             caps.maxSupportedInstances))
                     } catch (error: RuntimeException) { failures++ }

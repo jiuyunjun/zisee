@@ -37,7 +37,7 @@ internal object ComputeQualitySmoke {
                 check(pixels.size == 32 * 32)
                 pixels.fill(0)
                 roiSeen.complete(Unit)
-                return emptyList()
+                return listOf(RoiBox(0.25f, 0.25f, 0.75f, 0.75f))
             }
             override fun close() { roiClosed.complete(Unit) }
         }
@@ -86,6 +86,21 @@ internal object ComputeQualitySmoke {
                     val third = send(0.9f)
                     check(luma(third) > 205) { "Scene change was smeared" }
                     val stableY = luma(first)
+                    withTimeout(5_000) { roiSeen.await() }
+                    second.release(); retained.remove(second)
+                    third.release(); retained.remove(third)
+                    kotlinx.coroutines.yield()
+                    repeat(4) {
+                        if (processor.stats.roiAppliedFrames > 0) return@repeat
+                        val roiFrame = send(0.3f)
+                        roiFrame.release(); retained.remove(roiFrame)
+                        kotlinx.coroutines.yield()
+                    }
+                    check(processor.stats.roiAppliedFrames > 0) { "Fresh face ROI was not applied by the GL stage" }
+                    val heldSecond = send(0.3f)
+                    kotlinx.coroutines.yield()
+                    val heldThird = send(0.3f)
+                    check(heldSecond !== heldThird)
                     kotlinx.coroutines.yield()
                     // Three retained processed frames exhaust the output pool; original frame survives.
                     send(0.4f)

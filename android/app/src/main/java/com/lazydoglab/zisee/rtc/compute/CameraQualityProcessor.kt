@@ -8,7 +8,8 @@ import org.webrtc.*
 
 data class PreprocessStats(val frames: Long = 0, val bypassed: Long = 0, val p95Ms: Double? = null,
     val failed: Boolean = false, val tier: ProcessingTier = ProcessingTier.FULL,
-    val state: GuardState = GuardState.NORMAL, val pressure: ComputePressure = ComputePressure.NONE)
+    val state: GuardState = GuardState.NORMAL, val pressure: ComputePressure = ComputePressure.NONE,
+    val roiAppliedFrames: Long = 0)
 
 /** One processor per camera source. VideoSource serializes callbacks/setSink. Work runs on a
  * dedicated shared EGL context synchronously: no queued camera frames, no main-thread pixel work.
@@ -32,7 +33,9 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
     private var roiSampler: RoiTextureSampler? = null
     @Volatile private var roiSamplingFailed = false
     @Volatile private var roiFaces: Int? = null
-    val roiDiagnostic: String get() = roi?.let { "${it.state}/faces=${roiFaces ?: -1}/readbackFailed=$roiSamplingFailed" } ?: "OFF"
+    val roiDiagnostic: String get() = roi?.let {
+        "${it.state}/faces=${roiFaces ?: -1}/applied=${stats.roiAppliedFrames}/readbackFailed=$roiSamplingFailed"
+    } ?: "OFF"
     @Volatile private var closed = false
     @Volatile var stats = PreprocessStats(); private set
     private var shader: CameraQualityShader? = null
@@ -339,11 +342,15 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         flushLap(SPLIT_HIST_FLUSH)
         val previous = if (historyCount >= 1) history[(index + 2) % 3] else current
         val older = if (historyCount >= 2) history[(index + 1) % 3] else previous
+        val roiPlan = if (tier == ProcessingTier.FULL) currentRoiPlan(
+            RoiGeometry(frameEpoch, width, height, frame.rotation), frame.timestampNs) else null
         val result = pool!!.capture(width, height, finish = false) {
             shader!!.denoise(current.textureId, previous.textureId, older.textureId, width, height,
-                if (historyCount == 0) 0f else config.denoiseStrength, check = false)
+                if (historyCount == 0) 0f else config.denoiseStrength, roiPlan, check = false)
             true
         }
+        if (roiPlan != null && result != null)
+            stats = stats.copy(roiAppliedFrames = stats.roiAppliedFrames + 1)
         try {
             lap(SPLIT_OUT)
             flushLap(SPLIT_OUT_FLUSH)
@@ -356,6 +363,13 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
             return result
         } catch (error: Throwable) { result?.release(); throw error }
     }
+
+    private fun currentRoiPlan(geometry: RoiGeometry, timestampNs: Long): RoiBackgroundPlan? =
+        synchronized(roiLock) {
+            val regions = roi?.regions(geometry, timestampNs) ?: return@synchronized null
+            roiFaces = regions.size
+            RoiBackgroundPlan.create(regions, geometry.rotation)
+        }
 
     /** Readbacks stall the GL pipeline, so they run as a separate GL task after the frame's own work. */
     private fun scheduleAux(frame: VideoFrame, tier: ProcessingTier, frameEpoch: Long,
