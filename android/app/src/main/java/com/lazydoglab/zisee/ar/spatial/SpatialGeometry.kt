@@ -31,6 +31,7 @@ data class Rotation(val x: Float, val y: Float, val z: Float, val w: Float) {
 
 data class WorldPose(val position: Vec3, val rotation: Rotation = Rotation.IDENTITY) {
     fun transform(point: Vec3) = position + rotation.rotate(point)
+    fun inverseTransform(point: Vec3) = Rotation(-rotation.x, -rotation.y, -rotation.z, rotation.w).rotate(point - position)
 }
 
 /** Intrinsics of the unrotated CPU camera image, not display-oriented intrinsics. */
@@ -45,9 +46,13 @@ data class CameraIntrinsics(val width: Int, val height: Int, val fx: Float, val 
 }
 
 /** Copied, bounded plane polygon in plane-local X/Z coordinates (Y=0). */
-class PlaneSnapshot(val pose: WorldPose, polygon: List<Vec3>) {
+class PlaneSnapshot(val pose: WorldPose, polygon: List<Vec3>, val surfaceId: Long? = null) {
     val polygon: List<Vec3> = java.util.Collections.unmodifiableList(polygon.toList())
-    init { require(polygon.size in 3..128 && polygon.all { abs(it.y) < 0.0001f }) }
+    init {
+        require(polygon.size in 3..128 && polygon.all { abs(it.y) < 0.0001f })
+        require(surfaceId == null || surfaceId >= 0)
+    }
+    val normal: Vec3 get() = pose.rotation.rotate(Vec3(0f, 1f, 0f))
 
     fun intersect(origin: Vec3, direction: Vec3, margin: Float = 0f): Vec3? {
         val normal = pose.rotation.rotate(Vec3(0f, 1f, 0f))
@@ -107,8 +112,51 @@ class DepthSnapshot(val width: Int, val height: Int, millimetres: ShortArray) {
         return nearby.getOrNull(nearby.size / 2)
     }
 
+    /** Conservative evidence for new annotations. Never bridge a depth discontinuity to invent
+     * a surface. The legacy median accessor remains available for the v1 compatibility path.
+     */
+    fun surfaceAt(point: VideoPoint, intrinsics: CameraIntrinsics): DepthSurface? {
+        val x = (point.x * width).toInt().coerceAtMost(width - 1)
+        val y = (point.y * height).toInt().coerceAtMost(height - 1)
+        val centre = sample(x, y)
+        val neighbours = buildList {
+            for (dy in -1..1) for (dx in -1..1) {
+                if (x + dx in 0 until width && y + dy in 0 until height)
+                    sample(x + dx, y + dy)?.let { add(it) }
+            }
+        }
+        if (neighbours.isEmpty()) return null
+        val median = neighbours.sorted()[neighbours.size / 2]
+        val tolerance = maxOf(0.03f, median * 0.03f)
+        val continuous = neighbours.all { abs(it - median) <= tolerance }
+        if (centre == null && (!continuous || neighbours.size < 5)) return null
+        val depth = centre ?: median
+        fun position(sx: Int, sy: Int): Vec3? {
+            if (sx !in 0 until width || sy !in 0 until height) return null
+            val z = sample(sx, sy) ?: return null
+            if (abs(z - depth) > tolerance) return null
+            return intrinsics.cameraRay(VideoPoint((sx + 0.5f) / width, (sy + 0.5f) / height)) * z
+        }
+        val left = position(x - 1, y)
+        val right = position(x + 1, y)
+        val top = position(x, y - 1)
+        val bottom = position(x, y + 1)
+        val cross = if (continuous && left != null && right != null && top != null && bottom != null)
+            (right - left).cross(top - bottom) else null
+        val normal = cross?.takeIf { it.length() > 1e-7f }?.normalized()?.let {
+            if (it.dot(intrinsics.cameraRay(point)) > 0) it * -1f else it
+        }
+        return DepthSurface(depth, normal, if (centre == null) 0.5f else if (normal == null) 0.65f else 0.9f)
+    }
+
     private fun sample(x: Int, y: Int): Float? =
         (samples[y * width + x].toInt() and 0xffff).takeIf { it > 0 }?.div(1000f)
 
     private companion object { const val HOLE_RADIUS = 2 }
+}
+
+data class DepthSurface(val metres: Float, val cameraNormal: Vec3?, val confidence: Float)
+
+data class FeatureSnapshot(val id: Long, val position: Vec3, val confidence: Float) {
+    init { require(id >= 0 && confidence.isFinite() && confidence in 0f..1f) }
 }

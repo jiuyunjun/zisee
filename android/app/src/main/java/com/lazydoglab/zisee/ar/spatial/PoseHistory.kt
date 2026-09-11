@@ -12,9 +12,15 @@ class HistoricalFrame(
     val tracking: ArTracking,
     val depth: DepthSnapshot? = null,
     planes: List<PlaneSnapshot> = emptyList(),
+    features: List<FeatureSnapshot> = emptyList(),
 ) {
     val planes: List<PlaneSnapshot> = java.util.Collections.unmodifiableList(planes.toList())
-    init { require(frame.track == MediaTrack.BACK_CAMERA && frame.timestampNs > 0 && planes.size <= 16) }
+    val features: List<FeatureSnapshot> = java.util.Collections.unmodifiableList(features.toList())
+    init {
+        require(frame.track == MediaTrack.BACK_CAMERA && frame.timestampNs > 0 && planes.size <= 16)
+        // <= 128 immutable samples/frame; <= 23,040 samples across the default history window.
+        require(features.size <= 128)
+    }
 }
 
 /** Exact source-frame lookup. Never compare a remote wall clock or decoder timestamp to AR time.

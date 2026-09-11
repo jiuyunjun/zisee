@@ -42,7 +42,12 @@ class ArCoreBackend private constructor(
     private var running = false
     private var displayRotation = 0
     private var lastCapturedTimestampNs = 0L
+    // Only the currently updated Frame; invalidated before update, geometry changes and pause.
+    // Never stored in HistoricalFrame/PoseHistory or replayed for an older click.
+    private var instantFrame: com.google.ar.core.Frame? = null
     private val currentTexture = CurrentCameraTexture()
+    private val planeIds = HashMap<Plane, Long>()
+    private var nextPlaneId = 0L
     override val depthSupported = session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)
 
     private fun checkOwner() {
@@ -54,6 +59,7 @@ class ArCoreBackend private constructor(
     fun setDisplayGeometry(rotation: Int, width: Int, height: Int) {
         checkOwner()
         require(rotation in 0..3 && width > 0 && height > 0)
+        instantFrame = null
         session.setDisplayGeometry(rotation, width, height)
         displayRotation = rotation
     }
@@ -74,12 +80,15 @@ class ArCoreBackend private constructor(
     override fun pause() {
         checkOwner()
         currentTexture.invalidate()
+        instantFrame = null
+        planeIds.clear()
         if (running) { session.pause(); running = false }
     }
 
     override fun capture(): HistoricalFrame? {
         checkOwner()
         check(running)
+        instantFrame = null
         currentTexture.invalidate()
         val frame = session.update()
         if (frame.timestamp <= lastCapturedTimestampNs) return null
@@ -111,19 +120,40 @@ class ArCoreBackend private constructor(
                 }
             } catch (_: NotYetAvailableException) { null } // Expected while depth is warming up; planes remain available.
         } else null
-        val planes = if (tracking == ArTracking.TRACKING) session.getAllTrackables(Plane::class.java)
+        val activePlanes = if (tracking == ArTracking.TRACKING) session.getAllTrackables(Plane::class.java)
+            .filter { it.trackingState == TrackingState.TRACKING && it.subsumedBy == null }.take(16) else emptyList()
+        planeIds.keys.retainAll(activePlanes.toSet())
+        val planes = activePlanes
             .asSequence().filter { it.trackingState == TrackingState.TRACKING && it.subsumedBy == null }
             .mapNotNull { plane ->
                 val polygon = plane.polygon.duplicate()
                 if (polygon.remaining() / 2 !in 3..128) null else {
                     val vertices = buildList { while (polygon.remaining() >= 2) add(Vec3(polygon.get(), 0f, polygon.get())) }
-                    PlaneSnapshot(plane.centerPose.toWorldPose(), vertices)
+                    val id = planeIds[plane] ?: (nextPlaneId++).also { planeIds[plane] = it }
+                    PlaneSnapshot(plane.centerPose.toWorldPose(), vertices, id)
                 }
-            }.take(16).toList() else emptyList()
+            }.take(16).toList()
+        val features = if (tracking == ArTracking.TRACKING) {
+            frame.acquirePointCloud().use { cloud ->
+                // A reused cloud is not evidence captured for this exact source frame.
+                if (cloud.timestamp != frame.timestamp) emptyList() else {
+                    val points = cloud.points.duplicate()
+                    val ids = cloud.ids.duplicate()
+                    buildList {
+                        while (points.remaining() >= 4 && ids.hasRemaining() && size < 128) {
+                            val x = points.get(); val y = points.get(); val z = points.get(); val confidence = points.get()
+                            val id = ids.get()
+                            if (id >= 0 && x.isFinite() && y.isFinite() && z.isFinite() && confidence in 0.5f..1f)
+                                add(FeatureSnapshot(id.toLong(), Vec3(x, y, z), confidence))
+                        }
+                    }
+                }
+            }
+        } else emptyList()
         val snapshot = HistoricalFrame(
             VideoFrameReference(MediaTrack.BACK_CAMERA, frame.timestamp), camera.pose.toWorldPose(),
             CameraIntrinsics(dimensions[0], dimensions[1], focal[0], focal[1], centre[0], centre[1]),
-            tracking, depth, planes,
+            tracking, depth, planes, features,
         )
         // Transform while this is still the current native frame. NaN catches a no-op conversion.
         val uv = FloatArray(8) { Float.NaN }
@@ -131,6 +161,7 @@ class ArCoreBackend private constructor(
             floatArrayOf(0f, 0f, 1f, 0f, 0f, 1f, 1f, 1f), Coordinates2d.TEXTURE_NORMALIZED, uv)
         currentTexture.publish(CurrentCameraTexture.Frame(snapshot.frame, dimensions[0], dimensions[1],
             CameraTextureMapping(uv)))
+        instantFrame = frame
         return snapshot
     }
 
@@ -150,10 +181,31 @@ class ArCoreBackend private constructor(
     override fun createAnchor(pose: WorldPose): LocalAnchor {
         checkOwner()
         check(running)
-        val anchor = session.createAnchor(pose.toNativePose())
+        return wrapAnchor(session.createAnchor(pose.toNativePose()))
+    }
+
+    override fun createInstantAnchor(request: com.lazydoglab.zisee.ar.annotation.SpatialMarkerRequest): LocalAnchor? {
+        checkOwner()
+        if (!running || request.frame.track != MediaTrack.BACK_CAMERA) return null
+        val frame = instantFrame ?: return null
+        if (request.frame.timestampNs != frame.timestamp || frame.camera.trackingState != TrackingState.TRACKING) return null
+        val view = FloatArray(2) { Float.NaN }
+        frame.transformCoordinates2d(Coordinates2d.IMAGE_NORMALIZED, floatArrayOf(request.point.x, request.point.y),
+            Coordinates2d.VIEW, view)
+        if (!view.all { it.isFinite() }) return null
+        val hit = frame.hitTestInstantPlacement(view[0], view[1], 1.5f).firstOrNull() ?: return null
+        val point = hit.trackable as? com.google.ar.core.InstantPlacementPoint ?: return null
+        return wrapAnchor(hit.createAnchor(), point)
+    }
+
+    private fun wrapAnchor(anchor: com.google.ar.core.Anchor, point: com.google.ar.core.InstantPlacementPoint? = null): LocalAnchor {
         return object : LocalAnchor {
             override val pose: WorldPose get() { checkOwner(); return anchor.pose.toWorldPose() }
             override val tracking: ArTracking get() { checkOwner(); return anchor.trackingState.toTracking() }
+            override val placementConfidence: Float? get() {
+                checkOwner()
+                return point?.let { if (it.trackingMethod == com.google.ar.core.InstantPlacementPoint.TrackingMethod.FULL_TRACKING) 0.8f else 0.2f }
+            }
             override fun detach() { checkOwner(); anchor.detach() }
         }
     }
@@ -200,6 +252,7 @@ class ArCoreBackend private constructor(
                         "matched=${matching != null} configs=${configs.size}")
                 session.configure(Config(session).apply {
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
+                    instantPlacementMode = Config.InstantPlacementMode.LOCAL_Y_UP
                     depthMode = if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC))
                         Config.DepthMode.AUTOMATIC else Config.DepthMode.DISABLED
                     updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE

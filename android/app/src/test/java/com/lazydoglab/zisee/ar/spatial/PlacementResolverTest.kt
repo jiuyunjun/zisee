@@ -72,11 +72,22 @@ class PlacementResolverTest {
         val refiner = PoseRefiner(timeConstantSeconds = 0.2f)
 
         assertSame(current, refiner.refine(current, candidate, 100_000_000, worldContinuous = true))
-        assertSame(current, refiner.refine(current, candidate, 100_000_000, worldContinuous = true))
-        val refined = refiner.refine(current, candidate, 100_000_000, worldContinuous = true)
+        assertSame(current, refiner.refine(current, candidate.copy(frame = request(3).frame), 100_000_000, worldContinuous = true))
+        val refined = refiner.refine(current, candidate.copy(frame = request(4).frame), 100_000_000, worldContinuous = true)
         assertTrue(refined.pose.position.x in 0.015f..0.016f)
-        assertEquals(candidate.evidence.confidence, refined.evidence.confidence, 0f)
+        assertEquals(current.evidence.confidence, refined.evidence.confidence, 0f)
         assertEquals(current.pose.rotation, refined.pose.rotation)
+        var result = refined
+        for (time in 5L..20L) result = refiner.refine(result, candidate.copy(frame = request(time).frame), 100_000_000, true)
+        assertEquals(0.04f, result.pose.position.x, 0.001f)
+        assertEquals(candidate.evidence.confidence, result.evidence.confidence, 0f)
+    }
+
+    @Test fun repeatingOneFrameCannotSatisfyRefinementHysteresis() {
+        val current = world(1, 0f, 42, 0.5f)
+        val candidate = world(2, 0.04f, 42, 0.8f)
+        val refiner = PoseRefiner()
+        repeat(20) { assertSame(current, refiner.refine(current, candidate, 33_000_000, true)) }
     }
 
     @Test fun poseRefinerRejectsIdentityDiscontinuityWeakEvidenceAndLargeJumps() {
