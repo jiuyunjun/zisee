@@ -117,6 +117,7 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
     onArUndo: () -> Unit = {},
     onArClearOwn: () -> Unit = {},
     onArStroke: (com.lazydoglab.zisee.ar.annotation.ArStrokeInput) -> Unit = {},
+    onStopAr: () -> Unit = {},
     onSelectVideo: (String) -> Unit = {},
     onStartShare: () -> Unit = {}, onStopShare: () -> Unit = {},
     onSetScreenContentMode: (com.lazydoglab.zisee.rtc.ScreenContentMode) -> Unit = {},
@@ -458,6 +459,8 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                     modifier = Modifier.defaultMinSize(minWidth = 48.dp).semantics { selected = arDrawing },
                     contentPadding = PaddingValues(horizontal = 6.dp),
                     colors = ButtonDefaults.textButtonColors(contentColor = if (arDrawing) CallAccent else CallMuted)) { Text("手绘") }
+                if (localArMarking) TextButton(onClick = onStopAr,
+                    colors = ButtonDefaults.textButtonColors(contentColor = CallDanger)) { Text("停止 AR") }
                 TextButton(enabled = state.arOwnMarkerCount > 0, onClick = { interaction++; onArUndo() },
                     modifier = Modifier.defaultMinSize(minWidth = 48.dp), contentPadding = PaddingValues(horizontal = 6.dp),
                     colors = ButtonDefaults.textButtonColors(contentColor = CallAccent)) { Text("撤销") }

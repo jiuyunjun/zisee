@@ -24,37 +24,57 @@ internal class AnnotationOverlayRenderer : AutoCloseable {
     private var green = 0.83f
     private var blue = 0.84f
     private var alpha = 1f
+    private var hudOrigin: Pair<Float, Float>? = null
+    private var hudRotation = 0
 
-    fun markers(markers: List<ProjectedMarker>, outputWidth: Int, outputHeight: Int) {
+    fun markers(markers: List<ProjectedMarker>, outputWidth: Int, outputHeight: Int, rotationDegrees: Int = 0) {
         begin(outputWidth, outputHeight)
+        hudRotation = rotationDegrees
         val size = (minOf(width, height) * 0.075f).coerceIn(32f, 64f).coerceAtMost(minOf(width, height) * 0.9f)
         for (item in markers) {
             val x = item.point.x * width; val y = item.point.y * height
+            if (item.marker.kind == com.lazydoglab.zisee.ar.session.MarkerKind.ARROW) {
+                hudOrigin = x to y
+                for (outline in listOf(true, false)) {
+                    if (outline) color(0.02f, 0.05f, 0.06f, 1f) else color(1f, 0.83f, 0.2f, 1f)
+                    val stroke = if (outline) 10f else 5f
+                    line(x, y - size, x, y - 3f, stroke)
+                    line(x - size * 0.28f, y - size * 0.32f, x, y - 3f, stroke)
+                    line(x + size * 0.28f, y - size * 0.32f, x, y - 3f, stroke)
+                }
+                hudOrigin = null
+                continue
+            }
             val pending = item.marker.placementState == PlacementState.STABILIZING
             color(0.37f, 0.83f, 0.84f, if (pending) 0.55f else 0.95f)
             val ring = item.surfaceRing
             for (i in 0 until 48) {
-                if (if (pending) i % 6 >= 3 else i % 12 >= 10) continue
+                if (pending && i % 6 >= 3) continue
                 val a = i * Math.PI * 2 / 48; val b = (i + 1) * Math.PI * 2 / 48
                 val p = ring.getOrNull(i); val q = ring.getOrNull((i + 1) % 48)
                 line(p?.x?.times(width) ?: (x + cos(a).toFloat() * size * 0.44f),
                     p?.y?.times(height) ?: (y + sin(a).toFloat() * size * 0.44f),
                     q?.x?.times(width) ?: (x + cos(b).toFloat() * size * 0.44f),
-                    q?.y?.times(height) ?: (y + sin(b).toFloat() * size * 0.44f), if (item.marker.selected) 3f else 2f)
+                    q?.y?.times(height) ?: (y + sin(b).toFloat() * size * 0.44f), if (item.marker.selected) 5f else 3.5f)
             }
             disc(x, y, 2.5f)
             // HUD remains upright even on a sloping surface; its size is in source pixels.
-            val badgeX = (x + size * 0.38f).coerceIn(size * 0.25f, width - size * 0.25f)
-            val badgeY = (y - size * 0.4f).coerceIn(size * 0.25f, height - size * 0.25f)
-            color(0.03f, 0.09f, 0.12f, 0.95f); disc(badgeX, badgeY, size * 0.24f)
+            hudOrigin = x to y
+            val badgeX = x
+            val badgeY = y - size * 0.9f
+            color(0.02f, 0.05f, 0.06f, 1f); line(x, y, badgeX, badgeY, 7f)
+            color(0.37f, 0.95f, 0.94f, 1f); line(x, y, badgeX, badgeY, 3f)
+            disc(badgeX, badgeY, size * 0.35f)
+            color(0.03f, 0.09f, 0.12f, 1f); disc(badgeX, badgeY, size * 0.29f)
             color(0.8f, 1f, 1f, if (pending) 0.7f else 1f)
             val text = item.marker.displayNumber.takeIf { it > 0 }?.toString() ?: "•"
             if (text != "•") {
-                val digitWidth = minOf(size * 0.14f, size * 0.4f / (text.length * 1.35f - 0.35f))
+                val digitWidth = minOf(size * 0.19f, size * 0.48f / (text.length * 1.35f - 0.35f))
                 val start = badgeX - (text.length * digitWidth * 1.35f - digitWidth * 0.35f) / 2f
                 text.forEachIndexed { index, digit -> digit(digit - '0', start + index * digitWidth * 1.35f,
                     badgeY - digitWidth, digitWidth) }
             }
+            hudOrigin = null
         }
         flush()
     }
@@ -85,7 +105,13 @@ internal class AnnotationOverlayRenderer : AutoCloseable {
 
     private fun begin(w: Int, h: Int) { require(w > 0 && h > 0); width = w.toFloat(); height = h.toFloat(); vertices.clear() }
     private fun color(r: Float, g: Float, b: Float, a: Float) { red = r; green = g; blue = b; alpha = a }
-    private fun vertex(x: Float, y: Float) { vertices.put(x * 2 / width - 1).put(1 - y * 2 / height).put(red).put(green).put(blue).put(alpha) }
+    private fun vertex(x: Float, y: Float) {
+        val origin = hudOrigin
+        val offset = if (origin == null) null else uprightOffset(x - origin.first, y - origin.second, hudRotation)
+        val px = if (offset == null) x else origin!!.first + offset.first
+        val py = if (offset == null) y else origin!!.second + offset.second
+        vertices.put(px * 2 / width - 1).put(1 - py * 2 / height).put(red).put(green).put(blue).put(alpha)
+    }
     private fun line(x1: Float, y1: Float, x2: Float, y2: Float, thickness: Float) {
         val dx = x2 - x1; val dy = y2 - y1
         val length = sqrt(dx * dx + dy * dy)
@@ -165,4 +191,12 @@ internal class AnnotationOverlayRenderer : AutoCloseable {
         if (program != 0) GLES20.glDeleteProgram(program)
         vbo = 0; program = 0
     }
+}
+
+/** Counter-rotate only the HUD, since the video is rotated after source compositing. */
+internal fun uprightOffset(x: Float, y: Float, rotation: Int): Pair<Float, Float> = when (rotation) {
+    90 -> y to -x
+    180 -> -x to -y
+    270 -> -y to x
+    else -> x to y
 }

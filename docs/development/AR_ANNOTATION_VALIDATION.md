@@ -2,6 +2,12 @@
 
 更新：2026-09-11。
 
+## 标记可读性修正
+
+数字 HUD 在源视频合成时抵消输出旋转，显示在目标上方并用立杆连接；字号、外圈和箭头描边加粗。只有 STABILIZING 使用虚线，ANCHORED 改为连续实线。同一 plane ID 从 LOCAL_SURFACE 边缘带进入 PLANE 多边形后允许质量提升；无对应证据的历史距离估计仍保留虚线，不能仅靠等待伪装成确定位置。现场标记工具栏新增“停止 AR”。
+
+回归：`AnnotationHudTest` 覆盖四个旋转方向；`PlacementResolverTest` 覆盖同一表面边缘带变为确定多边形。Debug 构建和 Release Kotlin 编译通过；尚需真机查看竖屏/横屏的最终观感。
+
 本文记录 [AR Annotation Roadmap](AR_ANNOTATION_ROADMAP.md) 各阶段已经实际执行的自动化、构建和设备验证。未列出的项目不视为通过；真机结果必须写明设备与场景。
 
 ## P0 契约和模型

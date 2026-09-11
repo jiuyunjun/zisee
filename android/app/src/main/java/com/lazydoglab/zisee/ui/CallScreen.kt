@@ -97,6 +97,7 @@ fun CallScreen(state: CallUiState, model: CallViewModel, onMinimize: () -> Unit 
             { frame, point, kind -> model.createArMarker(frame, point, kind) }, model::undoArMarker,
             model::clearOwnArMarkers,
             onArStroke = model::drawArStroke,
+            onStopAr = model::stopAr,
             onSelectVideo = model::selectVideoSource,
             onStartShare = model::startScreenShare, onStopShare = { model.stopScreenShare() },
             onSetScreenContentMode = model::setScreenContentMode,

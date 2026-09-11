@@ -53,7 +53,7 @@ class ArVideoCapture private constructor(
                             val projected = controller.markers().mapNotNull {
                                 com.lazydoglab.zisee.ar.render.MarkerProjection.project(it, snapshot.pose, snapshot.intrinsics)
                             }
-                            renderer.drawMarkers(projected, width, height)
+                            renderer.drawMarkers(projected, width, height, rotationDegrees)
                             if (snapshot.tracking == com.lazydoglab.zisee.ar.spatial.ArTracking.TRACKING)
                                 renderer.drawStrokes(controller.strokeSnapshot(), snapshot.pose, snapshot.intrinsics, width, height)
                             true

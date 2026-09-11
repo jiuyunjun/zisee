@@ -23,7 +23,10 @@ class PoseRefiner(private val timeConstantSeconds: Float = 0.2f) {
         if (accepted?.frame?.timestampNs?.let { candidate.frame.timestampNs <= it } == true) return current
         // Missing identity is not positive correspondence. Depth can correct on a compatible
         // local surface only with normal and bounded displacement, never upgrade a free ray guess.
-        val sameIdentity = previous.method == next.method && previous.surfaceId != null && previous.surfaceId == next.surfaceId
+        val planeMethods = setOf(com.lazydoglab.zisee.ar.annotation.PlacementMethod.PLANE,
+            com.lazydoglab.zisee.ar.annotation.PlacementMethod.LOCAL_SURFACE)
+        val sameKind = previous.method == next.method || previous.method in planeMethods && next.method in planeMethods
+        val sameIdentity = sameKind && previous.surfaceId != null && previous.surfaceId == next.surfaceId
         val normalsAgree = previous.normal != null && next.normal != null && previous.normal.dot(next.normal) >= 0.94f
         if ((!sameIdentity && !normalsAgree) || (previous.surfaceId != null && next.surfaceId != null && !sameIdentity) ||
             (candidate.pose.position - current.pose.position).length() > 0.05f ||

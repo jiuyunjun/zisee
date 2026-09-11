@@ -35,10 +35,10 @@ class ArCameraRenderer : AutoCloseable {
     }
 
     /** Draws small, high-contrast billboards into the same source frame as the camera image. */
-    fun drawMarkers(markers: List<ProjectedMarker>, outputWidth: Int, outputHeight: Int) {
+    fun drawMarkers(markers: List<ProjectedMarker>, outputWidth: Int, outputHeight: Int, rotationDegrees: Int = 0) {
         checkOwner()
         if (markers.isEmpty()) return
-        annotations.markers(markers.filter { it.marker.kind == com.lazydoglab.zisee.ar.session.MarkerKind.PIN }, outputWidth, outputHeight)
+        annotations.markers(markers.filter { it.marker.kind != com.lazydoglab.zisee.ar.session.MarkerKind.CIRCLE }, outputWidth, outputHeight, rotationDegrees)
         if (markerProgram == 0) markerProgram = createMarkerProgram()
         GLES20.glUseProgram(markerProgram)
         GLES20.glViewport(0, 0, outputWidth, outputHeight)
@@ -47,7 +47,7 @@ class ArCameraRenderer : AutoCloseable {
         val position = GLES20.glGetAttribLocation(markerProgram, "aPosition")
         val kind = GLES20.glGetUniformLocation(markerProgram, "uKind")
         GLES20.glEnableVertexAttribArray(position)
-        markers.filter { it.marker.kind != com.lazydoglab.zisee.ar.session.MarkerKind.PIN }.groupBy { it.marker.kind }.forEach { (markerKind, group) ->
+        markers.filter { it.marker.kind == com.lazydoglab.zisee.ar.session.MarkerKind.CIRCLE }.groupBy { it.marker.kind }.forEach { (markerKind, group) ->
             val values = FloatArray(group.size * 2)
             group.forEachIndexed { index, item ->
                 values[index * 2] = item.point.x * 2f - 1f

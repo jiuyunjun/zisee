@@ -7,6 +7,15 @@ import org.junit.Test
 import kotlin.math.sqrt
 
 class PlacementResolverTest {
+    @Test fun planeEdgeCanBecomeConfirmedPolygonOnTheSameSurface() {
+        val current = world(1, 0f, 42, 0.55f).let { it.copy(evidence = it.evidence.copy(
+            method = PlacementMethod.LOCAL_SURFACE, strictPolygonHit = false)) }
+        val refiner = PoseRefiner()
+        var result = current
+        for (time in 2L..5L) result = refiner.refine(result, world(time, 0f, 42, 0.85f), 33_000_000, true)
+        assertEquals(PlacementMethod.PLANE, result.evidence.method)
+        assertTrue(result.evidence.confidence >= 0.7f)
+    }
     private val intrinsics = CameraIntrinsics(640, 480, 320f, 320f, 320f, 240f)
 
     @Test fun depthSurfaceRequiresContinuityToFillAHoleAndProducesAUnitNormal() {
