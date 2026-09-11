@@ -190,3 +190,9 @@
 - 尺寸切换：处理尺寸变化的那一帧一次性对 3 个历史纹理和所有空闲输出槽 `setSize`（新增 `ArFramePool.prepare`），该帧按 `oneTimeCost` 获得与预热相同的 50ms 上限豁免，不进入 P95 窗口。推测 try=2 的 25ms 单帧是输出槽在预热后才首次按新尺寸重分配，**未证实**；切换时仍被消费者持有的槽会在下次使用时再分配，仍可能出现单帧尖峰。
 - 验证：294 项 JVM 单测（新增尺寸切换豁免）0 failures/errors/skipped；assembleDebug、assembleDebugAndroidTest、lintDebug、compileReleaseKotlin 通过（`android/app/build/single-sync-validation.log`）。emulator-5556 `-e computeQuality true`、默认 native 回环、`-e arFramePool true` 均 PASS。
 - 下一步：用户在 nezha 打 ≥2 分钟电话，比较 `p95us` 与上次 7.9ms，确认 `cpu95` 降为提交耗时、`fin95` 体现等待。若单次同步后仍 >5ms 且主要是等待，需要用户决定预算口径：保持 5ms 总门槛，或改为「自身 GPU ≤5ms + 总额外延迟 P95 ≤12ms」（20ms 单帧不变）。
+
+## 控制环重构（2026-09-11 起）
+
+- `d121c2d` 真机：960×540 总 P95 5.3ms（gpu95 1.4ms，wait95 3.0ms），720p 7.8ms（gpu95 2.6ms）；冷却结束后回到 C1 约 1s 即再次超标，front 实际在「C1 1–2s / C0 数十秒」间振荡。
+- 用户评审指出问题在控制环而非阈值：盲目恢复、LOAD 混淆多种压力、总时长口径、每帧 glFinish 屏障、读回污染 P95、单帧 20ms 惩罚过重、指数退避不适合连续负载、等级与功能捆绑、双摄无全局预算。用户决定不调阈值（A/B 均不选），先落实设计再实现。
+- 设计：[控制环重构设计](../architecture/COMPUTE_CONTROL_LOOP.md)。实施顺序：1 指标与辅助任务拆出主路径 → 2 本地状态机（NORMAL/DEGRADED/PROBE/HARD_DISABLED）替代冷却/退避/锁死与 `cpuLimited` 反馈 → 3 fence 异步流水线（先 javap 核对 VideoSource 线程约定）→ 4 双摄全局预算与功能独立调度 → 5 真机标定阈值。
