@@ -54,6 +54,8 @@ class ArVideoCapture private constructor(
                                 com.lazydoglab.zisee.ar.render.MarkerProjection.project(it, snapshot.pose, snapshot.intrinsics)
                             }
                             renderer.drawMarkers(projected, width, height)
+                            if (snapshot.tracking == com.lazydoglab.zisee.ar.spatial.ArTracking.TRACKING)
+                                renderer.drawStrokes(controller.strokeSnapshot(), snapshot.pose, snapshot.intrinsics, width, height)
                             true
                         }
                     }
@@ -84,7 +86,21 @@ class ArVideoCapture private constructor(
 
     suspend fun createLocalMarker(id: UUID, kind: MarkerKind,
         request: com.lazydoglab.zisee.ar.annotation.SpatialMarkerRequest): Boolean = withContext(dispatcher) {
-        controller.createMarker(sessionId, id, kind, request) is MarkerResult.Created
+        if (kind == MarkerKind.PIN) {
+            // A SCREEN_LOCKED intent is transient feedback, never an authoritative world success.
+            val result = controller.createPoint(sessionId, id, request)
+            result?.placement is com.lazydoglab.zisee.ar.annotation.PlacementResult.World
+        } else controller.createMarker(sessionId, id, kind, request) is MarkerResult.Created
+    }
+
+    suspend fun beginLocalStroke(id: UUID, request: com.lazydoglab.zisee.ar.annotation.SpatialMarkerRequest): Boolean =
+        withContext(dispatcher) { controller.beginStroke(sessionId, id, request) }
+
+    suspend fun appendLocalStroke(id: UUID, requests: List<com.lazydoglab.zisee.ar.annotation.SpatialMarkerRequest>): Boolean =
+        withContext(dispatcher) { controller.appendStroke(sessionId, id, requests) }
+
+    suspend fun endLocalStroke(id: UUID, cancel: Boolean): Boolean = withContext(dispatcher) {
+        if (cancel) controller.cancelStroke(sessionId, id) else controller.endStroke(sessionId, id)
     }
 
     suspend fun removeLocalMarker(id: UUID): Boolean = withContext(dispatcher) {

@@ -89,6 +89,9 @@ class CallViewModel(application: Application, private val container: AppContaine
     private var cameraJob: Job? = null
     private val arActivation = com.lazydoglab.zisee.ar.session.ArActivationGate()
     private val arOwnMarkers = ArrayDeque<Pair<java.util.UUID, java.util.UUID>>()
+    private var arStrokeId: java.util.UUID? = null
+    private var arStrokeInputs: Channel<com.lazydoglab.zisee.ar.annotation.ArStrokeInput>? = null
+    private var arStrokeJob: Job? = null
     private var lastArResult: Pair<java.util.UUID, java.util.UUID>? = null
     private var lastFieldClearRevision = 0L
     private val removals = Channel<String>(4)
@@ -390,12 +393,69 @@ class CallViewModel(application: Application, private val container: AppContaine
             if (media.createArMarker(frame.identity, id, kind, point) && rtc === media) {
                 arOwnMarkers.addLast(frame.identity.sessionId to id)
                 mutable.update { it.copy(arOwnMarkerCount = arOwnMarkers.size,
-                    arNotice = if (remote) "正在确认标记…" else "标记已确认。") }
+                    arNotice = if (remote) "正在确认标记…" else "标记已放置，虚线表示位置仍在估计。") }
             } else if (rtc === media) arNotice("暂时无法固定在这里，请让画面对准表面后重试。")
         }
     }
 
+    /** One bounded, ordered worker per gesture. Slow GL work cannot spawn an unbounded coroutine
+     * per touch; cancellation/timeout tears down the entire unconfirmed stroke.
+     */
+    fun drawArStroke(input: com.lazydoglab.zisee.ar.annotation.ArStrokeInput) {
+        val media = rtc ?: return
+        val phase = input.phase
+        if (phase == com.lazydoglab.zisee.ar.annotation.ArStrokePhase.BEGIN) {
+            arStrokeJob?.cancel(); arStrokeInputs?.close()
+            val queue = Channel<com.lazydoglab.zisee.ar.annotation.ArStrokeInput>(8)
+            arStrokeInputs = queue; arStrokeId = input.id
+            val first = input.samples.single()
+            val identity = com.lazydoglab.zisee.ar.render.ArFrameIdentity(input.sessionId, first.frame)
+            arStrokeJob = viewModelScope.launch {
+                var created = false
+                var finished = false
+                try {
+                    created = media.beginArStroke(identity, input.id, first)
+                    if (!created) { if (rtc === media) arNotice("这里还没有可靠表面，请缓慢移动手机后重新起笔。"); return@launch }
+                    while (rtc === media) {
+                        val next = withTimeoutOrNull(2_000) { queue.receiveCatching().getOrNull() }
+                        if (next == null) { if (rtc === media) arNotice("绘制已中断，本笔已取消，请重新起笔。"); break }
+                        when (next.phase) {
+                            com.lazydoglab.zisee.ar.annotation.ArStrokePhase.APPEND -> {
+                                if (!media.appendArStroke(identity, input.id, next.samples)) {
+                                    arNotice("表面不连续或绘制已达上限，请重新起笔。"); break
+                                }
+                            }
+                            com.lazydoglab.zisee.ar.annotation.ArStrokePhase.END -> {
+                                finished = media.endArStroke(identity, input.id, false)
+                                if (finished && rtc === media) {
+                                    arOwnMarkers.addLast(input.sessionId to input.id)
+                                    mutable.update { it.copy(arOwnMarkerCount = arOwnMarkers.size, arNotice = "手绘已固定，可按整笔撤销。") }
+                                } else if (rtc === media) arNotice("这一笔太短或现场已变化，请重新绘制。")
+                                break
+                            }
+                            com.lazydoglab.zisee.ar.annotation.ArStrokePhase.CANCEL -> break
+                            com.lazydoglab.zisee.ar.annotation.ArStrokePhase.BEGIN -> Unit
+                        }
+                    }
+                } catch (cancel: CancellationException) { throw cancel }
+                catch (_: Exception) { if (rtc === media) arNotice("手绘未能完成，请重新起笔。") }
+                finally {
+                    if (created && !finished) withContext(NonCancellable) {
+                        try { media.endArStroke(identity, input.id, true) }
+                        catch (_: Exception) { if (rtc === media) arNotice("手绘清理失败，请退出 AR 后重试。") }
+                    }
+                    queue.close()
+                    if (arStrokeId == input.id) { arStrokeId = null; arStrokeInputs = null; arStrokeJob = null }
+                }
+            }
+        } else if (arStrokeId == input.id && arStrokeInputs?.trySend(input)?.isSuccess != true) {
+            arStrokeJob?.cancel()
+            arNotice("绘制处理较慢，本笔已取消，请重新起笔。")
+        }
+    }
+
     fun undoArMarker() {
+        arStrokeJob?.cancel()
         val media = rtc ?: return
         val marker = arOwnMarkers.removeLastOrNull() ?: return
         mutable.update { it.copy(arOwnMarkerCount = arOwnMarkers.size) }
@@ -406,6 +466,7 @@ class CallViewModel(application: Application, private val container: AppContaine
     }
 
     fun clearOwnArMarkers() {
+        arStrokeJob?.cancel()
         val current = rtc ?: return
         val markers = arOwnMarkers.toList()
         if (markers.isEmpty()) return
@@ -419,6 +480,7 @@ class CallViewModel(application: Application, private val container: AppContaine
     }
 
     fun clearFieldArMarkers() {
+        arStrokeJob?.cancel()
         val current = rtc ?: return
         viewModelScope.launch {
             if (current.clearFieldArMarkers() && rtc === current) {

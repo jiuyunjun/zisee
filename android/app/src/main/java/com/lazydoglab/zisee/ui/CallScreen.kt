@@ -96,6 +96,7 @@ fun CallScreen(state: CallUiState, model: CallViewModel, onMinimize: () -> Unit 
             model::reportViewLayout, model::setNoiseSuppression,
             { frame, point, kind -> model.createArMarker(frame, point, kind) }, model::undoArMarker,
             model::clearOwnArMarkers,
+            onArStroke = model::drawArStroke,
             onSelectVideo = model::selectVideoSource,
             onStartShare = model::startScreenShare, onStopShare = { model.stopScreenShare() },
             onSetScreenContentMode = model::setScreenContentMode,
@@ -271,7 +272,8 @@ private fun ControlBall(label: String, icon: String, danger: Boolean = false, ac
 @Composable
 internal fun VideoRenderer(feed: VideoFeed, modifier: Modifier, corner: Dp = 0.dp,
     onArTap: ((com.lazydoglab.zisee.rtc.TextureViewRenderer.DisplayedArFrame,
-        com.lazydoglab.zisee.ar.annotation.VideoPoint) -> Unit)? = null) {
+        com.lazydoglab.zisee.ar.annotation.VideoPoint) -> Unit)? = null,
+    onArStroke: ((com.lazydoglab.zisee.ar.annotation.ArStrokeInput) -> Unit)? = null) {
     androidx.compose.runtime.key(feed) {
         val geometry by feed.geometry.collectAsState()
         val cornerPx = with(androidx.compose.ui.platform.LocalDensity.current) { corner.toPx() }
@@ -281,8 +283,6 @@ internal fun VideoRenderer(feed: VideoFeed, modifier: Modifier, corner: Dp = 0.d
         androidx.compose.runtime.SideEffect { renderer?.cornerRadius = cornerPx }
         val displayedState = renderer?.displayedArFrame
         val displayed = if (displayedState != null) displayedState.collectAsState().value else null
-        val tapState = androidx.compose.runtime.rememberUpdatedState(onArTap)
-        val frameState = androidx.compose.runtime.rememberUpdatedState(displayed)
         var box by remember(feed) { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
         // The call surface supplies the bars behind a tile smaller than its box.
         Box(modifier.onSizeChanged { box = it }, contentAlignment = Alignment.Center) {
@@ -300,40 +300,13 @@ internal fun VideoRenderer(feed: VideoFeed, modifier: Modifier, corner: Dp = 0.d
             // Kept out of BoxWithConstraints: its subcomposition never composed this layer when
             // marking became available after the picture was already up — the real order, since a
             // field only starts tracking seconds later (device dump; ar-late-tracking smoke).
-            if (onArTap != null && box.width > 0 && box.height > 0) {
+            if ((onArTap != null || onArStroke != null) && box.width > 0 && box.height > 0) {
                 val aspect = geometry?.aspectRatio ?: (box.width.toFloat() / box.height)
                 val viewportWidth = minOf(box.width.toFloat(), box.height * aspect)
                 val viewportHeight = minOf(box.height.toFloat(), viewportWidth / aspect.coerceAtLeast(0.001f))
                 val density = androidx.compose.ui.platform.LocalDensity.current
-                // Field diagnosis: record the layer against its box (letterbox bars still fall
-                // through to the controls toggle) and each tap's outcome.
-                val layer = "layer=${viewportWidth.toInt()}x${viewportHeight.toInt()} box=${box.width}x${box.height}"
-                androidx.compose.runtime.LaunchedEffect(layer) {
-                    com.lazydoglab.zisee.core.logging.AndroidAppLogger.info(
-                        com.lazydoglab.zisee.core.logging.AppEvent.AR_TAP, "shown $layer")
-                }
-                // Every rendered frame is a new DisplayedArFrame. Keying the gesture on it restarted
-                // detection ~30 times a second, so a tap never completed and fell through to the
-                // controls toggle. Key on the viewport only and read the latest frame on tap.
-                Box(Modifier.size(with(density) { viewportWidth.toDp() }, with(density) { viewportHeight.toDp() })
-                    .pointerInput(viewportWidth, viewportHeight) {
-                        detectTapGestures { offset ->
-                            val frame = frameState.value
-                            val point = frame?.let {
-                                com.lazydoglab.zisee.ar.annotation.VideoPointMapper.fromViewport(
-                                    offset.x, offset.y, viewportWidth, viewportHeight,
-                                    it.geometry, it.mirrored,
-                                    com.lazydoglab.zisee.ar.annotation.VideoPointMapper.Scale.FIT)
-                            }
-                            com.lazydoglab.zisee.core.logging.AndroidAppLogger.info(
-                                com.lazydoglab.zisee.core.logging.AppEvent.AR_TAP, when {
-                                    frame == null -> "frame=none"
-                                    point == null -> "outside"
-                                    else -> "placed"
-                                })
-                            if (frame != null && point != null) tapState.value?.invoke(frame, point)
-                        }
-                    }.semantics { contentDescription = "AR 现场，可轻点放置所选标记" })
+                ArAnnotationInput(Modifier.size(with(density) { viewportWidth.toDp() }, with(density) { viewportHeight.toDp() }),
+                    viewportWidth, viewportHeight, displayed, onArTap, onArStroke)
             }
         }
     }

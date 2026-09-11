@@ -116,6 +116,7 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
         com.lazydoglab.zisee.ar.session.MarkerKind) -> Unit = { _, _, _ -> },
     onArUndo: () -> Unit = {},
     onArClearOwn: () -> Unit = {},
+    onArStroke: (com.lazydoglab.zisee.ar.annotation.ArStrokeInput) -> Unit = {},
     onSelectVideo: (String) -> Unit = {},
     onStartShare: () -> Unit = {}, onStopShare: () -> Unit = {},
     onSetScreenContentMode: (com.lazydoglab.zisee.rtc.ScreenContentMode) -> Unit = {},
@@ -127,6 +128,7 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
     var more by remember(initialMore) { mutableStateOf(initialMore) }
     var stableLocalMode by remember { mutableStateOf(CameraMode.FACE) }
     var arKind by remember { mutableStateOf(com.lazydoglab.zisee.ar.session.MarkerKind.PIN) }
+    var arDrawing by remember { mutableStateOf(false) }
     var confirmArClear by remember { mutableStateOf(false) }
     val localMode = if (state.showMe.mode == CameraMode.STARTING) stableLocalMode else state.showMe.mode
     SideEffect { stableLocalMode = localMode }
@@ -211,7 +213,9 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                 state.remoteShare.sharing, sharing)
             val main = CallVideoLayout.main(order, state.selectedVideoSource)
             val localArMarking = main == MeScene && localMode == CameraMode.AR &&
-                state.arState == com.lazydoglab.zisee.ar.session.ArSessionState.TRACKING
+                state.arState in setOf(com.lazydoglab.zisee.ar.session.ArSessionState.TRACKING,
+                    com.lazydoglab.zisee.ar.session.ArSessionState.TRACKING_LOST,
+                    com.lazydoglab.zisee.ar.session.ArSessionState.SCANNING)
             val remoteArMarking = main == PeerScene && state.remotePresentation.mode == CameraMode.AR &&
                 state.arCollaboration.joined
             val compactHeight = maxHeight < 420.dp
@@ -317,7 +321,8 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                 VideoTile(if (localMode in setOf(CameraMode.DUAL, CameraMode.AR)) state.localBack else state.local,
                     state.cameraEnabled && (MeScene == main || MeScene !in parked),
                     slot(MeScene, video = true), MeScene != main, corner(MeScene),
-                    if (localArMarking) { frame, point -> onArMarker(frame, point, arKind) } else null)
+                    if (localArMarking && !arDrawing) { frame, point -> onArMarker(frame, point, arKind) } else null,
+                    if (localArMarking && arDrawing) onArStroke else null)
             }
             if (PeerFace in order) {
                 VideoTile(state.remote, state.remotePresentation.enabled && (PeerFace == main || PeerFace !in parked),
@@ -439,18 +444,25 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                     .padding(horizontal = 10.dp, vertical = 4.dp)
                 val tools: @Composable () -> Unit = {
                 listOf(
-                    com.lazydoglab.zisee.ar.session.MarkerKind.PIN to "钉住",
+                    com.lazydoglab.zisee.ar.session.MarkerKind.PIN to "标点",
                     com.lazydoglab.zisee.ar.session.MarkerKind.ARROW to "箭头",
                     com.lazydoglab.zisee.ar.session.MarkerKind.CIRCLE to "圈",
                 ).forEach { (kind, label) ->
-                    TextButton(onClick = { interaction++; arKind = kind },
-                        modifier = Modifier.semantics { selected = arKind == kind },
+                    TextButton(onClick = { interaction++; arKind = kind; arDrawing = false },
+                        modifier = Modifier.defaultMinSize(minWidth = 48.dp).semantics { selected = arKind == kind && (!arDrawing || !localArMarking) },
+                        contentPadding = PaddingValues(horizontal = 6.dp),
                         colors = ButtonDefaults.textButtonColors(
-                            contentColor = if (arKind == kind) CallAccent else CallMuted)) { Text(label) }
+                            contentColor = if (arKind == kind && (!arDrawing || !localArMarking)) CallAccent else CallMuted)) { Text(label) }
                 }
+                if (localArMarking) TextButton(onClick = { interaction++; arDrawing = true },
+                    modifier = Modifier.defaultMinSize(minWidth = 48.dp).semantics { selected = arDrawing },
+                    contentPadding = PaddingValues(horizontal = 6.dp),
+                    colors = ButtonDefaults.textButtonColors(contentColor = if (arDrawing) CallAccent else CallMuted)) { Text("手绘") }
                 TextButton(enabled = state.arOwnMarkerCount > 0, onClick = { interaction++; onArUndo() },
+                    modifier = Modifier.defaultMinSize(minWidth = 48.dp), contentPadding = PaddingValues(horizontal = 6.dp),
                     colors = ButtonDefaults.textButtonColors(contentColor = CallAccent)) { Text("撤销") }
                 TextButton(enabled = state.arOwnMarkerCount > 0, onClick = { interaction++; confirmArClear = true },
+                    modifier = Modifier.defaultMinSize(minWidth = 48.dp), contentPadding = PaddingValues(horizontal = 6.dp),
                     colors = ButtonDefaults.textButtonColors(contentColor = CallDanger)) { Text("清除我的") }
                 if (compactHeight && tip != null) Text(tip, Modifier.padding(horizontal = 8.dp),
                     fontSize = 12.sp, color = CallMuted)
@@ -726,10 +738,11 @@ private fun videoReady(feed: com.lazydoglab.zisee.rtc.VideoFeed?): Boolean {
 private fun VideoTile(feed: com.lazydoglab.zisee.rtc.VideoFeed?, live: Boolean, modifier: Modifier,
     thumbnail: Boolean, corner: Dp = 0.dp,
     onArTap: ((com.lazydoglab.zisee.rtc.TextureViewRenderer.DisplayedArFrame,
-        com.lazydoglab.zisee.ar.annotation.VideoPoint) -> Unit)? = null) {
+        com.lazydoglab.zisee.ar.annotation.VideoPoint) -> Unit)? = null,
+    onArStroke: ((com.lazydoglab.zisee.ar.annotation.ArStrokeInput) -> Unit)? = null) {
     // The picture rounds itself inside the renderer; only the placeholder can be clipped out here,
     // because it is ordinary Compose drawing rather than a TextureView's own layer.
-    if (live && feed != null) VideoRenderer(feed, modifier, corner, onArTap)
+    if (live && feed != null) VideoRenderer(feed, modifier, corner, onArTap, onArStroke)
     // The main tile already sits on the call surface's own background; only a thumbnail needs its
     // placeholder painted, so the base surface is not redrawn under a live full-screen picture.
     else Box(if (!thumbnail) modifier

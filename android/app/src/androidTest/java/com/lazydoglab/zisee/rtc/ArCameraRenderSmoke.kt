@@ -72,6 +72,20 @@ internal object ArCameraRenderSmoke {
                         val centre = ((16 * 32 + 16) * 4)
                         val cyan = (0..2).map { pixels.get(centre + it).toInt() and 255 }
                         check(cyan[0] in 80..120 && cyan[1] > 190 && cyan[2] > 190)
+                        GLES20.glClearColor(0f, 0f, 0f, 1f)
+                        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+                        val reference = com.lazydoglab.zisee.ar.annotation.VideoFrameReference(
+                            com.lazydoglab.zisee.media.MediaTrack.BACK_CAMERA, 1)
+                        val geometry = com.lazydoglab.zisee.ar.annotation.StrokeGeometry(pin.pose, listOf(
+                            com.lazydoglab.zisee.ar.annotation.StrokeVertex(Vec3(-0.01f, 0f, 0f), reference, false),
+                            com.lazydoglab.zisee.ar.annotation.StrokeVertex(Vec3(0.01f, 0f, 0f), reference, false)), null)
+                        renderer.drawStrokes(listOf(com.lazydoglab.zisee.ar.session.SpatialStroke(pin.id, geometry,
+                            pin.pose, ArTracking.TRACKING)), WorldPose(Vec3(0f, 0f, 0f)),
+                            com.lazydoglab.zisee.ar.spatial.CameraIntrinsics(32, 32, 800f, 800f, 16f, 16f), 32, 32)
+                        GlUtil.checkNoGLES2Error("AR ribbon draw")
+                        pixels.clear()
+                        GLES20.glReadPixels(0, 0, 32, 32, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, pixels)
+                        check((pixels.get(centre + 1).toInt() and 255) > 170) { "Ribbon must cover its projected segment" }
                     }
                 } finally { surface.release() }
             } finally {

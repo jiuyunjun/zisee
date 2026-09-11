@@ -16,6 +16,7 @@ class ArCameraRenderer : AutoCloseable {
     private val eglContext = EGL14.eglGetCurrentContext()
     private val drawer = GlRectDrawer()
     private var markerProgram = 0
+    private val annotations = AnnotationOverlayRenderer()
     private var closed = false
     init { checkOwner() }
 
@@ -37,6 +38,7 @@ class ArCameraRenderer : AutoCloseable {
     fun drawMarkers(markers: List<ProjectedMarker>, outputWidth: Int, outputHeight: Int) {
         checkOwner()
         if (markers.isEmpty()) return
+        annotations.markers(markers.filter { it.marker.kind == com.lazydoglab.zisee.ar.session.MarkerKind.PIN }, outputWidth, outputHeight)
         if (markerProgram == 0) markerProgram = createMarkerProgram()
         GLES20.glUseProgram(markerProgram)
         GLES20.glViewport(0, 0, outputWidth, outputHeight)
@@ -45,7 +47,7 @@ class ArCameraRenderer : AutoCloseable {
         val position = GLES20.glGetAttribLocation(markerProgram, "aPosition")
         val kind = GLES20.glGetUniformLocation(markerProgram, "uKind")
         GLES20.glEnableVertexAttribArray(position)
-        markers.groupBy { it.marker.kind }.forEach { (markerKind, group) ->
+        markers.filter { it.marker.kind != com.lazydoglab.zisee.ar.session.MarkerKind.PIN }.groupBy { it.marker.kind }.forEach { (markerKind, group) ->
             val values = FloatArray(group.size * 2)
             group.forEachIndexed { index, item ->
                 values[index * 2] = item.point.x * 2f - 1f
@@ -59,6 +61,13 @@ class ArCameraRenderer : AutoCloseable {
         }
         GLES20.glDisableVertexAttribArray(position)
         GLES20.glDisable(GLES20.GL_BLEND)
+    }
+
+    fun drawStrokes(strokes: List<com.lazydoglab.zisee.ar.session.SpatialStroke>,
+        camera: com.lazydoglab.zisee.ar.spatial.WorldPose, intrinsics: com.lazydoglab.zisee.ar.spatial.CameraIntrinsics,
+        width: Int, height: Int) {
+        checkOwner()
+        annotations.strokes(strokes, camera, intrinsics, width, height)
     }
 
     private fun createMarkerProgram(): Int {
@@ -81,6 +90,7 @@ class ArCameraRenderer : AutoCloseable {
         if (closed) return
         checkOwner()
         drawer.release()
+        annotations.close()
         if (markerProgram != 0) GLES20.glDeleteProgram(markerProgram)
         closed = true
     }

@@ -26,10 +26,28 @@ $env:JAVA_HOME='C:\Program Files\Android\Android Studio\jbr'
 
 2026-09-11 在 Windows/JDK（Android Studio JBR）执行结果：两条命令均 `BUILD SUCCESSFUL`。第一条运行整组 AR JVM 回归；第二条运行全部 Debug JVM 测试、生成 Debug APK、执行 Debug lint，并编译 Release Kotlin。该结果不代表 Android instrumentation 或真机验证。
 
+## 本地 POINT / Stroke 检查点
+
+2026-09-11 最终运行 `:app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug :app:compileReleaseKotlin`，结果 `BUILD SUCCESSFUL`。XML 结果共 326 个 JVM 测试，失败/错误 0，其中 AR 包 77 个。测试数量只代表该工作区快照，不表示 roadmap 完成率。
+
+新增核心回归包含 `StrokeGeometryTest` 的重采样/源帧、拐角、短缺口时限、跨法线停止、anchor 修正后的局部坐标和退化 Ribbon。PoseRefiner 回归补充“同一帧重复不能算三次确认”和“首次 lerp 后继续收敛”，修复首次纠偏就提升 confidence 导致后续被质量门槛阻挡的问题。
+
+在 `emulator-5556` 安装 Debug 与 AndroidTest APK，实际执行：
+
+```powershell
+adb -s emulator-5556 shell am instrument -w -e arCameraRender true com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
+adb -s emulator-5556 shell am instrument -w -e arFramePool true com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
+adb -s emulator-5556 shell am instrument -w -e arChannel true com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
+adb -s emulator-5556 shell am instrument -w -e arTap true com.lazydoglab.zisee.dev.test/com.lazydoglab.zisee.rtc.RtcSmokeInstrumentation
+```
+
+四项均返回 PASS。GPU smoke 新增 Ribbon 覆盖像素断言；首次运行发现 32×32 小视口徽章遮挡中心，修复后复测通过。点击 smoke 的预览场景没有有效 AR frame，证明的是图层挂载与触摸路由，不是成功落锚，也不是拖绘全链路验收。截图已查看，临时产物位于 `android/app/build/ar-annotation-ui.png`（忽略目录，不提交）。
+
 ## 尚未验证
 
-- P1–P6 的定位、渲染、Stroke、v2 网络同步和性能指标。
-- Android GPU/instrumentation 测试。
+- 原生 Instant Placement、历史 Depth 实际对齐、法线精度、特征覆盖率与 ARCore anchor 纠偏效果。
+- 真实视频上的本地拖绘全链路、取消/前后台竞争、丢失跟踪恢复、编号与视觉去重。
+- v2 网络同步、远端 Stroke 与性能指标。
 - Depth、无 Depth 和不支持 AR 的真机降级。
 - 双设备延迟、丢包、旋转、前后台与持续 10 分钟通话。
 
