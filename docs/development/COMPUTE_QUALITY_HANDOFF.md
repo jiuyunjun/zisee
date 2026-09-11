@@ -63,7 +63,7 @@
 | C4 Burst | 策略 API 与超时/冷却单测存在；没有产品入口，也不提升分辨率/码率，不能宣称完整 Burst 功能 |
 | 高质量缩放/降噪 | 已接前后摄；16 tap 面积采样和运动/边缘门控，不是光流补偿或 AI SR |
 | Scene/low-light | 亮度/运动启发式已接入 ACTIVE camera plan 的发送 FPS；未做曝光控制、人脸/手部识别 |
-| ROI/complexity | 未实现；需要可维护的 WebRTC MediaCodec 配置扩展，以及能力检测/拒绝回退和设备验证 |
+| ROI/complexity | ROI 已有独立可测的有界异步分析基础设施，尚未接入 detector/相机/GPU；QP map/complexity 仍需要可维护的 WebRTC MediaCodec 配置扩展，以及能力检测/拒绝回退和设备验证 |
 | Codec profile/QP/P95 encode | Java 硬件路径已增加 encode→callback P50/P95/P99 和可选逐帧 QP；原生软件不可观测时保持未知/RTC mean。纯 MediaCodec 内部耗时与 DeviceProfile 尚未实现 |
 | Receiver SR/去伪影 | 未实现；没有引入模型或伪装双线性缩放为 SR；需要独立 receiver budget 和窗口可见性策略 |
 | P3 ML concealment | 未实现；设计本身列为可选，不生成不存在的内容 |
@@ -128,3 +128,15 @@
 - 回归覆盖双摄不同时间戳记录保留、同微秒时间戳冲突在逆序时钟下持续未知、冲突过期后可重新归属。全量 274 项 JVM 单测（0 failures/errors/skipped）和 Release Kotlin 编译通过；此改动不涉及 GPU 像素或硬件接口，没有追加真机能力结论。
 - ROI 选型仍在评估，尚未加入依赖或像素 readback。平台 android.media.FaceDetector 要求 RGB_565，公开接口没有 close，原生销毁依赖 finalize；不适合直接承诺可控的逐通话释放。参考：https://developer.android.com/reference/android/media/FaceDetector 。ML Kit 方案还需处理模型大小、SDK 遥测与当前隐私说明的兼容性，以及检测耗时和过期结果回退；不能将候选方案标记为已实现。
 - 下一步仍为 ROI 的可维护检测器与有界处理路径；complexity/QP map、Receiver SR、DeviceProfile 和真机验收状态见上表。用户要求每个独立改动验证后及时 commit、push，并随检查点维护本文。
+
+## ROI 检测基础设施检查点（2026-09-11）
+
+- 新增 `RoiAnalyzer`、`RoiDetector`/`RoiInput` 合约和归一化 `RoiBox`。此步是独立基础模块，**未接入 NativeRtcSession / CameraQualityProcessor，也没有人脸检测器或画质收益**，不新增依赖、像素 readback 或权限。
+- 每个 source 应独立拥有 analyzer：单 worker、最多一个在途输入、没有等待帧队列、最多 2Hz。`canSubmit` 用于昂贵输入准备前的预检，`submit` 再次检查并无条件接管输入释放责任，包括忙时、关闭后和几何不匹配的拒绝路径。
+- 结果最多 8 个合法矩形，坐标定义为旋转后的正向图像归一化坐标。未来 detector adapter 必须撤销自身 resize/letterbox；未来 shader adapter 需要显式映射到纹理坐标，不能直接混用 AR、sensor 或 GL 坐标。
+- 生命周期用 revision 隔离：切源、尺寸/旋转/crop/transform 变化需更新 `RoiGeometry`（同尺寸变换更新 generation）；停采、C0、AR 接管调用 `configure(null)`。禁用后再回到同一 geometry 也不会接受旧任务结果。
+- 检测结果同时受提交后的单调时间与源帧时间差约束，均不超过 500ms；未来结果、时钟倒退、超时检测结果均不可用。`null` 表示未知；空列表只表示有效检测未发现区域，未来背景处理不能将未知当成无人脸。
+- 非法/过多结果、检测或输入释放异常进入 FAILED，清空结果；只向 owner 上报固定失败阶段，不上报 exception 内容。`close()` 不阻塞调用线程，在在途任务结束后由同一 worker 释放 detector；同步原生检测必须能够返回，不能声称能强制中断失控的 native inference。
+- 下一步：选定可显式释放、依赖及隐私可接受的 detector，提供有界低分辨率输入适配，接入 source 生命周期和 compute budget 后，再实现 ROI 的 GPU 背景处理。当前还不具备端到端 ROI 功能。
+- 验证通过：281 项 JVM 单测（新增 7 项 ROI，0 failures/errors/skipped）、assembleDebug、compileReleaseKotlin、lintDebug。日志为未入库的 `android/app/build/compute-roi-validation.log`；本步未修改 GPU 或硬件调用，未安装用户真机，也未宣称真机性能或人脸检测效果。
+- 本步提交意图：`feat: add bounded asynchronous ROI analysis lifecycle`。
