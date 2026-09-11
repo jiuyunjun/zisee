@@ -191,6 +191,18 @@ class ArSessionControllerTest {
         controller.close()
     }
 
+    @Test fun guidePointRejectsAnUnverifiedHistoricalRayInsteadOfCreatingAFakeAnchor() {
+        val controller = controller()
+        controller.start()
+        backend.next = snapshot(2, depth = null)
+        controller.capture()
+        assertEquals(SpatialRejection.SURFACE_MISSING,
+            controller.createGuidePoint(epoch, UUID.randomUUID(), MarkerKind.PIN, request(2)))
+        assertTrue(controller.annotationSnapshot().isEmpty())
+        assertTrue(backend.created.isEmpty())
+        controller.close()
+    }
+
     @Test fun cameraResumeFailureClosesAcquiredBackend() {
         backend.failResume = true
         val controller = controller()
@@ -294,9 +306,9 @@ class ArSessionControllerTest {
         override fun detach() { actions.add("detach"); detaches++; check(!failDetach) }
     }
     companion object {
-        private fun snapshot(time: Long, tracking: ArTracking = ArTracking.TRACKING) = HistoricalFrame(
+        private fun snapshot(time: Long, tracking: ArTracking = ArTracking.TRACKING,
+            depth: DepthSnapshot? = DepthSnapshot(1, 1, shortArrayOf(1000))) = HistoricalFrame(
             VideoFrameReference(MediaTrack.BACK_CAMERA, time), WorldPose(Vec3(0f, 0f, 0f)),
-            CameraIntrinsics(640, 480, 320f, 320f, 320f, 240f), tracking,
-            DepthSnapshot(1, 1, shortArrayOf(1000)))
+            CameraIntrinsics(640, 480, 320f, 320f, 320f, 240f), tracking, depth)
     }
 }

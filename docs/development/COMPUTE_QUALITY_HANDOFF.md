@@ -40,7 +40,7 @@
 ## 路线与验证记录
 
 - P0：控制器、缩放、时域降噪（已实现，真机预算/画质尚未验收）。
-- P1：场景/暗光发送 FPS（已实现）；人脸 ROI、编码复杂度（未实现）。
+- P1：场景/暗光发送 FPS 已实现；Face ROI 的 Debug 检测、相机取样和诊断已实现，背景差异处理与编码器 QP map 未实现；编码复杂度未实现。
 - P2：接收端 SR/去伪影/细节模式（待实现或明确条件）。
 - P3：设计列为可选 ML 丢帧掩盖与语义增强，无模型和实测资料，不应默认生成内容。
 - 真机 benchmark、PSNR/SSIM/VMAF 对照和主观验收需要真实数据，尚未开展。
@@ -142,7 +142,7 @@
 - 修复 FrameSourceRegistry 时钟读取与 monitor 获取顺序相反时误删新记录的问题。只删除超过 2 秒的旧记录；查询相对当前采样时钟尚未发生的记录返回未知，但保留记录供后续查询。重复记录的观测时间取最大值，避免较晚取得锁的旧观测缩短冲突标记寿命。
 - 回归覆盖双摄不同时间戳记录保留、同微秒时间戳冲突在逆序时钟下持续未知、冲突过期后可重新归属。全量 274 项 JVM 单测（0 failures/errors/skipped）和 Release Kotlin 编译通过；此改动不涉及 GPU 像素或硬件接口，没有追加真机能力结论。
 - ROI 选型仍在评估，尚未加入依赖或像素 readback。平台 android.media.FaceDetector 要求 RGB_565，公开接口没有 close，原生销毁依赖 finalize；不适合直接承诺可控的逐通话释放。参考：https://developer.android.com/reference/android/media/FaceDetector 。ML Kit 方案还需处理模型大小、SDK 遥测与当前隐私说明的兼容性，以及检测耗时和过期结果回退；不能将候选方案标记为已实现。
-- 下一步仍为 ROI 的可维护检测器与有界处理路径；complexity/QP map、Receiver SR、DeviceProfile 和真机验收状态见上表。用户要求每个独立改动验证后及时 commit、push，并随检查点维护本文。
+- 后续检查点已经完成 ROI 检测器与有界相机输入；下一步是独立推理预算与 ROI 背景处理。complexity/QP map、Receiver SR、DeviceProfile 和真机验收状态见上表。
 
 ## ROI 检测基础设施检查点（2026-09-11）
 
@@ -152,7 +152,7 @@
 - 生命周期用 revision 隔离：切源、尺寸/旋转/crop/transform 变化需更新 `RoiGeometry`（同尺寸变换更新 generation）；停采、C0、AR 接管调用 `configure(null)`。禁用后再回到同一 geometry 也不会接受旧任务结果。
 - 检测结果同时受提交后的单调时间与源帧时间差约束，均不超过 500ms；未来结果、时钟倒退、超时检测结果均不可用。`null` 表示未知；空列表只表示有效检测未发现区域，未来背景处理不能将未知当成无人脸。
 - 非法/过多结果、检测或输入释放异常进入 FAILED，清空结果；只向 owner 上报固定失败阶段，不上报 exception 内容。`close()` 不阻塞调用线程，在在途任务结束后由同一 worker 释放 detector；同步原生检测必须能够返回，不能声称能强制中断失控的 native inference。
-- 下一步：选定可显式释放、依赖及隐私可接受的 detector，提供有界低分辨率输入适配，接入 source 生命周期和 compute budget 后，再实现 ROI 的 GPU 背景处理。当前还不具备端到端 ROI 功能。
+- 本检查点之后已选定并接入 detector 与有界低分辨率输入；ROI 的 GPU 背景处理仍未实现，当前仍不具备端到端 ROI 画质优化。
 - 验证通过：281 项 JVM 单测（新增 7 项 ROI，0 failures/errors/skipped）、assembleDebug、compileReleaseKotlin、lintDebug。日志为未入库的 `android/app/build/compute-roi-validation.log`；本步未修改 GPU 或硬件调用，未安装用户真机，也未宣称真机性能或人脸检测效果。
 - 本步提交意图：`feat: add bounded asynchronous ROI analysis lifecycle`。
 

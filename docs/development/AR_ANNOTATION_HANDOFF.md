@@ -19,6 +19,7 @@
 ## 当前可用路径
 
 - 本地 AR 的“标点”调用 `ArVideoCapture.createLocalMarker` → `ArSessionController.createPoint`。深度/平面/特征/估计位置具有不同 evidence；Screen 结果无假 pose，TTL 后删除；返回 Screen 不作为世界标注成功，UI 提示重新点选。
+- 指导方标点也使用分级定位，接受对应历史帧的 Depth、Plane、Plane 边缘带或 Feature Point；没有真实表面证据时返回明确拒绝，不用历史射线制造远端伪吸附。诊断只记录 FIELD/GUIDE 与命中方式或拒绝枚举，不含坐标和画面。
 - POINT 表面环使用明确 normal 投影，编号 HUD 保持屏幕朝向；无 normal 使用 billboard。估计位置显示虚线/较低透明度。source renderer 仍烧入同一帧，远端观看即可看到现场标注。
 - 本地“手绘”用 `ArAnnotationInput`，每个采样读取当时 `DisplayedArFrame`，逆变换 FIT/旋转/镜像。最多 16 点/批，50 ms 触摸批次，ViewModel 单笔有界队列，取消/失败清理整笔。
 - `beginLocalStroke / appendLocalStroke / endLocalStroke` 经 RtcSession/NativeRtcSession 转发，controller 用一笔一个 anchor 和 StrokeBuilder 局部坐标。begin 必须有真实世界定位；短缺口只在锁定表面上预测，超 100 ms 或 5 cm 停止；法线突变不跨面连接。
@@ -60,7 +61,7 @@ $env:JAVA_HOME='C:/Program Files/Android/Android Studio/jbr'
 ./gradlew.bat :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug :app:compileReleaseKotlin
 ```
 
-最近一轮完整构建成功；344 JVM 测试，失败/错误 0。`emulator-5554` 的基础原生通话、ICE 重连、v1/v2 AR 通道和指导方画笔 UI 路由 smoke 均通过，详见 [验证记录](AR_ANNOTATION_VALIDATION.md)。没有本次真机/双设备验收；已连接真机未安装 APK。
+最近一轮完整构建成功；345 JVM 测试，失败/错误 0。`emulator-5554` 的基础原生通话、ICE 重连、v1/v2 AR 通道和指导方画笔 UI 路由 smoke 均通过，详见 [验证记录](AR_ANNOTATION_VALIDATION.md)。没有本次真机/双设备验收；未在真机安装 APK。
 
 ## 已有提交及工作区注意
 

@@ -1383,7 +1383,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 rotation, width, height, onState = { state -> scope.launch {
                     if (arLeaseId == id && !released &&
                         mutableArState.value != com.lazydoglab.zisee.ar.session.ArSessionState.FAILED) mutableArState.value = state
-                } }) { scope.launch {
+                } }, onPlacement = { logger.info(AppEvent.AR_PLACEMENT, it.encode()) }) { scope.launch {
                     mutableArState.value = com.lazydoglab.zisee.ar.session.ArSessionState.FAILED
                     stopAr()
                 } }

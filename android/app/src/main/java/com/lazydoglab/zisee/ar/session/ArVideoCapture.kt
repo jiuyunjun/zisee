@@ -133,6 +133,7 @@ class ArVideoCapture private constructor(
         suspend fun start(context: Context, shared: EglBase.Context, source: VideoSource,
             lease: ArCameraLease, rotation: Int, width: Int, height: Int,
             onState: (ArSessionState) -> Unit = {},
+            onPlacement: (PlacementDiagnostic) -> Unit = {},
             onFailure: () -> Unit): ArVideoCapture = withContext(NonCancellable) {
             val helper = try { requireNotNull(SurfaceTextureHelper.create("ZiseeAr", shared)) }
                 catch (error: Exception) { lease.close(); throw error }
@@ -143,7 +144,7 @@ class ArVideoCapture private constructor(
                     capture.renderer = ArCameraRenderer()
                     capture.pool = ArFramePool(helper.handler) { helper.dispose() }
                     capture.controller = ArSessionController(capture.sessionId, { capture.backend },
-                        onEvent = { onState(capture.controller.state.value) })
+                        onEvent = { onState(capture.controller.state.value) }, onPlacement = onPlacement)
                     capture.backend.setDisplayGeometry(rotation, width, height)
                     check(capture.controller.start())
                     capture.rotationDegrees = capture.backend.imageRotationDegrees()

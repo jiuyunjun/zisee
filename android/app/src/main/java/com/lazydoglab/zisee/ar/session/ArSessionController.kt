@@ -10,6 +10,11 @@ import java.util.UUID
 enum class ArSessionState { IDLE, STARTING, SCANNING, TRACKING, TRACKING_LOST, PAUSED, FAILED, CLOSED }
 enum class MarkerKind { PIN, ARROW, CIRCLE }
 enum class ArEvent { STARTED, TRACKING_CHANGED, FRAME_REJECTED, MARKER_CREATED, MARKER_REJECTED, NATIVE_FAILURE, CLEANUP_FAILED, CLOSED }
+data class PlacementDiagnostic(val author: AnnotationAuthor, val method: PlacementMethod? = null,
+    val rejection: SpatialRejection? = null) {
+    init { require((method == null) != (rejection == null)) }
+    fun encode(): String = "${author.name}:${method?.name ?: rejection!!.name}"
+}
 
 interface LocalAnchor {
     val pose: WorldPose
@@ -48,6 +53,7 @@ class ArSessionController(
     val sessionId: UUID,
     private val backendFactory: () -> ArBackend,
     private val onEvent: (ArEvent) -> Unit = {},
+    private val onPlacement: (PlacementDiagnostic) -> Unit = {},
     private val history: PoseHistory = PoseHistory(),
     private val maxAnchors: Int = 32,
     private val monotonicNs: () -> Long = { System.nanoTime().coerceAtLeast(0) },
@@ -112,21 +118,52 @@ class ArSessionController(
     }
 
     /** New POINT entry point; v1 createMarker deliberately retains its strict rejection contract. */
+    private sealed interface PointCreation {
+        data class Created(val record: AnnotationRecord) : PointCreation
+        data class Rejected(val reason: SpatialRejection) : PointCreation
+    }
+
     fun createPoint(epoch: UUID, id: UUID, request: SpatialMarkerRequest,
-        author: AnnotationAuthor = AnnotationAuthor.FIELD): AnnotationRecord? {
+        author: AnnotationAuthor = AnnotationAuthor.FIELD): AnnotationRecord? =
+        (createPoint(epoch, id, MarkerKind.PIN, request, author, allowEstimate = true,
+            keepScreenFallback = true) as? PointCreation.Created)?.record
+
+    /** Remote taps use the same depth/plane/feature hierarchy as local points. A historical ray
+     * without surface evidence is rejected because the guide cannot validate an estimated anchor.
+     */
+    fun createGuidePoint(epoch: UUID, id: UUID, kind: MarkerKind,
+        request: SpatialMarkerRequest): SpatialRejection? =
+        (createPoint(epoch, id, kind, request, AnnotationAuthor.GUIDE, allowEstimate = false,
+            keepScreenFallback = false) as? PointCreation.Rejected)?.reason
+
+    private fun createPoint(epoch: UUID, id: UUID, kind: MarkerKind, request: SpatialMarkerRequest,
+        author: AnnotationAuthor, allowEstimate: Boolean, keepScreenFallback: Boolean): PointCreation {
         checkThread()
-        if (epoch != sessionId || !active() || request.frame.track != com.lazydoglab.zisee.media.MediaTrack.BACK_CAMERA ||
-            annotations.rejectionFor(id) != null) { onEvent(ArEvent.MARKER_REJECTED); return null }
-        val result = resolvePlacement(request)
-        val placed = installPlacement(id, result, request, allowInstant = author == AnnotationAuthor.FIELD)
-        if (!active()) return null
+        fun reject(reason: SpatialRejection): PointCreation.Rejected {
+            onEvent(ArEvent.MARKER_REJECTED)
+            onPlacement(PlacementDiagnostic(author, rejection = reason))
+            return PointCreation.Rejected(reason)
+        }
+        if (epoch != sessionId) return reject(SpatialRejection.WRONG_SESSION)
+        if (!active()) return reject(SpatialRejection.INACTIVE)
+        annotations.rejectionFor(id)?.let { return reject(it) }
+        val result = resolvePlacement(request, allowEstimate)
+        if (!keepScreenFallback && result is PlacementResult.Screen) return reject(result.reason)
+        val placed = installPlacement(id, result, request, allowInstant = author == AnnotationAuthor.FIELD,
+            kind = kind)
+        if (!active()) return reject(SpatialRejection.INACTIVE)
+        if (!keepScreenFallback && placed is PlacementResult.Screen) return reject(placed.reason)
         val record = annotations.create(id, author, AnnotationType.POINT, placed, placementState(placed))
         if (placed is PlacementResult.World) {
             pointRefiners[id] = PoseRefiner()
             pointAnchorPositions[id] = placed.pose.position
+            onPlacement(PlacementDiagnostic(author, method = placed.evidence.method))
+        } else {
+            onPlacement(PlacementDiagnostic(author,
+                rejection = (placed as PlacementResult.Screen).reason))
         }
         onEvent(ArEvent.MARKER_CREATED)
-        return record
+        return PointCreation.Created(record)
     }
 
     fun beginStroke(epoch: UUID, id: UUID, request: SpatialMarkerRequest,
@@ -206,13 +243,13 @@ class ArSessionController(
     }
 
     private fun installPlacement(id: UUID, placement: PlacementResult, request: SpatialMarkerRequest,
-        allowInstant: Boolean = false): PlacementResult {
+        allowInstant: Boolean = false, kind: MarkerKind = MarkerKind.PIN): PlacementResult {
         if (placement !is PlacementResult.World) return placement
         return try {
             val instant = if (allowInstant && placement.evidence.method == PlacementMethod.HISTORICAL_RAY_ESTIMATE)
                 requireNotNull(backend).createInstantAnchor(request) else null
             val anchor = instant ?: requireNotNull(backend).createAnchor(placement.pose)
-            anchors[id] = MarkerKind.PIN to anchor
+            anchors[id] = kind to anchor
             placement.copy(pose = anchor.pose, evidence = if (instant != null)
                 SurfaceEvidence(PlacementMethod.INSTANT_PLACEMENT, anchor.placementConfidence ?: 0.2f) else placement.evidence)
         } catch (_: Exception) {

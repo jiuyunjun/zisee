@@ -5,7 +5,6 @@ import com.lazydoglab.zisee.ar.annotation.ArStrokeMessage
 import com.lazydoglab.zisee.ar.annotation.AnnotationAuthor
 import com.lazydoglab.zisee.ar.session.ArSessionController
 import com.lazydoglab.zisee.ar.session.ArSessionState
-import com.lazydoglab.zisee.ar.session.MarkerResult
 import com.lazydoglab.zisee.ar.spatial.SpatialRejection
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.withContext
@@ -35,8 +34,8 @@ class ArControllerEndpoint(
         require(message.sessionId == sessionId)
         when (message) {
             is ArMessage.Create -> {
-                val result = controller.createMarker(sessionId, message.id, message.kind, message.request, AnnotationAuthor.GUIDE)
-                ArMessage.Result(sessionId, message.id, (result as? MarkerResult.Rejected)?.reason)
+                ArMessage.Result(sessionId, message.id,
+                    controller.createGuidePoint(sessionId, message.id, message.kind, message.request))
             }
             is ArMessage.Remove -> { controller.removeMarker(sessionId, message.id, AnnotationAuthor.GUIDE); null }
             is ArMessage.Clear -> { controller.clearMarkers(sessionId, AnnotationAuthor.GUIDE); null }

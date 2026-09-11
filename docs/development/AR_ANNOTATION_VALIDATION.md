@@ -65,6 +65,12 @@ adb -s emulator-5556 shell am instrument -w -e arTap true com.lazydoglab.zisee.d
 
 - JVM 覆盖 v2 所有消息往返、64 位帧时间戳、批次边界、非法字段/坐标/序号、能力门控、未加入请求、乱序批次和结果相关。
 - 完整任务 `:app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug :app:compileReleaseKotlin` 通过。
-- XML 结果共 344 个 JVM 测试，失败/错误 0；基础 instrumentation 也通过原生摄像头、ICE、编解码、发送端上限、ICE 重连与释放检查。
+- XML 结果共 345 个 JVM 测试，失败/错误 0；基础 instrumentation 也通过原生摄像头、ICE、编解码、发送端上限、ICE 重连与释放检查。
 - `emulator-5554 -e arChannel true` PASS，使用两个真实 PeerConnection/DataChannel 验证 v1 与 v2 并存及指导方 Stroke 往返；现场端为合成 endpoint，不代表 ARCore 落锚通过。
 - `emulator-5554 -e arTap true` PASS，新增 `ar-remote-guide` 场景确认指导方主画面出现手绘工具并切换到 Stroke 触摸层；预览没有 AR frame，只验证 UI 路由。
+
+## 指导方标点吸附检查点（2026-09-12）
+
+- 指导方 Create 已从只接受 Depth/Plane 的旧解析器切换到分级定位，新增 Feature Point 命中，同时保留严格的原始展示帧身份。
+- 指导方不接受无表面证据的历史射线估计，失败通过既有 Result 返回具体拒绝原因；本地标点原有 Screen fallback 与当前帧 Instant Placement 行为不变。
+- 新增无坐标诊断 `FIELD/GUIDE:PlacementMethod|SpatialRejection`，用于真机统计低吸附来自帧过期、tracking、表面缺失还是 native anchor 失败。
