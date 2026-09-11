@@ -249,3 +249,16 @@
 - 日志：`RTC_COMPUTE_LATE` 增加 `sub(tb/alloc/hist/out/sched/err/te)=...`；`RTC_COMPUTE_STATS`、`RTC_COMPUTE_TIER` 增加 `sub95(...)`（`SplitWindow`，120 个主处理帧，随转移清空）。
 - 验证：327 项 JVM 单测（新增 `SplitWindow`，另含另一 agent 同期测试）0 failures/errors/skipped；assembleDebug、assembleDebugAndroidTest、lintDebug、compileReleaseKotlin 通过（`android/app/build/submit-split-validation.log`）。emulator-5556 `-e computeQuality true`、默认 native 回环 PASS。
 - 真机待测：720p 下迟到帧 `sub` 中哪段占大头。`err`/`tb`/`te` 大 → 热路径去掉逐帧查询（改为每 N 帧）；`out`/`hist` 大 → 写入仍被消费者读取的纹理（增加输出槽或并入第 3 步 fence）；`alloc` 大 → 尺寸切换未被预分配覆盖。
+- submit 细分提交：`e887af0`。
+
+### flush 与尺寸切换诊断（2026-09-11）
+
+- 真机（16:15 通话，`e887af0`）：迟到帧的 10–20ms 总是整块落在**某一个绘制段**——`hist`（从相机 OES 缩放到历史纹理）或 `out`（输出绘制）；`err`/`tb`/`te` 只有个位数 us，**排除 glGetError/查询同步**。`RESIZE_ONLY` 和 `SHADOW` 帧同样卡 16–20ms（此时 `out` 就是唯一的 OES 读取），而这些帧自身 `gpu` 仅 0.7–2ms，说明卡顿与我们的工作量无关。迟到帧成串出现（约每 10–20s 一串、持续 1–2s）；与 `RTC_ADAPTATION_PLAN` 时间点只有部分重合，与处理尺寸切换的关系因缺少切换时间戳无法确认。
+- 守卫仍把这类卡顿记为 `CPU_SUBMIT`，在 RESIZE_ONLY 也继续迟到时依然级联到 OFF；待定位原因后再决定是否将「降档后同样迟到」视为非工作量压力而保持档位。
+- 待区分的假设（均未证实）：①相机帧的 acquire fence 未就绪，第一次采样 OES 时驱动阻塞；②写入仍被编码器/渲染在其他 context 读取的输出槽触发隐式同步；③驱动提交队列/调度阻塞（卡顿量接近一个 vsync）。
+- 本步诊断（不涉及 `ar/`）：
+  - 每个绘制段后插入显式 `glFlush` 单独计时：细分改为 `tb/alloc/hist/hflush/out/oflush/sched/err/te`。卡在 `hist`/`out` → 录制/状态校验阶段阻塞；卡在 `hflush`/`oflush` → 提交阶段阻塞。显式 flush 会让提交提前，属诊断用改动，定位后再评估是否保留。
+  - `RTC_COMPUTE_RESIZE name:<旧>><新>:allocUs=..:<action>:<tier>`：处理尺寸每次变化一行。
+  - `RTC_COMPUTE_LATE` 增加 `age`（到达时相机帧已过去的 ms，时间戳与 `System.nanoTime` 同为单调时钟）、`fdelta`（与上一帧时间戳间隔）、`sinceResize`（距上次处理尺寸变化）、`outFresh`（本帧输出槽是否首次以当前尺寸写入，即可能重新分配）。
+- 验证：327 项 JVM 单测 0 failures/errors/skipped；assembleDebug、assembleDebugAndroidTest、lintDebug、compileReleaseKotlin 通过（`android/app/build/flush-resize-diag-validation.log`）。emulator-5556 `-e computeQuality true`、默认 native 回环 PASS。
+- 真机待测：看迟到帧落在 `hist/out` 还是 `hflush/oflush`；`sinceResize` 是否普遍很小；`outFresh=true` 是否与 `out` 卡顿对应；`age` 是否在卡顿帧上偏小（帧到得过早 → fence 假设）。
