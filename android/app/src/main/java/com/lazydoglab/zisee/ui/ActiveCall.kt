@@ -441,38 +441,25 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                     .onSizeChanged { arToolsHeight = with(density) { it.height.toDp() } }
                     .clip(RoundedCornerShape(22.dp)).background(DockInk.copy(alpha = 0.88f))
                     .border(1.dp, CallAccent.copy(alpha = .25f), RoundedCornerShape(22.dp))
-                    .then(if (compactHeight) Modifier.horizontalScroll(rememberScrollState()) else Modifier)
-                    .padding(horizontal = 10.dp, vertical = 4.dp)
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 4.dp, vertical = 2.dp)
                 val tools: @Composable () -> Unit = {
                 listOf(
                     com.lazydoglab.zisee.ar.session.MarkerKind.PIN to "标点",
                     com.lazydoglab.zisee.ar.session.MarkerKind.ARROW to "箭头",
                     com.lazydoglab.zisee.ar.session.MarkerKind.CIRCLE to "圈",
                 ).forEach { (kind, label) ->
-                    TextButton(onClick = { interaction++; arKind = kind; arDrawing = false },
-                        modifier = Modifier.defaultMinSize(minWidth = 48.dp).semantics { selected = arKind == kind && (!arDrawing || !localArMarking) },
-                        contentPadding = PaddingValues(horizontal = 6.dp),
-                        colors = ButtonDefaults.textButtonColors(
-                            contentColor = if (arKind == kind && (!arDrawing || !localArMarking)) CallAccent else CallMuted)) { Text(label) }
+                    ArToolIcon(label, "ar-${kind.name.lowercase()}",
+                        active = arKind == kind && (!arDrawing || !localArMarking)) {
+                        interaction++; arKind = kind; arDrawing = false
+                    }
                 }
-                if (localArMarking) TextButton(onClick = { interaction++; arDrawing = true },
-                    modifier = Modifier.defaultMinSize(minWidth = 48.dp).semantics { selected = arDrawing },
-                    contentPadding = PaddingValues(horizontal = 6.dp),
-                    colors = ButtonDefaults.textButtonColors(contentColor = if (arDrawing) CallAccent else CallMuted)) { Text("手绘") }
-                if (localArMarking) TextButton(onClick = onStopAr,
-                    colors = ButtonDefaults.textButtonColors(contentColor = CallDanger)) { Text("停止 AR") }
-                TextButton(enabled = state.arOwnMarkerCount > 0, onClick = { interaction++; onArUndo() },
-                    modifier = Modifier.defaultMinSize(minWidth = 48.dp), contentPadding = PaddingValues(horizontal = 6.dp),
-                    colors = ButtonDefaults.textButtonColors(contentColor = CallAccent)) { Text("撤销") }
-                TextButton(enabled = state.arOwnMarkerCount > 0, onClick = { interaction++; confirmArClear = true },
-                    modifier = Modifier.defaultMinSize(minWidth = 48.dp), contentPadding = PaddingValues(horizontal = 6.dp),
-                    colors = ButtonDefaults.textButtonColors(contentColor = CallDanger)) { Text("清除我的") }
-                if (compactHeight && tip != null) Text(tip, Modifier.padding(horizontal = 8.dp),
-                    fontSize = 12.sp, color = CallMuted)
+                if (localArMarking) ArToolIcon("手绘", "ar-pen", active = arDrawing) { interaction++; arDrawing = true }
+                ArToolIcon("撤销", "ar-undo", enabled = state.arOwnMarkerCount > 0) { interaction++; onArUndo() }
+                ArToolIcon("清除我的", "ar-trash", enabled = state.arOwnMarkerCount > 0) { interaction++; confirmArClear = true }
+                if (localArMarking) ArToolIcon("停止 AR", "ar-stop", danger = true, onClick = onStopAr)
                 }
-                if (compactHeight) Row(toolModifier, verticalAlignment = Alignment.CenterVertically) { tools() }
-                else FlowRow(toolModifier, horizontalArrangement = Arrangement.Center,
-                    verticalArrangement = Arrangement.Center) { tools() }
+                Row(toolModifier, verticalAlignment = Alignment.CenterVertically) { tools() }
             }
             if (controls) {
                 Box(Modifier.fillMaxWidth().height(190.dp)
@@ -810,11 +797,29 @@ internal fun DockButton(label: String, kind: String, off: Boolean = false, activ
     }
 }
 
+@Composable
+private fun ArToolIcon(label: String, icon: String, active: Boolean = false, enabled: Boolean = true,
+    danger: Boolean = false, onClick: () -> Unit) {
+    val ink = when { !enabled -> CallFaint; danger -> CallDanger; active -> CallAccent; else -> CallText }
+    IconButton(onClick = onClick, enabled = enabled,
+        modifier = Modifier.size(48.dp).semantics { contentDescription = label; selected = active }) {
+        Canvas(Modifier.size(36.dp).background(if (active) CallAccentSoft else Color.Transparent, RoundedCornerShape(10.dp)).padding(6.dp)) {
+            scale(size.width / 24f, size.height / 24f, pivot = Offset.Zero) { callIcon(icon, ink) }
+        }
+    }
+}
 /** Design glyphs drawn in the shared 24-unit viewBox used across the canvases. */
 internal fun DrawScope.callIcon(kind: String, ink: Color, knockout: Color = Color.Transparent, off: Boolean = false) {
     val stroke = Stroke(1.8f, cap = StrokeCap.Round, join = StrokeJoin.Round)
     fun path(data: String, color: Color = ink) = drawPath(PathParser().parsePathString(data).toPath(), color, style = stroke)
     when (kind) {
+        "ar-pin" -> { drawCircle(ink, 4f, Offset(12f, 8f), style = stroke); path("M12 12v8M8 21h8") }
+        "ar-arrow" -> path("M5 19 19 5M8 5h11v11")
+        "ar-circle" -> drawCircle(ink, 8f, Offset(12f, 12f), style = stroke)
+        "ar-pen" -> path("M4 20l1-5L17 3l4 4L9 19zM14 6l4 4M4 20l5-1")
+        "ar-undo" -> path("M8 5 3 10l5 5M3 10h11a6 6 0 0 1 0 12")
+        "ar-trash" -> path("M4 6h16M9 3h6M6 6l1 15h10l1-15M10 10v7M14 10v7")
+        "ar-stop" -> drawRoundRect(ink, Offset(5f, 5f), Size(14f, 14f), CornerRadius(3f))
         "mic" -> {
             drawRoundRect(ink, Offset(9f, 2.5f), Size(6f, 11.5f), CornerRadius(3f), style = stroke)
             path("M5.5 11.5a6.5 6.5 0 0 0 13 0")

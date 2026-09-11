@@ -4,6 +4,8 @@
 
 ## 标记可读性修正
 
+后续交互修正：数字使用缓存的系统 sans-serif-medium 字形，移除七段数码管造型；标记工具统一为 48 dp 图标按钮，单行排列，窄屏水平滚动，保留无障碍名称/选中状态。手绘和点击使用不同 pointerInput 模式 key，切换工具会正确重建手势处理；append 中断时结束并保留有效轨迹，只有明确取消/异常才清理未完成笔画。CallArTapSmoke 增加“点击手绘后拖动必须进入 stroke handler”的回归断言；预览无源帧时仍不伪造空间定位。
+
 数字 HUD 在源视频合成时抵消输出旋转，显示在目标上方并用立杆连接；字号、外圈和箭头描边加粗。只有 STABILIZING 使用虚线，ANCHORED 改为连续实线。同一 plane ID 从 LOCAL_SURFACE 边缘带进入 PLANE 多边形后允许质量提升；无对应证据的历史距离估计仍保留虚线，不能仅靠等待伪装成确定位置。现场标记工具栏新增“停止 AR”。
 
 回归：`AnnotationHudTest` 覆盖四个旋转方向；`PlacementResolverTest` 覆盖同一表面边缘带变为确定多边形。Debug 构建和 Release Kotlin 编译通过；尚需真机查看竖屏/横屏的最终观感。

@@ -12,7 +12,7 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /** GL owner is ArCameraRenderer. A reusable VBO holds screen triangles for surface geometry
- * and a separate upright number badge. No text bitmap, texture readback or per-marker buffer.
+ * and a separate upright number badge. Glyph coverage is cached; no video readback or per-marker buffer.
  */
 internal class AnnotationOverlayRenderer : AutoCloseable {
     private val vertices = ByteBuffer.allocateDirect(65536 * 6 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
@@ -26,6 +26,8 @@ internal class AnnotationOverlayRenderer : AutoCloseable {
     private var alpha = 1f
     private var hudOrigin: Pair<Float, Float>? = null
     private var hudRotation = 0
+    private val glyphs = HashMap<Int, List<GlyphRun>>()
+    private data class GlyphRun(val x: Int, val y: Int, val length: Int, val opacity: Float)
 
     fun markers(markers: List<ProjectedMarker>, outputWidth: Int, outputHeight: Int, rotationDegrees: Int = 0) {
         begin(outputWidth, outputHeight)
@@ -130,12 +132,42 @@ internal class AnnotationOverlayRenderer : AutoCloseable {
         }
     }
     private fun digit(value: Int, x: Float, y: Float, w: Float) {
-        val mask = intArrayOf(0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f)[value]
-        val segments = arrayOf(floatArrayOf(0f,0f,1f,0f), floatArrayOf(1f,0f,1f,1f), floatArrayOf(1f,1f,1f,2f),
-            floatArrayOf(0f,2f,1f,2f), floatArrayOf(0f,1f,0f,2f), floatArrayOf(0f,0f,0f,1f), floatArrayOf(0f,1f,1f,1f))
-        for (i in segments.indices) if (mask and (1 shl i) != 0) {
-            val s = segments[i]; line(x + s[0]*w, y + s[1]*w, x + s[2]*w, y + s[3]*w, (w * 0.2f).coerceAtLeast(1.2f))
+        // Rasterize each system-font glyph once, retaining only bounded coverage runs (ten digits).
+        // No video bitmap conversion, per-frame text rasterization or new texture ownership.
+        val runs = glyphs.getOrPut(value) {
+            val bitmap = android.graphics.Bitmap.createBitmap(32, 48, android.graphics.Bitmap.Config.ARGB_8888)
+            try {
+                val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    color = android.graphics.Color.WHITE
+                    typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+                    textSize = 44f; textAlign = android.graphics.Paint.Align.CENTER
+                }
+                val bounds = android.graphics.Rect()
+                paint.getTextBounds(value.toString(), 0, 1, bounds)
+                android.graphics.Canvas(bitmap).drawText(value.toString(), 16f, 24f - (bounds.top + bounds.bottom) / 2f, paint)
+                buildList {
+                    for (row in 0 until 48) {
+                        var column = 0
+                        while (column < 32) {
+                            val coverage = (android.graphics.Color.alpha(bitmap.getPixel(column, row)) + 16) / 32
+                            val start = column++
+                            while (column < 32 && (android.graphics.Color.alpha(bitmap.getPixel(column, row)) + 16) / 32 == coverage) column++
+                            if (coverage > 0) add(GlyphRun(start, row, column - start, coverage / 8f))
+                        }
+                    }
+                }
+            } finally { bitmap.recycle() }
         }
+        val savedAlpha = alpha
+        for (run in runs) {
+            if (vertices.remaining() < 36) flush()
+            alpha = savedAlpha * run.opacity
+            val left = x + run.x * w / 32; val right = left + run.length * w / 32
+            val top = y + run.y * w * 2 / 48; val bottom = top + w * 2 / 48
+            vertex(left, top); vertex(right, top); vertex(left, bottom)
+            vertex(left, bottom); vertex(right, top); vertex(right, bottom)
+        }
+        alpha = savedAlpha
     }
 
     private fun flush() {
