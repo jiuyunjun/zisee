@@ -161,23 +161,25 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
                 outFresh = false
                 gpuTimer?.begin()
                 split[SPLIT_TIMER_BEGIN] = (System.nanoTime() - enteredNs) / 1000
-                try { process(frame, buffer, config, frameEpoch, tier) }
-                // The frame's only GPU sync: completes the output before consumers on other contexts
-                // sample it, and input reads (even on pool exhaustion/errors) before the capturer
-                // can release/reuse the borrowed OES texture.
-                finally {
-                    val endStarted = System.nanoTime()
-                    gpuTimer?.end()
-                    submittedNs = System.nanoTime()
-                    split[SPLIT_TIMER_END] = (submittedNs - endStarted) / 1000
-                    if (schedStarted && schedStat?.read(schedEnd) == true) {
-                        subCpuUs = (schedEnd[0] - schedStart[0]) / 1000
-                        subRunqUs = (schedEnd[1] - schedStart[1]) / 1000
-                    } else { subCpuUs = -1; subRunqUs = -1 }
-                    GLES20.glFinish()
-                    finishedNs = System.nanoTime()
-                    gpuNs = gpuTimer?.resultNs()
-                }
+                var owned: VideoFrame.TextureBuffer? = null
+                try {
+                    try { owned = process(frame, buffer, config, frameEpoch, tier) }
+                    // Complete shared output writes and borrowed OES reads even on processing failure.
+                    finally {
+                        val endStarted = System.nanoTime()
+                        gpuTimer?.end()
+                        submittedNs = System.nanoTime()
+                        split[SPLIT_TIMER_END] = (submittedNs - endStarted) / 1000
+                        if (schedStarted && schedStat?.read(schedEnd) == true) {
+                            subCpuUs = (schedEnd[0] - schedStart[0]) / 1000
+                            subRunqUs = (schedEnd[1] - schedStart[1]) / 1000
+                        } else { subCpuUs = -1; subRunqUs = -1 }
+                        GLES20.glFinish()
+                        finishedNs = System.nanoTime()
+                        gpuNs = gpuTimer?.resultNs()
+                    }
+                    owned.also { owned = null } // Transfer only after GPU completion succeeds.
+                } finally { owned?.release() }
             })
         } catch (error: RuntimeException) {
             guard.hardDisable()
@@ -312,11 +314,13 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
             historyCount = 0
             processedSerial++
             val out = pool!!.capture(width, height, finish = false) { shader!!.resize(buffer, width, height, check = false); true }
-            lap(SPLIT_OUT)
-            flushLap(SPLIT_OUT_FLUSH)
-            markFresh(out, width, height)
-            checkFrameErrors()
-            return out
+            try {
+                lap(SPLIT_OUT)
+                flushLap(SPLIT_OUT_FLUSH)
+                markFresh(out, width, height)
+                checkFrameErrors()
+                return out
+            } catch (error: Throwable) { out?.release(); throw error }
         }
         val matrix = FloatArray(9).also { buffer.transformMatrix.getValues(it) }
         val key = "${epoch.get()}:$width:$height:${frame.rotation}:${matrix.contentHashCode()}"
@@ -340,15 +344,17 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
                 if (historyCount == 0) 0f else config.denoiseStrength, check = false)
             true
         }
-        lap(SPLIT_OUT)
-        flushLap(SPLIT_OUT_FLUSH)
-        markFresh(result, width, height)
-        scheduleAux(frame, tier, frameEpoch, current.textureId, previous.textureId, width, height)
-        lap(SPLIT_SCHED)
-        checkFrameErrors()
-        index = (index + 1) % 3
-        historyCount = (historyCount + 1).coerceAtMost(2)
-        return result
+        try {
+            lap(SPLIT_OUT)
+            flushLap(SPLIT_OUT_FLUSH)
+            markFresh(result, width, height)
+            scheduleAux(frame, tier, frameEpoch, current.textureId, previous.textureId, width, height)
+            lap(SPLIT_SCHED)
+            checkFrameErrors()
+            index = (index + 1) % 3
+            historyCount = (historyCount + 1).coerceAtMost(2)
+            return result
+        } catch (error: Throwable) { result?.release(); throw error }
     }
 
     /** Readbacks stall the GL pipeline, so they run as a separate GL task after the frame's own work. */
@@ -388,10 +394,10 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         val started = System.nanoTime()
         val nowMs = started / 1_000_000
         lastAnalysisMs = nowMs
-        val analysis = analysisBuffer ?: GlTextureFrameBuffer(GLES20.GL_RGBA).also { analysisBuffer = it }
-        analysis.setSize(16, 9)
-        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, analysis.frameBufferId)
         try {
+            val analysis = analysisBuffer ?: GlTextureFrameBuffer(GLES20.GL_RGBA).also { analysisBuffer = it }
+            analysis.setSize(16, 9)
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, analysis.frameBufferId)
             shader!!.analyze(current, previous, width, height)
             // Only 576 bytes at 2Hz; never read back video-sized pixels.
             analysisPixels.clear()
@@ -403,6 +409,7 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         } catch (_: RuntimeException) {
             // Auxiliary only: stop scene analysis, keep the base pipeline.
             sceneFailed = true
+            scenePolicy.reset(); sceneDecision = SceneDecision(); sceneSampleMs = 0
             logger.error(AppEvent.RTC_COMPUTE_BYPASS, "$name:aux:scene")
         } finally { GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0) }
         sceneCost.add((System.nanoTime() - started) / 1000)

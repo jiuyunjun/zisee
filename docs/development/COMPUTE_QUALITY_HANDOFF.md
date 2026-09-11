@@ -5,6 +5,15 @@
 - 修复停采时间被算作健康运行的问题：约 2 秒健康样本后停采 60 秒，原实现第一帧即恢复 FULL；现在必须重新积累连续证据。
 - 显式生命周期/所有权重置通过原子代次通知采集线程，不跨线程操作 guard；外部 C0/不支持的输入也清证据，OFF 常规旁路保留稀疏探测。处理尺寸变化、时钟倒退和超过 3 秒的样本间断重置证据，保留降级档、失败历史和硬禁用状态。
 - 验证：`:app:testDebugUnitTest` 通过，新增 4 项回归覆盖停采、显式中断、OFF 稀疏探测、尺寸/时钟变化；Debug Kotlin 编译通过。GPU 异常保护及引用释放修复接续进行。
+- 提交：`d6c6bbf fix: require continuous evidence for compute recovery`。
+
+## 2026-09-12 审查修复：GPU 异常边界与输出所有权
+
+- 场景分析的 framebuffer 分配/尺寸设置移入异常保护，失败后清除场景决策并停用该分析任务，保留基础视频处理。
+- FULL/NO_AUX 与 RESIZE_ONLY 在输出纹理创建后若校验或调度失败，显式释放未交付引用；GL 同步完成前仍由调用方持有输出，完成阶段异常也会释放，避免纹理池永久 busy、EGL/helper 无法关闭。
+- 新增 `ComputeFailureSmoke`（纳入 `-e computeQuality true`）：测试内反射注入分配异常与真实 GL_INVALID_ENUM，无生产故障开关。验证场景分析失败后继续交付三帧、不重试失败任务，以及 FULL/RESIZE_ONLY 校验失败后原帧旁路、纹理池排空、GL 线程在 5 秒内退出。
+- 验证：338 项 JVM 单测通过；assembleDebug、assembleDebugAndroidTest、lintDebug、compileReleaseKotlin 通过；emulator-5554 GPU 像素/OES/引用回归与新增三种故障注入 PASS。旧无窗口模拟器起初 adb 无响应，重启后完成验证；未在真机安装或宣称实测硬件性能。
+- 原生通话回环 PASS：camera→encode/decode、ICE restart 后持续解码、sender ceilings、资源释放；模拟器缺少前摄，切摄测试明确 SKIP。所有改动文本通过 UTF-8 无 BOM 检查和 diff 检查。
 
 更新：2026-09-11。用户要求实现专项设计、随时留 handoff，结束后 push。
 

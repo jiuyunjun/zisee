@@ -94,6 +94,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
             if (computeQuality) {
                 ComputeOesSmoke.run()
                 ComputeQualitySmoke.run(targetContext)
+                ComputeFailureSmoke.run()
                 output.putString("stream", "PASS: synthetic GPU pixels/scaling/denoise, metadata, pool exhaustion, C0/AR bypass and retained cleanup; controlled clock verifies deadline fallback, not GPU performance\n")
                 finish(Activity.RESULT_OK, output)
                 return
