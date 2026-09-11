@@ -56,6 +56,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private val computeTelemetry = ComputeTelemetry(context, logger)
     private val encoderTelemetry = EncoderTelemetry(logger)
     private val frameSources = FrameSourceRegistry()
+    private val roiQpMaps = RoiQpMapRegistry(logger)
+    private var lastMainObservation: CameraTrackObservation? = null
     private var codecCapabilities: CodecCapabilitySnapshot? = null
     private var audioSource: AudioSource? = null
     private var videoTrack: VideoTrack? = null
@@ -281,7 +283,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         val encoderFactory = com.lazydoglab.zisee.ar.render.ArEncoderFactory(shared,
             if (BuildConfig.VIDEO_COMPUTE_QUALITY) { info, encoder ->
                 MeasuredVideoEncoder(encoder, info.name, encoderTelemetry, frameSources)
-            } else null)
+            } else null,
+            if (BuildConfig.VIDEO_ROI_QP_MAP) roiQpMaps else null)
         if (BuildConfig.VIDEO_COMPUTE_QUALITY) {
             val formats = try { encoderFactory.hardwareFormats() }
                 catch (error: RuntimeException) { logger.error(AppEvent.RTC_COMPUTE_CAPABILITY_FAILED); null }
@@ -388,12 +391,16 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             it.setEnabled(false); it.addSink(localScreenFeed)
             screenSender = requireNotNull(peer).addTrack(it, listOf("zisee"))
         }
-        // Rear video carries AR identities through H264 SEI; retain every fallback codec.
-        val rearCodecs = requireNotNull(factory).getRtpSenderCapabilities(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO).codecs
-        if (rearCodecs.any { it.name.equals("H264", true) }) {
+        // Rear video carries AR identities through H264 SEI. Front video prefers H264 because
+        // common phones have no VP8/VP9 hardware encoder, and only the hardware path can apply
+        // ROI QP maps. Both retain every fallback codec.
+        val videoCodecs = requireNotNull(factory).getRtpSenderCapabilities(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO).codecs
+        if (videoCodecs.any { it.name.equals("H264", true) }) {
+            val preferred = videoCodecs.sortedBy { if (it.name.equals("H264", true)) 0 else 1 }
+            val senderIds = setOfNotNull(videoSender?.id(), backSender?.id())
             try {
-                requireNotNull(peer).transceivers.firstOrNull { it.sender.id() == backSender?.id() }
-                    ?.setCodecPreferences(rearCodecs.sortedBy { if (it.name.equals("H264", true)) 0 else 1 })
+                requireNotNull(peer).transceivers.filter { it.sender.id() in senderIds }
+                    .forEach { it.setCodecPreferences(preferred) }
             } catch (_: Exception) { logger.error(AppEvent.RTC_CAPABILITY_UNAVAILABLE) }
         }
         control = requireNotNull(peer).createDataChannel("camera-state", DataChannel.Init().apply { negotiated = true; id = 0 })
@@ -551,13 +558,18 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             val stats = it.stats
             name to "${it.decision.level}/${it.decision.reason} ${it.scene.mode} p95=${stats.p95Ms?.toInt() ?: -1}ms frames=${stats.frames} bypass=${stats.bypassed} failed=${stats.failed} guard=${stats.state}/${stats.tier}/${stats.pressure} roi=${it.roiDiagnostic}"
         }
-    }.toMap()
+    }.toMap() + ("qpMap" to roiQpMaps.stats.let {
+        "supported=${it.supportedCodecs.size} unsupported=${it.unsupportedCodecs.size} " +
+            "active=${it.activeFrames} neutral=${it.neutralFrames} failures=${it.failures}" +
+            (it.lastFailure?.let { failure -> " last=$failure" } ?: "")
+    })
 
     private fun installQualityProcessor(source: VideoSource, shared: EglBase.Context, name: String): CameraQualityProcessor? {
         if (!BuildConfig.VIDEO_COMPUTE_QUALITY) return null
         val trackId = if (name == "front") MediaTrack.FRONT_CAMERA.wireId else MediaTrack.BACK_CAMERA.wireId
         return try { CameraQualityProcessor(shared, logger, name,
-            onSourceFrame = { timestamp -> frameSources.record(timestamp, trackId, System.nanoTime()) })
+            onSourceFrame = { timestamp -> frameSources.record(timestamp, trackId, System.nanoTime()) },
+            roiQpMaps = if (BuildConfig.VIDEO_ROI_QP_MAP) roiQpMaps else null)
             .also { source.setVideoProcessor(it) } }
         catch (error: RuntimeException) {
             logger.error(AppEvent.RTC_COMPUTE_UNAVAILABLE)
@@ -577,16 +589,21 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             val old = processor.decision
             val fresh = stats?.sampleAvailable == true && track != null && track.active != false &&
                 track.fps?.let { it > 0 } == true && nowMs - track.sampledAtMs in 0..3_000
+            val callbackP95 = timings.filter { it.trackId == id && it.samples >= 10 }
+                .mapNotNull { it.callbackP95Ms }.maxOrNull()
+            // The processor's own health stays with its guard; feeding it back here deadlocked recovery.
+            val cpuLimited = track?.qualityLimitation == "cpu"
             val next = policy.update(environment.copy(nowMs = nowMs, encodeMs = track?.encodeMs,
                 fps = track?.fps?.toInt()?.coerceAtLeast(1) ?: 30,
-                // The processor's own health stays with its guard; feeding it back here deadlocked recovery.
-                cpuLimited = track?.qualityLimitation == "cpu",
+                cpuLimited = cpuLimited,
                 sampleFresh = fresh,
-                encodeCallbackP95Ms = timings.filter { it.trackId == id && it.samples >= 10 }
-                    .mapNotNull { it.callbackP95Ms }.maxOrNull()))
+                encodeCallbackP95Ms = callbackP95))
             processor.decision = next
+            // Record which encode signal drove the change: callback P95 wins over the RTC mean.
             if (old != next) logger.info(AppEvent.RTC_COMPUTE_PLAN,
-                "$id:${next.level}:${next.reason}:p95us=${processor.stats.p95Ms?.times(1000)?.toLong() ?: -1}")
+                "$id:${next.level}:${next.reason}:p95us=${processor.stats.p95Ms?.times(1000)?.toLong() ?: -1}" +
+                    ":cb95ms=${callbackP95?.toInt() ?: -1}:rtcEncMs=${track?.encodeMs?.toInt() ?: -1}" +
+                    ":fps=${track?.fps ?: -1}:cpu=$cpuLimited")
         }
         update(frontQualityProcessor, frontComputePolicy, MediaTrack.FRONT_CAMERA.wireId)
         update(backQualityProcessor, backComputePolicy, MediaTrack.BACK_CAMERA.wireId)
@@ -983,7 +1000,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             CameraTrackObservation(it.encodeMs, it.sendDelayMs, it.outboundLoss, it.outboundReportFresh,
                 it.qualityLimitation, it.retransmittedKbps)
         } ?: CameraTrackObservation()
-        return CameraAdaptationInput(nowMs, stats.availableOutgoingKbps, stats.thermalStatus, observation(mainId),
+        val main = observation(mainId).also { lastMainObservation = it }
+        return CameraAdaptationInput(nowMs, stats.availableOutgoingKbps, stats.thermalStatus, main,
             auxId?.let { observation(it) }, mainViewedSmall = dualCapture == null && remoteView.front == ViewSize.SMALL)
     }
 
@@ -998,7 +1016,9 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                 // appliedQuality is the old writer's applied-cache and stays null for the whole
                 // call in ACTIVE (it never writes); qualityPolicy.current is kept running every
                 // tick specifically so this comparison field is meaningful in every mode.
-                "reason=${plan.reason.name} pool=${plan.poolKbps} bwe=${plan.bweKbps ?: -1} old=${qualityPolicy.current.quality.name}")
+                "reason=${plan.reason.name} pool=${plan.poolKbps} bwe=${plan.bweKbps ?: -1} old=${qualityPolicy.current.quality.name} " +
+                // Main-track inputs behind an ENCODER step: RTC per-frame encode mean and limitation.
+                "encMs=${lastMainObservation?.encodeMs?.toInt() ?: -1} ql=${lastMainObservation?.qualityLimitation ?: "-"}")
     }
 
     /** SHADOW: log a changed plan only, never touch a sender. ACTIVE: write the plan; on rejection
@@ -1747,6 +1767,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             cleanup { texture?.dispose() }; texture = null
             cleanup { factory?.dispose() }; factory = null
             frameSources.clear()
+            roiQpMaps.clear()
             if (ownsAudioProcessing) {
                 cleanup { com.lazydoglab.zisee.rtc.audio.processing.SharedAudioProcessing.release(audioProcessing) }
                 ownsAudioProcessing = false

@@ -17,7 +17,12 @@ object RoiQpMapPlanner {
 
     fun create(width: Int, height: Int, rotation: Int, boxes: List<RoiBox>?): RoiQpMap? {
         require(width > 0 && height > 0)
-        val plan = RoiBackgroundPlan.create(boxes, rotation) ?: return null
+        return create(width, height, RoiBackgroundPlan.create(boxes, rotation))
+    }
+
+    internal fun create(width: Int, height: Int, plan: RoiBackgroundPlan?): RoiQpMap? {
+        require(width > 0 && height > 0)
+        plan ?: return null
         val blocksWide = (width + BLOCK_SIZE - 1) / BLOCK_SIZE
         val blocksHigh = (height + BLOCK_SIZE - 1) / BLOCK_SIZE
         val offsets = ByteArray(blocksWide * blocksHigh)

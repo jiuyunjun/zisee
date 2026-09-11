@@ -30,6 +30,7 @@ internal object ComputeQualitySmoke {
         val frameCost = java.util.concurrent.atomic.AtomicLong(1_000_000)
         val roiSeen = CompletableDeferred<Unit>()
         val roiClosed = CompletableDeferred<Unit>()
+        val qpMaps = RoiQpMapRegistry(logger)
         val roiDetector = object : RoiDetector {
             override fun detect(input: RoiInput): List<RoiBox> {
                 check(input is RgbaRoiInput && input.width == 32 && input.height == 32)
@@ -37,11 +38,12 @@ internal object ComputeQualitySmoke {
                 check(pixels.size == 32 * 32)
                 pixels.fill(0)
                 roiSeen.complete(Unit)
-                return listOf(RoiBox(0.25f, 0.25f, 0.75f, 0.75f))
+                return listOf(RoiBox(0.1f, 0.1f, 0.4f, 0.4f))
             }
             override fun close() { roiClosed.complete(Unit) }
         }
-        val processor = CameraQualityProcessor(root.eglBaseContext, logger, "test", roiDetector = roiDetector) {
+        val processor = CameraQualityProcessor(root.eglBaseContext, logger, "test", roiDetector = roiDetector,
+            roiQpMaps = qpMaps) {
             elapsedClock.addAndGet(frameCost.get())
         }
         val retained = mutableListOf<VideoFrame>()
@@ -93,6 +95,10 @@ internal object ComputeQualitySmoke {
                     repeat(4) {
                         if (processor.stats.roiAppliedFrames > 0) return@repeat
                         val roiFrame = send(0.3f)
+                        if (processor.stats.roiAppliedFrames > 0) {
+                            val map = requireNotNull(qpMaps.take(roiFrame.timestampNs, 32, 32))
+                            check(map.size == 4 && map.any { it < 0 } && map.any { it > 0 })
+                        }
                         roiFrame.release(); retained.remove(roiFrame)
                         kotlinx.coroutines.yield()
                     }

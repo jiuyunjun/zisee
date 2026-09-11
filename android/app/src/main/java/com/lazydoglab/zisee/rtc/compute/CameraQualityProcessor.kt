@@ -18,6 +18,7 @@ data class PreprocessStats(val frames: Long = 0, val bypassed: Long = 0, val p95
 class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLogger, private val name: String,
     private val onSourceFrame: (Long) -> Unit = {},
     roiDetector: RoiDetector? = RoiDetectorProvider.create(),
+    private val roiQpMaps: RoiQpMapRegistry? = null,
     private val elapsedClockNs: () -> Long = System::nanoTime) : VideoProcessor, AutoCloseable {
     private val helper = requireNotNull(SurfaceTextureHelper.create("Quality-$name", shared))
     private var sink: VideoSink? = null
@@ -118,6 +119,9 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         val target = sink ?: return
         if (closed) return
         onSourceFrame(frame.timestampNs)
+        // Record neutral first. A successful ROI lookup below replaces it for this source; a
+        // same-timestamp frame from another camera becomes ambiguous and stays neutral.
+        roiQpMaps?.record(frame.timestampNs, name, null)
         val arrivalNs = System.nanoTime()
         // Camera timestamps share the monotonic clock: age shows how early the frame reaches us.
         val frameAgeMs = (arrivalNs - frame.timestampNs) / 1_000_000
@@ -344,6 +348,8 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         val older = if (historyCount >= 2) history[(index + 1) % 3] else previous
         val roiPlan = if (tier == ProcessingTier.FULL) currentRoiPlan(
             RoiGeometry(frameEpoch, width, height, frame.rotation), frame.timestampNs) else null
+        if (roiPlan != null) roiQpMaps?.record(frame.timestampNs, name,
+            RoiQpMapPlanner.create(width, height, roiPlan))
         val result = pool!!.capture(width, height, finish = false) {
             shader!!.denoise(current.textureId, previous.textureId, older.textureId, width, height,
                 if (historyCount == 0) 0f else config.denoiseStrength, roiPlan, check = false)

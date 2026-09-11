@@ -4,9 +4,12 @@ import org.webrtc.*
 
 /** Wrap only Java H264 codecs. Other codecs and native software fallbacks keep ordinary video. */
 class ArEncoderFactory(shared: EglBase.Context,
-    private val decorateHardware: ((VideoCodecInfo, VideoEncoder) -> VideoEncoder)? = null) : VideoEncoderFactory {
+    private val decorateHardware: ((VideoCodecInfo, VideoEncoder) -> VideoEncoder)? = null,
+    qpMaps: RoiQpMapProvider? = null) : VideoEncoderFactory {
     private val defaults = DefaultVideoEncoderFactory(shared, true, true)
-    private val hardware = HardwareVideoEncoderFactory(shared, true, true)
+    private val hardware: VideoEncoderFactory = qpMaps?.let {
+        RoiHardwareVideoEncoderFactory(shared, true, true, it)
+    } ?: HardwareVideoEncoderFactory(shared, true, true)
     fun hardwareFormats(): Set<String> = hardware.supportedCodecs.map { it.name }.toSet()
     override fun getSupportedCodecs(): Array<VideoCodecInfo> = defaults.supportedCodecs
     override fun createEncoder(info: VideoCodecInfo): VideoEncoder? {

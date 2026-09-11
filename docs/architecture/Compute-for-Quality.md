@@ -1,6 +1,6 @@
 # 视频通话 Compute-for-Quality 专项设计
 
-> Android 实现进度（2026-09-12）：已落地 P0 控制器、GPU 面积缩放、因果时域降噪，以及基础场景/发送 FPS 策略。Debug 默认开启，可用 `-Pzisee.computeQuality=false` 构建对照组；Release 暂关闭。Face ROI 已用于背景差异降噪，并具备标准 16×16 QP-offset map 生成和 API 35 编码器能力探测；当前 WebRTC 依赖没有公开每帧 `MediaCodec.setParameters` 接口，因此 QP map 尚未写入编码器。硬编 complexity、接收端 SR 等也尚未实现。持续状态、验证及下一步见 [专项 handoff](../development/COMPUTE_QUALITY_HANDOFF.md)。
+> Android 实现进度（2026-09-12）：已落地 P0 控制器、GPU 面积缩放、因果时域降噪，以及基础场景/发送 FPS 策略。Debug 默认开启，可用 `-Pzisee.computeQuality=false` 构建对照组；Release 暂关闭。Face ROI 已用于背景差异降噪，并生成标准 16×16 QP-offset map；Debug 下经同包 `RoiHardwareVideoEncoderFactory` 在 API 35+ 且声明 `FEATURE_Roi` 的硬编上逐帧写入 `PARAMETER_KEY_QP_OFFSET_MAP`（无 ROI 时写全 0，失败即回退普通硬编），仍待真机输出 QP/码率验收。硬编 complexity、接收端 SR 等也尚未实现。持续状态、验证及下一步见 [专项 handoff](../development/COMPUTE_QUALITY_HANDOFF.md)。
 
 > 第二步已接入 Java 硬件编码器的 encode→callback P50/P95/P99 与可选 QP，保留 AR SEI 和 native 软件 fallback。该分位数包含编码器排队/调度，不能解释为纯 MediaCodec 内部执行时间；不可观测的 native-only 软件路径保持未知。
 

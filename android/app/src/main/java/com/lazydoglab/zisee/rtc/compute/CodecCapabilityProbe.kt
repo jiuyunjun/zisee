@@ -33,7 +33,7 @@ data class CodecCapabilitySnapshot(
     fun diagnosticLines(): List<String> = listOf(
         "Android declarations SDK=$sdkInt failed=$failedQueries; WebRTC HW=${webRtcHardwareFormats?.sorted()?.joinToString()?.ifEmpty { "none" } ?: "unknown"}",
         "complexity configuration through current WebRTC: unavailable; declared support is not a benchmark",
-        "standard ROI QP-map transport through current WebRTC: unavailable; API 35 codec support is declaration only",
+        "standard ROI QP-map transport: Debug Java hardware encoders only; API 35 codec support is declaration only",
     ) + components.map {
         "${if (it.encoder) "enc" else "dec"} ${it.codec} ${it.component} ${it.acceleration} " +
             "surface=${it.surfaceInput ?: "n/a"} complexity=${it.complexityMin ?: "?"}..${it.complexityMax ?: "?"} roi=${it.roiEncoding ?: "n/a"} " +

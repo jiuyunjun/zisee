@@ -11,6 +11,8 @@ plugins {
 val backendUrl = providers.gradleProperty("zisee.backendUrl").orElse("").get()
 val localBackend = providers.gradleProperty("zisee.localBackend").orElse("false").get().toBooleanStrict()
 val computeQuality = providers.gradleProperty("zisee.computeQuality").orElse("true").get().toBooleanStrict()
+// A/B switch for per-frame ROI QP maps; only meaningful with computeQuality.
+val roiQpMap = providers.gradleProperty("zisee.roiQpMap").orElse("true").get().toBooleanStrict()
 // Debug-only: the SDK has its own telemetry/terms, so release never links it (see sourceSets below).
 val faceRoi = providers.gradleProperty("zisee.faceRoi").orElse("true").get().toBooleanStrict()
 require(backendUrl.isEmpty() || backendUrl.matches(Regex("https://[A-Za-z0-9.-]+(:[0-9]+)?/?"))) {
@@ -33,6 +35,7 @@ android {
         // any unrecognized value parses to OFF, i.e. today's behaviour.
         buildConfigField("String", "VIDEO_ADAPTATION", "\"OFF\"")
         buildConfigField("boolean", "VIDEO_COMPUTE_QUALITY", "false")
+        buildConfigField("boolean", "VIDEO_ROI_QP_MAP", "false")
     }
     signingConfigs {
         // Checked into the repo on purpose: every developer and every CI run must
@@ -52,6 +55,7 @@ android {
             if (localBackend) buildConfigField("String", "BACKEND_URL", "\"http://127.0.0.1:8080\"")
             buildConfigField("String", "VIDEO_ADAPTATION", "\"ACTIVE\"")
             buildConfigField("boolean", "VIDEO_COMPUTE_QUALITY", computeQuality.toString())
+            buildConfigField("boolean", "VIDEO_ROI_QP_MAP", (computeQuality && roiQpMap).toString())
         }
         release {
             isMinifyEnabled = true
