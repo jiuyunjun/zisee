@@ -41,6 +41,21 @@ class ComputeStatsWindow(private val capacity: Int = 120) {
     }
 }
 
+/** Fixed-width per-frame breakdowns (e.g. the submit split), microseconds. Owner thread only. */
+class SplitWindow(private val width: Int, private val capacity: Int = 120) {
+    private val rows = ArrayDeque<LongArray>()
+
+    fun add(row: LongArray) {
+        require(row.size == width)
+        rows.addLast(row.copyOf())
+        if (rows.size > capacity) rows.removeFirst()
+    }
+
+    fun clear() = rows.clear()
+
+    fun p95(): LongArray? = if (rows.isEmpty()) null else LongArray(width) { i -> percentile(rows.map { it[i] }, 95) }
+}
+
 /** Auxiliary/detector cost. Thread-safe: written on GL/worker threads, read for logs elsewhere. */
 class LatencyWindow(private val capacity: Int = 30) {
     private val values = ArrayDeque<Long>()

@@ -58,6 +58,10 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
     @Volatile private var lastAuxUs = 0L
     private var lateLogWindowNs = 0L
     private var lateLogCount = 0
+    /** GL-thread split of the submit phase, see [SPLIT_LABEL]; read on the capture thread after invoke. */
+    private val split = LongArray(SPLIT_FIELDS)
+    private var markNs = 0L
+    private val submitSplit = SplitWindow(SPLIT_FIELDS)
     private val scenePolicy = ScenePolicy()
     private var analysisBuffer: GlTextureFrameBuffer? = null
     private val analysisPixels = java.nio.ByteBuffer.allocateDirect(16 * 9 * 4)
@@ -122,14 +126,18 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
             ThreadUtils.invokeAtFrontUninterruptibly(helper.handler, java.util.concurrent.Callable {
                 enteredNs = System.nanoTime()
                 resizedThisFrame = false
+                split.fill(0)
                 gpuTimer?.begin()
+                split[SPLIT_TIMER_BEGIN] = (System.nanoTime() - enteredNs) / 1000
                 try { process(frame, buffer, config, frameEpoch, tier) }
                 // The frame's only GPU sync: completes the output before consumers on other contexts
                 // sample it, and input reads (even on pool exhaustion/errors) before the capturer
                 // can release/reuse the borrowed OES texture.
                 finally {
+                    val endStarted = System.nanoTime()
                     gpuTimer?.end()
                     submittedNs = System.nanoTime()
+                    split[SPLIT_TIMER_END] = (submittedNs - endStarted) / 1000
                     GLES20.glFinish()
                     finishedNs = System.nanoTime()
                     gpuNs = gpuTimer?.resultNs()
@@ -144,6 +152,7 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         // Base pipeline only (readbacks run as separate GL tasks); includes GL-thread waiting and
         // GPU completion, not just CPU submission time.
         val resumedNs = System.nanoTime()
+        val splitRow = split.copyOf()
         val addedMs = (elapsedClockNs() - arrivalClockNs) / 1_000_000.0
         val phases = if (finishedNs == 0L) null else FramePhases(preUs = (queuedNs - arrivalNs) / 1000,
             queueUs = (enteredNs - queuedNs) / 1000, submitUs = (submittedNs - enteredNs) / 1000,
@@ -154,9 +163,12 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
             externalMs = (phases.preUs + phases.resumeUs) / 1000.0),
             arrivalClockNs / 1_000_000, oneTimeCost = resizedThisFrame)
         if (phases != null && addedMs > ProcessingGuard.LATE_MS) {
-            logLate(phases, action, tier, auxBusyAtArrival, auxAgoMs, detectorBusyAtArrival, buffer.width, buffer.height)
+            logLate(phases, splitRow, action, tier, auxBusyAtArrival, auxAgoMs, detectorBusyAtArrival, buffer.width, buffer.height)
         }
-        if (action == FrameAction.PROCESS && guard.lastCounted && phases != null) frameStats.add(phases)
+        if (action == FrameAction.PROCESS && guard.lastCounted && phases != null) {
+            frameStats.add(phases)
+            submitSplit.add(splitRow)
+        }
         if (transition != null) logTransition(transition, buffer.width, buffer.height)
         val delivered = action == FrameAction.PROCESS && output != null
         stats = stats.copy(frames = stats.frames + if (delivered) 1 else 0,
@@ -175,28 +187,43 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         val p = frameStats.summary()?.p95
         val late = frameStats.countOver((ProcessingGuard.LATE_MS * 1000).toLong())
         val samples = frameStats.size
+        val sub = submitSplit.p95()?.joinToString("/") ?: "-1"
         frameStats.clear()
+        submitSplit.clear()
         logger.info(AppEvent.RTC_COMPUTE_TIER, "$name:${transition.from}>${transition.to}:${transition.cause}" +
             ":${transition.pressure}:${guard.state}:climb=${guard.climbDelayMs() ?: -1}:late=$late/$samples" +
             ":added95=${p?.addedUs ?: -1}:pre95=${p?.preUs ?: -1}:queue95=${p?.queueUs ?: -1}" +
             ":submit95=${p?.submitUs ?: -1}:wait95=${p?.waitUs ?: -1}:resume95=${p?.resumeUs ?: -1}" +
-            ":gpu95=${p?.gpuUs ?: -1}:${width}x$height")
+            ":gpu95=${p?.gpuUs ?: -1}:sub95($SPLIT_LABEL)=$sub:${width}x$height")
     }
 
     /** One line per late frame (rate-limited) so a device log shows where each late frame's time went. */
-    private fun logLate(p: FramePhases, action: FrameAction, tier: ProcessingTier, auxBusy: Boolean, auxAgoMs: Long,
-                        detectorBusy: Boolean, width: Int, height: Int) {
+    private fun logLate(p: FramePhases, sub: LongArray, action: FrameAction, tier: ProcessingTier, auxBusy: Boolean,
+                        auxAgoMs: Long, detectorBusy: Boolean, width: Int, height: Int) {
         val now = System.nanoTime()
         if (now - lateLogWindowNs > LATE_LOG_WINDOW_NS) { lateLogWindowNs = now; lateLogCount = 0 }
         if (++lateLogCount > LATE_LOG_MAX) return
         val aux = if (auxBusy) "running" else "${auxAgoMs}ms_ago"
         logger.info(AppEvent.RTC_COMPUTE_LATE, "$name:$action:$tier:added=${p.addedUs}:pre=${p.preUs}" +
-            ":queue=${p.queueUs}:submit=${p.submitUs}:wait=${p.waitUs}:resume=${p.resumeUs}:gpu=${p.gpuUs}" +
-            ":aux=$aux:auxUs=$lastAuxUs:detector=${if (detectorBusy) "busy" else "idle"}:${width}x$height")
+            ":queue=${p.queueUs}:submit=${p.submitUs}:sub($SPLIT_LABEL)=${sub.joinToString("/")}" +
+            ":wait=${p.waitUs}:resume=${p.resumeUs}:gpu=${p.gpuUs}:aux=$aux:auxUs=$lastAuxUs:detector=${if (detectorBusy) "busy" else "idle"}:${width}x$height")
+    }
+
+    private fun lap(field: Int) {
+        val now = System.nanoTime()
+        split[field] = (now - markNs) / 1000
+        markNs = now
+    }
+
+    /** One glGetError per frame (it can block until the driver thread drains queued commands). */
+    private fun checkFrameErrors() {
+        GlUtil.checkNoGLES2Error("quality frame")
+        lap(SPLIT_ERR)
     }
 
     private fun process(frame: VideoFrame, buffer: VideoFrame.TextureBuffer, config: ComputeDecision, frameEpoch: Long,
                         tier: ProcessingTier): VideoFrame.TextureBuffer? {
+        markNs = System.nanoTime()
         val width = buffer.width; val height = buffer.height
         if (shader == null) shader = CameraQualityShader()
         if (pool == null) pool = ArFramePool(helper.handler) { helper.dispose() }
@@ -208,11 +235,15 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
             preparedWidth = width; preparedHeight = height
             resizedThisFrame = true
         }
+        lap(SPLIT_ALLOC)
         if (tier == ProcessingTier.RESIZE_ONLY) {
             // No history or auxiliary work; a later denoising tier restarts from a clean temporal state.
             historyCount = 0
             processedSerial++
-            return pool!!.capture(width, height, finish = false) { shader!!.resize(buffer, width, height); true }
+            val out = pool!!.capture(width, height, finish = false) { shader!!.resize(buffer, width, height, check = false); true }
+            lap(SPLIT_OUT)
+            checkFrameErrors()
+            return out
         }
         val matrix = FloatArray(9).also { buffer.transformMatrix.getValues(it) }
         val key = "${epoch.get()}:$width:$height:${frame.rotation}:${matrix.contentHashCode()}"
@@ -225,16 +256,20 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         val current = history[index]
         current.setSize(width, height)
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, current.frameBufferId)
-        try { shader!!.resize(buffer, width, height) }
+        try { shader!!.resize(buffer, width, height, check = false) }
         finally { GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0) }
+        lap(SPLIT_HIST)
         val previous = if (historyCount >= 1) history[(index + 2) % 3] else current
         val older = if (historyCount >= 2) history[(index + 1) % 3] else previous
         val result = pool!!.capture(width, height, finish = false) {
             shader!!.denoise(current.textureId, previous.textureId, older.textureId, width, height,
-                if (historyCount == 0) 0f else config.denoiseStrength)
+                if (historyCount == 0) 0f else config.denoiseStrength, check = false)
             true
         }
+        lap(SPLIT_OUT)
         scheduleAux(frame, tier, frameEpoch, current.textureId, previous.textureId, width, height)
+        lap(SPLIT_SCHED)
+        checkFrameErrors()
         index = (index + 1) % 3
         historyCount = (historyCount + 1).coerceAtMost(2)
         return result
@@ -333,7 +368,8 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
             ":late=${frameStats.countOver((ProcessingGuard.LATE_MS * 1000).toLong())}" +
             ":added=${pair { it.addedUs }}:pre=${pair { it.preUs }}:queue=${pair { it.queueUs }}" +
             ":submit=${pair { it.submitUs }}:wait=${pair { it.waitUs }}:resume=${pair { it.resumeUs }}" +
-            ":gpu=${pair { it.gpuUs }}:scene=${sceneCost.summary()}:roi=${roiCost.summary()}" +
+            ":gpu=${pair { it.gpuUs }}:sub95($SPLIT_LABEL)=${submitSplit.p95()?.joinToString("/") ?: "-1"}" +
+            ":scene=${sceneCost.summary()}:roi=${roiCost.summary()}" +
             ":det=${roi?.detectCost?.summary() ?: "0/-1"}:faces=${roiFaces ?: -1}" +
             ":climb=${guard.climbDelayMs() ?: -1}:${width}x$height")
     }
@@ -342,6 +378,15 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         const val STATS_LOG_INTERVAL_NS = 10_000_000_000L
         const val LATE_LOG_WINDOW_NS = 10_000_000_000L
         const val LATE_LOG_MAX = 10
+        const val SPLIT_TIMER_BEGIN = 0
+        const val SPLIT_ALLOC = 1
+        const val SPLIT_HIST = 2
+        const val SPLIT_OUT = 3
+        const val SPLIT_SCHED = 4
+        const val SPLIT_ERR = 5
+        const val SPLIT_TIMER_END = 6
+        const val SPLIT_FIELDS = 7
+        const val SPLIT_LABEL = "tb/alloc/hist/out/sched/err/te"
     }
 
     /** Detach from VideoSource first. Pool defers EGL teardown until the last output is released. */

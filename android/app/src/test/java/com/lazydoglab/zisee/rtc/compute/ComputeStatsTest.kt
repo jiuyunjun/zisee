@@ -32,6 +32,18 @@ class ComputeStatsTest {
         assertNull(window.summary())
     }
 
+    @Test fun splitWindowReportsPerFieldTail() {
+        val window = SplitWindow(width = 2, capacity = 20)
+        assertNull(window.p95())
+        repeat(19) { window.add(longArrayOf(1, 10)) }
+        window.add(longArrayOf(1, 500))
+        assertEquals(listOf(1L, 10L), window.p95()!!.toList())
+        window.add(longArrayOf(900, 500))
+        assertEquals(listOf(1L, 500L), window.p95()!!.toList()) // Capacity evicted the first row.
+        window.clear()
+        assertNull(window.p95())
+    }
+
     @Test fun latencyWindowSummarizesCountAndTail() {
         val window = LatencyWindow(capacity = 4)
         assertEquals("0/-1", window.summary())

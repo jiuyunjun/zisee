@@ -33,7 +33,8 @@ internal class CameraQualityShader : AutoCloseable {
         GLES20.glColorMask(true, true, true, true)
     }
 
-    fun resize(buffer: VideoFrame.TextureBuffer, width: Int, height: Int) {
+    /** [check] = false lets the caller batch the frame's single glGetError (it can stall the driver). */
+    fun resize(buffer: VideoFrame.TextureBuffer, width: Int, height: Int, check: Boolean = true) {
         val external = buffer.type == VideoFrame.TextureBuffer.Type.OES
         val shader = if (external) oes ?: GlShader(VERTEX, resizeFragment(true)).also { oes = it }
             else rgb ?: GlShader(VERTEX, resizeFragment(false)).also { rgb = it }
@@ -50,10 +51,10 @@ internal class CameraQualityShader : AutoCloseable {
             if (down) 1f / height else 0f)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         GLES20.glBindTexture(target, 0)
-        GlUtil.checkNoGLES2Error("quality resize")
+        if (check) GlUtil.checkNoGLES2Error("quality resize")
     }
 
-    fun denoise(current: Int, previous: Int, older: Int, width: Int, height: Int, strength: Float) {
+    fun denoise(current: Int, previous: Int, older: Int, width: Int, height: Int, strength: Float, check: Boolean = true) {
         val shader = temporal ?: GlShader(VERTEX, TEMPORAL).also { temporal = it }
         use(shader, width, height)
         listOf(current, previous, older).forEachIndexed { index, id ->
@@ -68,7 +69,7 @@ internal class CameraQualityShader : AutoCloseable {
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0 + index)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
         }
-        GlUtil.checkNoGLES2Error("quality denoise")
+        if (check) GlUtil.checkNoGLES2Error("quality denoise")
     }
 
     fun analyze(current: Int, previous: Int, width: Int, height: Int) {

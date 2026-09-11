@@ -239,3 +239,13 @@
 - 验证：321 项 JVM 单测 0 failures/errors/skipped（含另一 agent 同期新增的 AR 测试；本步新增 guard 3 项、统计断言更新）；assembleDebug、assembleDebugAndroidTest、lintDebug、compileReleaseKotlin 通过（`android/app/build/guard-diag-validation.log`，构建包含另一 agent 未提交的 AR 改动）。emulator-5556 `-e computeQuality true`、默认 native 回环 PASS（回环结束 `DEGRADED/RESIZE_ONLY`，未锁死）；本步未改 `ArFramePool`，未跑 `arFramePool`。
 - 提交状态：本地 main 上有另一 agent 尚未 push 的 AR 提交在本步之前，本步只本地 commit，**未 push**，等用户决定。
 - 真机待测：看 `RTC_COMPUTE_LATE` 中迟到帧的时间落在哪一段，以及迟到时 `aux`/`detector` 是否在运行；确认 720p 下是否为 `EXTERNAL`、是否不再级联到 OFF、FULL 重入等待是否随失败加倍。
+- 本步提交 `3512a8d`；用户同意后连同另一 agent 的 AR 提交一起 push（远端 `6da90fa`）。
+
+### submit 细分（2026-09-11）
+
+- 真机（16:03 通话，`3512a8d`）：人脸检测真机生效（`faces=1/2`），ML Kit 推理 `det` p95 60–124ms（worker 线程，异步）。960×540 全程 `late=0`；720p 迟到帧**主要落在 `submit` 10–19ms**（正常约 0.4ms），`pre`/`resume` <1ms，迟到时 `detector=idle`、辅助任务早已结束（`auxUs` 数十 us）——排除唤醒、ML Kit CPU 争用和辅助读回。少数迟到帧落在 `wait` ~12ms 且 `gpu` 升到 4.3ms（疑似 GPU 被抢占）。守卫行为正常：一次 `long_burst` 降 NO_AUX，10s 后回 FULL，无级联、无振荡。
+- 推测（未证实）：`glGetError`/查询类调用迫使 Adreno 驱动线程同步；或写入仍被编码器在其他 context 读取的纹理触发隐式同步。
+- 本步：GL 线程 submit 段拆成 `tb/alloc/hist/out/sched/err/te`（timer begin、纹理分配、历史缩放绘制、输出绘制[降噪或 RESIZE_ONLY 缩放，含取池槽]、辅助调度、glGetError、timer end）。缩放/降噪内部各自的 `checkNoGLES2Error` 改为可跳过，由处理器每帧末尾统一检查一次（GL 错误仍抛出→HARD_DISABLED，语义不变，每帧 glGetError 从 2 次减到 1 次，不含 timer 自身的检查）。
+- 日志：`RTC_COMPUTE_LATE` 增加 `sub(tb/alloc/hist/out/sched/err/te)=...`；`RTC_COMPUTE_STATS`、`RTC_COMPUTE_TIER` 增加 `sub95(...)`（`SplitWindow`，120 个主处理帧，随转移清空）。
+- 验证：327 项 JVM 单测（新增 `SplitWindow`，另含另一 agent 同期测试）0 failures/errors/skipped；assembleDebug、assembleDebugAndroidTest、lintDebug、compileReleaseKotlin 通过（`android/app/build/submit-split-validation.log`）。emulator-5556 `-e computeQuality true`、默认 native 回环 PASS。
+- 真机待测：720p 下迟到帧 `sub` 中哪段占大头。`err`/`tb`/`te` 大 → 热路径去掉逐帧查询（改为每 N 帧）；`out`/`hist` 大 → 写入仍被消费者读取的纹理（增加输出槽或并入第 3 步 fence）；`alloc` 大 → 尺寸切换未被预分配覆盖。
