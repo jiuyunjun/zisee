@@ -34,7 +34,7 @@
 
 - 设计：`docs/architecture/Compute-for-Quality.md`。
 - Android Thermal API：https://developer.android.com/games/optimize/adpf/thermal
-- WebRTC 接口以缓存的 144.7559.15 sources.jar 为准。
+- WebRTC 接口以缓存的 144.7559.15 AAR classes.jar 的 javap 结果为准；该版本 sources.jar 只有 README，不能当作源码依据。
 - Java：`C:/Program Files/Android/Android Studio/jbr`；构建从 `android` 执行 Gradle wrapper。
 
 ## 2026-09-11 P0 进展
@@ -120,3 +120,11 @@
 - 新增 `-e codecCapabilities true` 仪器路径输出能力表，模拟器 **PASS**：SDK 37，15 项组件，failedQueries=0，WebRTC hardwareFormats 为空。系统有 c2.android.avc.encoder，但声明为 SOFTWARE，解释了此前 H264 instrumentation 的前置失败。系统有软件 AV1/HEVC complexity range，也不能据此启用手机软件慢编码。
 - Debug/AndroidTest 构建、Release Kotlin 编译、272 单测、lint 均通过。WebRTC 格式读取失败显示 UNKNOWN，与成功读取但列表为空（none）明确区分。
 - 本步只读取声明，不做 benchmark、不自动改 codec/complexity、不持久化用户或设备标识。提交意图：`feat: expose runtime video codec capability declarations`。
+
+## 持续提交检查点：跨线程时间戳归属
+
+- 能力快照已提交并 push：`eaa9365 feat: expose runtime video codec capability declarations`。
+- 修复 FrameSourceRegistry 时钟读取与 monitor 获取顺序相反时误删新记录的问题。只删除超过 2 秒的旧记录；查询相对当前采样时钟尚未发生的记录返回未知，但保留记录供后续查询。重复记录的观测时间取最大值，避免较晚取得锁的旧观测缩短冲突标记寿命。
+- 回归覆盖双摄不同时间戳记录保留、同微秒时间戳冲突在逆序时钟下持续未知、冲突过期后可重新归属。全量 274 项 JVM 单测（0 failures/errors/skipped）和 Release Kotlin 编译通过；此改动不涉及 GPU 像素或硬件接口，没有追加真机能力结论。
+- ROI 选型仍在评估，尚未加入依赖或像素 readback。平台 android.media.FaceDetector 要求 RGB_565，公开接口没有 close，原生销毁依赖 finalize；不适合直接承诺可控的逐通话释放。参考：https://developer.android.com/reference/android/media/FaceDetector 。ML Kit 方案还需处理模型大小、SDK 遥测与当前隐私说明的兼容性，以及检测耗时和过期结果回退；不能将候选方案标记为已实现。
+- 下一步仍为 ROI 的可维护检测器与有界处理路径；complexity/QP map、Receiver SR、DeviceProfile 和真机验收状态见上表。用户要求每个独立改动验证后及时 commit、push，并随检查点维护本文。

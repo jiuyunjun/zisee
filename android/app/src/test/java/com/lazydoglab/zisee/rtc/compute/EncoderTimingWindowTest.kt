@@ -68,4 +68,26 @@ class EncoderTimingWindowTest {
         sources.clear()
         assertNull(sources.source(3_000, 3_000_000_001))
     }
+
+    @Test fun olderClockReadDoesNotEraseNewerCameraEntries() {
+        val sources = FrameSourceRegistry()
+        sources.record(1_000, "video_front", 100)
+        // Simulate an encoder clock read preceding a camera write, but acquiring the lock later.
+        assertNull(sources.source(1_000, 90))
+        sources.record(2_000, "video_back", 90)
+        assertEquals("video_front", sources.source(1_000, 110))
+        assertEquals("video_back", sources.source(2_000, 110))
+    }
+
+    @Test fun reversedClockOrderKeepsTimestampCollisionAmbiguousUntilExpiry() {
+        val sources = FrameSourceRegistry()
+        sources.record(1_999, "video_front", 100)
+        sources.record(1_001, "video_back", 90)
+        assertNull(sources.source(1_000, 110))
+        // Do not regress the expiry time to 90 or assign the collision to a third write.
+        sources.record(1_002, "video_back", 2_000_000_095)
+        assertNull(sources.source(1_000, 2_000_000_100))
+        sources.record(1_003, "video_front", 4_000_000_096)
+        assertEquals("video_front", sources.source(1_000, 4_000_000_100))
+    }
 }

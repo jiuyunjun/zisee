@@ -28,15 +28,20 @@ class FrameSourceRegistry {
         prune(nowNs)
         val key = timestampNs / 1_000
         val old = entries[key]
-        entries[key] = Entry(if (old == null || old.source == source) source else null, nowNs)
+        entries[key] = Entry(if (old == null || old.source == source) source else null,
+            maxOf(old?.observedNs ?: nowNs, nowNs))
         while (entries.size > 256) entries.remove(entries.keys.first())
     }
     @Synchronized fun source(timestampNs: Long, nowNs: Long): String? {
         prune(nowNs)
-        return entries[timestampNs / 1_000]?.source
+        return entries[timestampNs / 1_000]?.takeIf { nowNs >= it.observedNs }?.source
     }
     @Synchronized fun clear() { entries.clear() }
-    private fun prune(nowNs: Long) { entries.entries.removeAll { nowNs - it.value.observedNs !in 0..2_000_000_000L } }
+    private fun prune(nowNs: Long) {
+        // Camera and encoder threads read the clock before acquiring this monitor. An older
+        // clock observation must not erase a newer entry (especially an ambiguous source).
+        entries.entries.removeAll { nowNs - it.value.observedNs > 2_000_000_000L }
+    }
 }
 
 /** Thread safe: encode and encoded callbacks run on different threads. Measures encode entry to
