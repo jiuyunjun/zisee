@@ -36,9 +36,10 @@ class PreprocessBudget(
         return false
     }
 
-    fun record(elapsedMs: Double, nowMs: Long, phase: FramePhases? = null): BudgetBreach? {
-        val breach = if (warmupSeen < warmupFrames) {
-            warmupSeen++
+    /** [oneTimeCost] marks a frame that reallocated textures for a new size: same bounded allowance as warmup. */
+    fun record(elapsedMs: Double, nowMs: Long, phase: FramePhases? = null, oneTimeCost: Boolean = false): BudgetBreach? {
+        val breach = if (oneTimeCost || warmupSeen < warmupFrames) {
+            if (!oneTimeCost) warmupSeen++
             if (elapsedMs > WARMUP_FRAME_MS) BudgetBreach.WARMUP else null
         } else {
             durations.addLast(elapsedMs)

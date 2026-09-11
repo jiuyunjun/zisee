@@ -41,6 +41,9 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
     private var lastTimestamp = 0L
     private val budget = PreprocessBudget()
     private var gpuTimer: GpuTimer? = null
+    private var preparedWidth = 0
+    private var preparedHeight = 0
+    private var resizedThisFrame = false
     private val scenePolicy = ScenePolicy()
     private var analysisBuffer: GlTextureFrameBuffer? = null
     private val analysisPixels = java.nio.ByteBuffer.allocateDirect(16 * 9 * 4)
@@ -98,10 +101,12 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         val output = try {
             ThreadUtils.invokeAtFrontUninterruptibly(helper.handler, java.util.concurrent.Callable {
                 enteredNs = System.nanoTime()
+                resizedThisFrame = false
                 gpuTimer?.begin()
                 try { process(frame, buffer, config, frameEpoch) }
-                // Even pool exhaustion/errors may have queued input reads. Complete them before
-                // the capturer can release/reuse the borrowed OES texture.
+                // The frame's only GPU sync: completes the output before consumers on other contexts
+                // sample it, and input reads (even on pool exhaustion/errors) before the capturer
+                // can release/reuse the borrowed OES texture.
                 finally {
                     gpuTimer?.end()
                     submittedNs = System.nanoTime()
@@ -119,7 +124,7 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         val elapsedMs = (elapsedClockNs() - started) / 1_000_000.0
         val phases = if (finishedNs == 0L) null else FramePhases((enteredNs - queuedNs) / 1000,
             (submittedNs - enteredNs) / 1000, (finishedNs - submittedNs) / 1000, gpuNs?.div(1000) ?: -1)
-        val breach = budget.record(elapsedMs, nowMs, phases)
+        val breach = budget.record(elapsedMs, nowMs, phases, oneTimeCost = resizedThisFrame)
         stats = stats.copy(frames = stats.frames + if (output != null) 1 else 0,
             bypassed = stats.bypassed + if (output == null) 1 else 0, p95Ms = budget.p95Ms, p95Samples = budget.samples,
             failed = stats.failed || budget.exhausted, cooling = budget.coolingActive, retries = budget.retries)
@@ -144,6 +149,13 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         if (shader == null) shader = CameraQualityShader()
         if (pool == null) pool = ArFramePool(helper.handler) { helper.dispose() }
         if (history.isEmpty()) history = List(3) { GlTextureFrameBuffer(GLES20.GL_RGBA) }
+        if (width != preparedWidth || height != preparedHeight) {
+            // Reallocate all textures on this one frame instead of whenever a slot is next used.
+            history.forEach { it.setSize(width, height) }
+            pool!!.prepare(width, height)
+            preparedWidth = width; preparedHeight = height
+            resizedThisFrame = true
+        }
         val matrix = FloatArray(9).also { buffer.transformMatrix.getValues(it) }
         val key = "${epoch.get()}:$width:$height:${frame.rotation}:${matrix.contentHashCode()}"
         if (historyKey != key || frame.timestampNs - lastTimestamp !in 1..250_000_000) {
@@ -177,7 +189,7 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
                 sceneSampleMs = nowMs
             } finally { GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0) }
         }
-        val result = pool!!.capture(width, height) {
+        val result = pool!!.capture(width, height, finish = false) {
             shader!!.denoise(current.textureId, previous.textureId, older.textureId, width, height,
                 if (historyCount == 0) 0f else config.denoiseStrength)
             true

@@ -16,7 +16,15 @@ class ArFramePool(private val handler: Handler, private val onDrained: () -> Uni
     private var closed = false
     private fun checkOwner() = check(Thread.currentThread() === handler.looper.thread)
 
-    fun capture(width: Int, height: Int, draw: () -> Boolean): VideoFrame.TextureBuffer? {
+    /** Allocates every free slot for a new size now, so the cost lands on a frame the caller knows. */
+    fun prepare(width: Int, height: Int) {
+        checkOwner()
+        check(!closed)
+        slots.filter { !it.busy }.forEach { it.framebuffer.setSize(width, height) }
+    }
+
+    /** [finish] = false only when the caller itself glFinishes before handing the buffer out. */
+    fun capture(width: Int, height: Int, finish: Boolean = true, draw: () -> Boolean): VideoFrame.TextureBuffer? {
         checkOwner()
         check(!closed)
         val slot = slots.firstOrNull { !it.busy } ?: return null
@@ -30,7 +38,7 @@ class ArFramePool(private val handler: Handler, private val onDrained: () -> Uni
             if (!draw()) return null
             // Complete writes before consumers sample this shared texture on another EGL context.
             // No pixel readback. Replace with cross-context fences only after device measurements.
-            GLES20.glFinish()
+            if (finish) GLES20.glFinish()
         } finally { GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0) }
         slot.busy = true
         return TextureBufferImpl(width, height, VideoFrame.TextureBuffer.Type.RGB,

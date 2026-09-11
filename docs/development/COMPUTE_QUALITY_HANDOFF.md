@@ -181,3 +181,12 @@
 - 旁路日志格式：`name:budget:<WARMUP|FRAME|P95>:try=N:cool=<ms|-1>:n=..:us=..:p95us=..:q95=..:cpu95=..:fin95=..:gpu95=..:WxH`（各段为窗口 P95，单位 us）。调试详情增加 `cooling`、`retries`。
 - 验证：293 项 JVM 单测（新增退避、重试重置、阶段 P95 三项）0 failures/errors/skipped；assembleDebug、assembleDebugAndroidTest、lintDebug、compileReleaseKotlin 通过（`android/app/build/budget-retry-validation.log`）。emulator-5556 `-e computeQuality true` PASS（控制时钟下超时后 `cooling && !failed`）；默认 native 回环 PASS，结束状态 `failed=false cooling=true retries=1`。模拟器是否支持 timer query 未单独断言；真机 `gpu95` 是否为 -1 待日志确认。
 - 下一步：用户在 nezha 打 ≥2 分钟电话。看 `fin95` 与 `gpu95` 的差：`gpu95` 小而 `fin95`/`q95` 大，说明是等待/争用，应去掉每帧同步 `glFinish`（改用 fence 保证输入纹理安全）并以 GPU 时间做预算；`gpu95` 本身接近 5ms，说明需要削减 shader 工作量。同时确认 55s 左右出现 `cooldown_end` 且能重新进入 C1/C2。
+
+## 每帧单次 GPU 同步与尺寸切换预分配（2026-09-11）
+
+- 真机（14:41 通话，`3ba925a`）：`P95:try=1 p95us=7925 q95=194 cpu95=7197 fin95=1250 gpu95=1662 1920x1080`；30s 后 `cooldown_end`，约 80s 后回到 C1（中途其他负载信号打断了 25s 连续证据），随即 `FRAME:try=2 us=26372 cpu95=25343 gpu95=2458 1280x720`。timer query 在该机可用。
+- 更正：上一步的 `cpu` 标签不是纯 CPU。`ArFramePool.capture` 内部自带 `glFinish`，因此 `cpu` 包含了等待 GPU 完成；本处理器 GPU 执行只有约 2ms，其余主要是排队等 GPU（与其他 context 争用）。输出成功时每帧同步两次（池内 + 外层），外层那次多余。
+- 修改：`ArFramePool.capture(finish = true)` 默认行为不变（AR 路径不受影响）；相机处理器传 `finish = false`，由外层 `finally { glFinish }` 作为唯一同步，同时覆盖输出写完与输入 OES 读完。拆分后 `cpu` 为命令提交（加 2Hz 场景读回的同步），`fin` 为 GPU 等待。
+- 尺寸切换：处理尺寸变化的那一帧一次性对 3 个历史纹理和所有空闲输出槽 `setSize`（新增 `ArFramePool.prepare`），该帧按 `oneTimeCost` 获得与预热相同的 50ms 上限豁免，不进入 P95 窗口。推测 try=2 的 25ms 单帧是输出槽在预热后才首次按新尺寸重分配，**未证实**；切换时仍被消费者持有的槽会在下次使用时再分配，仍可能出现单帧尖峰。
+- 验证：294 项 JVM 单测（新增尺寸切换豁免）0 failures/errors/skipped；assembleDebug、assembleDebugAndroidTest、lintDebug、compileReleaseKotlin 通过（`android/app/build/single-sync-validation.log`）。emulator-5556 `-e computeQuality true`、默认 native 回环、`-e arFramePool true` 均 PASS。
+- 下一步：用户在 nezha 打 ≥2 分钟电话，比较 `p95us` 与上次 7.9ms，确认 `cpu95` 降为提交耗时、`fin95` 体现等待。若单次同步后仍 >5ms 且主要是等待，需要用户决定预算口径：保持 5ms 总门槛，或改为「自身 GPU ≤5ms + 总额外延迟 P95 ≤12ms」（20ms 单帧不变）。

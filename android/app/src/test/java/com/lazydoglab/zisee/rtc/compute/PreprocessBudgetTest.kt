@@ -71,6 +71,14 @@ class PreprocessBudgetTest {
         assertNull(budget.record(45.0, 30_000))
     }
 
+    @Test fun sizeChangeFrameGetsOneBoundedAllowance() {
+        val budget = PreprocessBudget(warmupFrames = 0)
+        assertNull(budget.record(45.0, 0, oneTimeCost = true))
+        assertEquals(0, budget.samples)
+        assertEquals(BudgetBreach.FRAME, budget.record(21.0, 0))
+        assertEquals(BudgetBreach.WARMUP, PreprocessBudget(warmupFrames = 0).record(50.1, 0, oneTimeCost = true))
+    }
+
     @Test fun phaseP95IgnoresUnknownGpuTimes() {
         val budget = PreprocessBudget(warmupFrames = 0)
         repeat(20) { budget.record(1.0, 0, FramePhases(100, 200, 300, -1)) }
