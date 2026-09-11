@@ -1,6 +1,8 @@
 package com.lazydoglab.zisee.ar.spatial
 
 import com.lazydoglab.zisee.ar.annotation.SpatialMarkerRequest
+import com.lazydoglab.zisee.ar.annotation.PlacementMethod
+import com.lazydoglab.zisee.ar.annotation.SurfaceEvidence
 import com.lazydoglab.zisee.media.MediaTrack
 
 enum class SpatialRejection {
@@ -10,7 +12,9 @@ enum class SpatialRejection {
 
 enum class SurfaceSource { DEPTH, PLANE }
 sealed interface SpatialResolution {
-    data class Resolved(val pose: WorldPose, val source: SurfaceSource) : SpatialResolution
+    data class Resolved(val pose: WorldPose, val source: SurfaceSource,
+        val evidence: SurfaceEvidence = SurfaceEvidence(
+            if (source == SurfaceSource.DEPTH) PlacementMethod.DEPTH else PlacementMethod.PLANE, 0.5f)) : SpatialResolution
     data class Rejected(val reason: SpatialRejection) : SpatialResolution
 }
 

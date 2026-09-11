@@ -1,6 +1,6 @@
 package com.lazydoglab.zisee.ar.session
 
-import com.lazydoglab.zisee.ar.annotation.SpatialMarkerRequest
+import com.lazydoglab.zisee.ar.annotation.*
 import com.lazydoglab.zisee.ar.spatial.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -28,7 +28,8 @@ interface ArBackend : AutoCloseable {
     fun createAnchor(pose: WorldPose): LocalAnchor
 }
 
-data class SpatialMarker(val id: UUID, val kind: MarkerKind, val pose: WorldPose, val tracking: ArTracking)
+data class SpatialMarker(val id: UUID, val kind: MarkerKind, val pose: WorldPose, val tracking: ArTracking,
+    val displayNumber: Int = 0)
 sealed interface MarkerResult {
     data class Created(val marker: SpatialMarker, val source: SurfaceSource) : MarkerResult
     data class Rejected(val reason: SpatialRejection) : MarkerResult
@@ -50,7 +51,7 @@ class ArSessionController(
     val state: StateFlow<ArSessionState> = mutableState.asStateFlow()
     private var backend: ArBackend? = null
     private val anchors = LinkedHashMap<UUID, Pair<MarkerKind, LocalAnchor>>()
-    private val usedIds = HashSet<UUID>()
+    private val annotations = AnnotationLedger(maxAnchors)
     private var lastTimestampNs = 0L
     private val resolver = SpatialResolver(history)
     init { require(maxAnchors in 1..128) }
@@ -95,7 +96,8 @@ class ArSessionController(
         } catch (_: Exception) { fail(); null }
     }
 
-    fun createMarker(epoch: UUID, id: UUID, kind: MarkerKind, request: SpatialMarkerRequest): MarkerResult {
+    fun createMarker(epoch: UUID, id: UUID, kind: MarkerKind, request: SpatialMarkerRequest,
+        author: AnnotationAuthor = AnnotationAuthor.FIELD): MarkerResult {
         checkThread()
         fun reject(reason: SpatialRejection): MarkerResult {
             onEvent(ArEvent.MARKER_REJECTED)
@@ -104,15 +106,18 @@ class ArSessionController(
         if (epoch != sessionId) return reject(SpatialRejection.WRONG_SESSION)
         if (!active()) return reject(SpatialRejection.INACTIVE)
         if (state.value != ArSessionState.TRACKING) return reject(SpatialRejection.TRACKING_UNAVAILABLE)
-        if (id in usedIds) return reject(SpatialRejection.DUPLICATE_ID)
-        if (anchors.size >= maxAnchors || usedIds.size >= 512) return reject(SpatialRejection.LIMIT_REACHED)
+        annotations.rejectionFor(id)?.let { return reject(it) }
         return when (val result = resolver.resolve(request)) {
             is SpatialResolution.Rejected -> reject(result.reason)
             is SpatialResolution.Resolved -> try {
                 val anchor = requireNotNull(backend).createAnchor(result.pose)
                 anchors[id] = kind to anchor
-                val marker = SpatialMarker(id, kind, anchor.pose, anchor.tracking)
-                usedIds.add(id)
+                val pose = anchor.pose
+                val tracking = anchor.tracking
+                val record = annotations.create(id, author, AnnotationType.POINT,
+                    PlacementResult.World(pose, result.evidence, request.frame),
+                    if (tracking == ArTracking.TRACKING) PlacementState.ANCHORED else PlacementState.LOST)
+                val marker = SpatialMarker(id, kind, pose, tracking, record.displayNumber)
                 onEvent(ArEvent.MARKER_CREATED)
                 MarkerResult.Created(marker, result.source)
             } catch (_: Exception) {
@@ -128,26 +133,37 @@ class ArSessionController(
         checkThread()
         if (!active()) return emptyList()
         return try {
-            anchors.map { (id, entry) -> SpatialMarker(id, entry.first, entry.second.pose, entry.second.tracking) }
+            val records = annotations.snapshot().associateBy { it.id }
+            anchors.map { (id, entry) ->
+                val pose = entry.second.pose
+                val tracking = entry.second.tracking
+                val record = requireNotNull(records[id])
+                val placement = record.placement as PlacementResult.World
+                annotations.update(id, placement.copy(pose = pose),
+                    if (tracking == ArTracking.TRACKING) PlacementState.ANCHORED else PlacementState.LOST)
+                SpatialMarker(id, entry.first, pose, tracking, record.displayNumber)
+            }
         } catch (_: Exception) { fail(); emptyList() }
     }
 
-    fun removeMarker(epoch: UUID, id: UUID): Boolean {
+    fun annotationSnapshot(): List<AnnotationRecord> { checkThread(); return annotations.snapshot() }
+
+    fun removeMarker(epoch: UUID, id: UUID, actor: AnnotationAuthor = AnnotationAuthor.FIELD): Boolean {
         checkThread()
-        if (epoch != sessionId) return false
+        if (epoch != sessionId || !annotations.canRemove(id, actor)) return false
         val anchor = anchors.remove(id)?.second ?: return false
+        annotations.remove(id, actor)
         if (detach(anchor)) return true
         // A failed detach must not leave an untracked native resource in a running session.
         fail()
         return false
     }
 
-    fun clearMarkers(epoch: UUID): Boolean {
+    fun clearMarkers(epoch: UUID, actor: AnnotationAuthor = AnnotationAuthor.FIELD): Boolean {
         checkThread()
         if (epoch != sessionId || state.value == ArSessionState.CLOSED) return false
         var success = true
-        anchors.values.forEach { if (!detach(it.second)) success = false }
-        anchors.clear()
+        annotations.clear(actor).forEach { id -> anchors.remove(id)?.second?.let { if (!detach(it)) success = false } }
         if (!success) fail()
         return success
     }
@@ -184,6 +200,7 @@ class ArSessionController(
     private fun cleanup() {
         anchors.values.forEach { detach(it.second) }
         anchors.clear()
+        annotations.clear(AnnotationAuthor.FIELD)
         history.clear()
         val closing = backend
         backend = null
