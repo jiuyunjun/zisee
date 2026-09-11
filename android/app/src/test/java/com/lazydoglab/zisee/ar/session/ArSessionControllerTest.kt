@@ -142,6 +142,55 @@ class ArSessionControllerTest {
         assertEquals(ArSessionState.CLOSED, controller.state.value)
     }
 
+    @Test fun strokeUsesOneAnchorAndDeletionReleasesItsWholeGeometry() {
+        val controller = controller()
+        val id = UUID.randomUUID()
+        controller.start(); controller.capture()
+        assertTrue(controller.beginStroke(epoch, id, request(), AnnotationAuthor.FIELD))
+        assertEquals(1, backend.created.size)
+        assertTrue(controller.appendStroke(epoch, id, listOf(
+            SpatialMarkerRequest(request().frame, VideoPoint(0.51f, 0.5f)),
+            SpatialMarkerRequest(request().frame, VideoPoint(0.52f, 0.5f)),
+        ), AnnotationAuthor.FIELD))
+        assertTrue(controller.endStroke(epoch, id, AnnotationAuthor.FIELD))
+        assertTrue(controller.strokeSnapshot().single().geometry.vertices.size > 2)
+        assertEquals(1, backend.created.size)
+
+        assertFalse(controller.removeMarker(epoch, id, AnnotationAuthor.GUIDE))
+        assertTrue(controller.removeMarker(epoch, id, AnnotationAuthor.FIELD))
+        assertTrue(controller.strokeSnapshot().isEmpty())
+        assertEquals(1, backend.created.single().detaches)
+        controller.close()
+    }
+
+    @Test fun strokeRejectsOversizedBatchesAndDifferentAuthors() {
+        val controller = controller()
+        val id = UUID.randomUUID()
+        controller.start(); controller.capture()
+        assertTrue(controller.beginStroke(epoch, id, request(), AnnotationAuthor.GUIDE))
+        val point = SpatialMarkerRequest(request().frame, VideoPoint(0.51f, 0.5f))
+        assertFalse(controller.appendStroke(epoch, id, List(AnnotationBudget.MAX_BATCH_POINTS + 1) { point }, AnnotationAuthor.GUIDE))
+        assertFalse(controller.appendStroke(epoch, id, listOf(point), AnnotationAuthor.FIELD))
+        assertFalse(controller.cancelStroke(epoch, id, AnnotationAuthor.FIELD))
+        assertTrue(controller.cancelStroke(epoch, id, AnnotationAuthor.GUIDE))
+        assertTrue(controller.annotationSnapshot().isEmpty())
+        controller.close()
+    }
+
+    @Test fun lostTrackingCreatesScreenPointButNeverStartsAWorldStroke() {
+        val controller = controller()
+        controller.start(); controller.capture()
+        backend.next = snapshot(2, ArTracking.PAUSED)
+        controller.capture()
+        val point = controller.createPoint(epoch, UUID.randomUUID(), request(), AnnotationAuthor.GUIDE)
+        assertNotNull(point)
+        assertTrue(point!!.placement is PlacementResult.Screen)
+        assertEquals(PlacementState.SCREEN_LOCKED, point.state)
+        assertFalse(controller.beginStroke(epoch, UUID.randomUUID(), request(), AnnotationAuthor.GUIDE))
+        assertTrue(backend.created.isEmpty())
+        controller.close()
+    }
+
     @Test fun cameraResumeFailureClosesAcquiredBackend() {
         backend.failResume = true
         val controller = controller()

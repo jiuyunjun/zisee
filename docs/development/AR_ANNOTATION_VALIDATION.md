@@ -12,6 +12,7 @@
 
 - `AnnotationModelTest`：删除与 clear 后 UUID 和显示编号不复用；FIELD/GUIDE 删除权限；selected 与 LOST/SCREEN_LOCKED 状态正交；屏幕坐标与世界 pose 类型不可混用；annotation、stroke、批次、数据包、TTL 与预测预算；ledger owner 线程约束。
 - `ArSessionControllerTest`：旧 `createMarker`/`markers` API 的显示编号兼容；GUIDE 不能删除 FIELD 标注、FIELD 可删除 GUIDE 标注；pause/close 同时释放 native anchor 与 ledger，pause/resume 后编号不复用。
+- `ArSessionControllerTest` Stroke 回归：一笔只创建一个 native anchor；整笔删除/取消释放 anchor 与几何；批次点数上限；author 匹配；失跟踪仅创建 SCREEN_LOCKED point 且不能开始世界 Stroke。
 - 既有 AR JVM 回归：`com.lazydoglab.zisee.ar.*`，覆盖旧 v1 协议、frame identity、空间解析、投影、协作和会话生命周期。
 - `PlacementResolverTest`：深度连续性与孔洞拒绝、单位法线；Depth/Plane/Feature/Historical Ray Estimate/Screen 结果分支；精确历史帧与 tracking；PoseRefiner 的 surface identity、质量、位移、世界连续性、三次确认与按时间平滑。
 
