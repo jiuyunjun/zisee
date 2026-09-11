@@ -290,3 +290,10 @@
   - 仅 Debug：WebRTC 注入日志级别改为 INFO，但只把 `EglRenderer` 每 4s 的统计（含 `Average swapBuffer time`）转发为 logcat 标签 `ZiseeRender`，其余非 ERROR 消息直接丢弃；Release 仍为 ERROR。平均值可能掩盖尖峰，只作辅助证据。
 - 验证：331 项 JVM 单测（新增慢编码日志与限流 2 项）0 failures/errors/skipped；assembleDebug、assembleDebugAndroidTest、lintDebug、compileReleaseKotlin 通过（`android/app/build/encoder-render-diag-validation.log`）。emulator-5556 `-e computeQuality true`、默认 native 回环 PASS。模拟器使用软件编码且回环测试不经过 `TextureViewRenderer`，`ENCODE_SLOW`/`ZiseeRender` 均未出现，**需真机确认这两路日志是否产生**。
 - 真机待测：迟到帧是否与 `ENCODE_SLOW` 在时间上重叠；`ZiseeRender` 的 swapBuffer 平均值是否偏高。重叠 → 输出交付与编码器 swap 争锁，可考虑第 3 步异步交付或给编码器单独的非共享路径；不重叠且渲染 swap 高 → 渲染器侧（预览帧率/TextureView 合成）。
+- 编码器/渲染器诊断提交：`28e8df5`。
+- 真机（17:10、17:12 两通）：
+  - `RTC_COMPUTE_ENCODE_SLOW` 0 条（所有 Java HW 编码器经 `ArEncoderFactory` 回调包进 `MeasuredVideoEncoder`，≥8ms 才记）。编码器大概率不是持锁者；未打印 `encodeCallCost` 分布，严格说未完全确认。
+  - `ZiseeRender`：两个 `TextureViewRenderer` 的 4s 平均 swapBuffer 在 17:13:02–17:14:22 升到 5–15ms（正常 <0.5ms），该区间正好覆盖 17:13:06、17:13:29、17:13:37–39、17:13:56 的迟到串；17:14:26 后两者降回 ~0.4ms（画面静止 24fps），同期没有迟到串。有一个例外窗口（17:12:54–17:13:02 swap 偏高但无迟到），属强相关、非逐帧证据。
+  - HWUI（`dumpsys gfxinfo`）：janky 1.09%，GPU p99 5ms，界面线程本身基本健康。
+- 当前判断（待对照实验确认）：EglRenderer 往 TextureView 的 SurfaceTexture `eglSwapBuffers` 时等待 HWUI 归还缓冲而阻塞，期间持有 EGL share group / 驱动锁；我们的处理 context 与渲染器、编码器同一 share group（为共享输出纹理），于是在任意绘制调用中睡眠等待。可解释：与工作量无关、落在哪个 pass 不固定、12–17ms、`subSleep` 占主导。
+- 待用户决定（`TextureViewRenderer` 含 AR 帧身份逻辑，由另一 agent 负责）：A. Debug 开关把本地预览降帧（`EglRenderer.setFpsReduction`）或暂停本地预览渲染做对照；B. 确认后根治：预览帧率随窗口尺寸、改 SurfaceView（失去圆角裁剪）、或预览不与处理共享 share group；C. 不碰渲染器，只做第 3 步异步流水线（不阻塞相机线程，但锁等待仍计入延迟）。建议先 A。
