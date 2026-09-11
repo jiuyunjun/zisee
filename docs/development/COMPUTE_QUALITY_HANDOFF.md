@@ -2,6 +2,8 @@
 
 更新：2026-09-11。用户要求实现专项设计、随时留 handoff，结束后 push。
 
+用户后续强调：随时提交、push 和维护 handoff。执行节奏调整为每个独立可验证小步都更新本文、commit、push，不等整轮结束。
+
 ## 当前状态
 
 - 基线 main；工作区只有用户新增的 `docs/architecture/Compute-for-Quality.md`。不覆盖用户改动。
@@ -51,7 +53,7 @@
 - javap 已验证 144.7559.15 AAR：HardwareVideoEncoder、MediaCodecWrapperFactory 是包私有；HardwareVideoEncoderFactory 没有公开 MediaFormat/complexity 注入入口。未反射/覆写 org.webrtc 包；动态 complexity/ROI QP map 需要维护 upstream/fork 接口。
 - 修正 RTCStats callback 后时间新鲜度（thermal 采样在 callback 前，不能用它的时间减去新 stats 时间）；P95 现在包括 EGL handler 排队与 GPU 完成。池耗尽/异常也完成输入纹理读取后再回原始帧，避免摄像头复用竞态。
 - 调试详情显示每个 camera slot 的计算等级、理由、场景、P95、处理/旁路帧数和失败状态。front 是原始单摄 slot，切后摄时 slot 名称仍为 front。
-- 最后一轮回归已通过，正在完成 diff 检查、第二个 commit 和 push。
+- 首阶段回归、diff 检查及提交已完成，`3eaf682` 和 `2d68091` 已 push 到 origin/main。用户随后要求“继续”，正在推进下一阶段：真实编码耗时/QP 观测与设备能力记录，再处理 ROI/编码质量控制接口。
 
 ## 剩余实现和真机验收
 
@@ -91,4 +93,12 @@
 - GPU instrumentation：PASS。时钟注入用于像素/引用测试与 21ms 截止断言，防止软件模拟器的速度使算法测试误走旁路；该测试不能证明真实 GPU 在 5ms 内。
 - NativeRtcSession instrumentation：PASS。使用真实计时，模拟器首帧 GPU 约 338ms，处理 1 帧后 `failed=true` 自动旁路；仍完成 camera→encode→RTP→decode、ICE 重启恢复和 release。front camera 不可用，切摄测试明确 SKIP；不能替代双摄真机验证。
 - 曾失败的用例与修正：OES 上下方向假定→改为 WebRTC 基线逐角断言；旧质量事件→按 ACTIVE/OFF 选对应事件；实时预算保护触发导致像素测试旁路→为确定性算法测试注入时钟，真实预算继续由 native 回环验证。未放宽生产 20ms/5ms 门槛。
-- 首个提交：`3eaf682 feat: add thermal-aware video compute budget policy`。后续提交和 push 结果完成后补记。
+- 首个提交：`3eaf682 feat: add thermal-aware video compute budget policy`。
+- 实现提交：`2d68091 feat: add bounded GPU camera quality processing`；两个提交已成功 push 到 origin/main（远端从 c7be75a 前进到 2d68091）。本轮工作区随后因继续任务而再次更新。
+
+## 下一阶段进行中：编码观测与能力
+
+- 已读 `ar/render/ArVideoCodecs.kt`：现有 ArEncoderFactory 对 Java 硬件 H264 包装 AR SEI，其他 codec 返回 DefaultVideoEncoderFactory；软件回退是 WrappedNativeVideoEncoder，不能盲目套 Java encode/callback 包装器。
+- 计划在 Java 硬件编码器边界记录 encode 调用至 encoded callback 的耗时分布与 QP，不能把它称为 MediaCodec 纯内部耗时；保留原生软件回退和 AR 身份。
+- 设备能力记录与真机实测画像区分。不能仅凭 codec 名字/复杂度 range 就认为动态配置可用。
+- 尚未写下一阶段实现代码，首阶段代码仍为 2d68091；接手从上述文件及 rtc/compute 目录继续。
