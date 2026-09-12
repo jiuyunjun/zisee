@@ -6,6 +6,50 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class StrokeGeometryTest {
+    @Test fun curvedDepthStrokeFollowsSuccessiveTangentsBeyondStartingPlane() {
+        val stroke = StrokeBuilder(world(1, 0f))
+        for (index in 1..12) {
+            val angle = index * 0.1f
+            val point = Vec3(0.2f * kotlin.math.sin(angle), 0f, -1f + 0.2f * (1f - kotlin.math.cos(angle)))
+            val hit = world(index + 1L, 0f, Vec3(-kotlin.math.sin(angle), 0f, kotlin.math.cos(angle)))
+                .copy(pose = WorldPose(point))
+            assertEquals(StrokeAppendResult.ADDED, stroke.append(request(index + 1L), hit, null))
+        }
+        assertTrue(stroke.snapshot().vertices.last().local.z > 0.1f)
+        assertFalse(stroke.snapshot().vertices.any { it.estimated })
+    }
+
+    @Test fun absentDepthNormalDoesNotInterruptButCannotPredictOrBridgeLargeJump() {
+        val hit = world(2, 0.012f).let { it.copy(evidence = it.evidence.copy(normal = null)) }
+        val stroke = StrokeBuilder(world(1, 0f))
+        assertEquals(StrokeAppendResult.ADDED, stroke.append(request(2), hit, null))
+        val miss = PlacementResult.Screen(VideoPoint(0.52f, 0.5f), frame(3), 100, SpatialRejection.SURFACE_MISSING)
+        assertEquals(StrokeAppendResult.STOPPED, stroke.append(request(3, 0.52f), miss, snapshot(3)))
+        val another = StrokeBuilder(hit)
+        assertEquals(StrokeAppendResult.STOPPED, another.append(request(3), world(3, 0.2f), null))
+    }
+
+    @Test fun predictionUsesLatestSurfacePositionAndRejectsWrongEvidenceFrame() {
+        val stroke = StrokeBuilder(world(1, 0f))
+        for (time in 2L..4L) {
+            val hit = world(time, 0.01f * time).copy(pose = WorldPose(Vec3(0.01f * time, 0f, -1f + 0.02f * (time - 1))))
+            assertEquals(StrokeAppendResult.ADDED, stroke.append(request(time), hit, null))
+        }
+        val miss = PlacementResult.Screen(VideoPoint(0.55f, 0.5f), frame(5), 100, SpatialRejection.SURFACE_MISSING)
+        assertEquals(StrokeAppendResult.ADDED, stroke.append(request(5, 0.55f), miss, snapshot(5)))
+        assertEquals(0.06f, stroke.snapshot().vertices.last().local.z, 0.0001f)
+        assertEquals(StrokeAppendResult.STOPPED, stroke.append(request(6), world(7, 0.05f), null))
+    }
+
+    @Test fun actualDepthDiscontinuityAndTrackingFailureStillStop() {
+        val stroke = StrokeBuilder(world(1, 0f))
+        val jump = world(2, 0.01f).copy(pose = WorldPose(Vec3(0.01f, 0f, -1.1f)))
+        assertEquals(StrokeAppendResult.STOPPED, stroke.append(request(2), jump, null))
+        val trackingFailure = PlacementResult.Screen(VideoPoint(0.52f, 0.5f), frame(2), 100, SpatialRejection.TRACKING_UNAVAILABLE)
+        assertEquals(StrokeAppendResult.STOPPED, StrokeBuilder(world(1, 0f))
+            .append(request(2, 0.52f), trackingFailure, snapshot(2)))
+    }
+
     private fun frame(time: Long) = VideoFrameReference(MediaTrack.BACK_CAMERA, time)
     private fun world(time: Long, x: Float, normal: Vec3 = Vec3(0f, 0f, 1f)) = PlacementResult.World(
         WorldPose(Vec3(x, 0f, -1f)), SurfaceEvidence(PlacementMethod.DEPTH, 0.9f, normal), frame(time))

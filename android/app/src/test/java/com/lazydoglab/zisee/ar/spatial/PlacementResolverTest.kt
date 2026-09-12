@@ -7,6 +7,22 @@ import org.junit.Test
 import kotlin.math.sqrt
 
 class PlacementResolverTest {
+    @Test fun surroundedDepthHoleCanAttachButEdgesAndMixedDepthCannot() {
+        val values = ShortArray(25) { 1000 }
+        for (y in 1..3) for (x in 1..3) values[y * 5 + x] = 0
+        val depth = DepthSnapshot(5, 5, values)
+        val placement = resolve(frame(1, depth = depth)) as PlacementResult.World
+        assertEquals(PlacementMethod.DEPTH, placement.evidence.method)
+        assertEquals(-1f, placement.pose.position.z, 0f)
+        assertEquals(0.5f, placement.evidence.confidence, 0f)
+
+        val edge = values.copyOf().also { it[10] = 0 }
+        assertNull(DepthSnapshot(5, 5, edge).surfaceAt(VideoPoint(0.5f, 0.5f), intrinsics))
+        val mixed = values.copyOf().also { it[14] = 3000 }
+        assertNull(DepthSnapshot(5, 5, mixed).surfaceAt(VideoPoint(0.5f, 0.5f), intrinsics))
+        assertNull(DepthSnapshot(5, 5, ShortArray(25)).surfaceAt(VideoPoint(0.5f, 0.5f), intrinsics))
+    }
+
     @Test fun planeEdgeCanBecomeConfirmedPolygonOnTheSameSurface() {
         val current = world(1, 0f, 42, 0.55f).let { it.copy(evidence = it.evidence.copy(
             method = PlacementMethod.LOCAL_SURFACE, strictPolygonHit = false)) }

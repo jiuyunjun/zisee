@@ -2,6 +2,16 @@
 
 更新：2026-09-12。指导方手绘闭环已实现，分支 `main`。
 
+## 曲面连续绘制与深度补洞（2026-09-12）
+
+- `DepthSnapshot.surfaceAt` 在中心缺失、3×3 邻域不足五个有效样本时，允许扩大到 5×5；必须在左、右、上、下两格内都有有效支持，且所有有效深度满足原有 3 cm / 3% 一致性门槛。补洞 confidence 仍为 0.5，不提高到直接测量的质量，也不借用其他时间的深度。前景/背景混合和没有四向支持的孔洞仍拒绝。
+- `StrokeBuilder` 用最近确认点及法线检查连续性，不再要求整笔一直位于起笔平面 3 cm 内。相邻点仍需满足切面距离 3 cm、法线 dot ≥ 0.94、单步距离 ≤ 25 cm 和已有表面身份检查，因此支持渐变曲面，尖锐折角或深度跳变仍停止。
+- 有效 Depth 点暂缺法线时允许延续，但清除切面预测能力；没有法线时下一真实点须在 3 cm 内。短缺口预测使用最近确认点的切面，继续限制为 100 ms / 5 cm，只允许 SURFACE_MISSING，不掩盖帧身份或追踪错误。anchor 修正同时变换最近确认点。
+- 两端共用 resolver/builder，无协议变化，仍是一笔一个 anchor。未增加跨不同物体的分段、自动恢复或部分提交；真正失败仍按现有事务取消整笔。
+- 本轮验证：365 个 JVM 测试全部通过（新增 5 个回归测试），`:app:assembleDebug`、`:app:lintDebug`、`:app:compileReleaseKotlin` 通过；diff 与 UTF-8 无 BOM 检查通过。未安装或执行真机测试。
+- 真机对比尚待执行：同一设备、光照、距离下分别记录平面/曲面/物体边缘的真实表面命中数 ÷ 有效点击数，以及完成笔画数 ÷ 起笔成功数；同时检查侧向移动后的贴合、反光区域是否误吸附、GL 帧耗时。不能将新增算法测试当作附着率提升的实测数据。
+- ARCore 官方说明 Depth 支持非平面命中：[Hit-tests](https://developers.google.com/ar/develop/hit-test)。无 Depth 设备仍依赖平面/特征证据，不能保证曲面连续绘制。
+
 ## 指导方手绘（2026-09-12）
 
 - 新增独立可靠有序的 `zisee-ar-v2-stroke` DataChannel（协商 ID 4），用 `hello` 双向握手确认能力。旧端不创建或回应此通道时，指导方不显示手绘工具，v1 标点协议保持不变。
@@ -22,7 +32,7 @@
 - 指导方标点也使用分级定位，接受对应历史帧的 Depth、Plane、Plane 边缘带或 Feature Point；没有真实表面证据时返回明确拒绝，不用历史射线制造远端伪吸附。诊断只记录 FIELD/GUIDE 与命中方式或拒绝枚举，不含坐标和画面。
 - POINT 表面环使用明确 normal 投影，编号 HUD 保持屏幕朝向；无 normal 使用 billboard。估计位置显示虚线/较低透明度。source renderer 仍烧入同一帧，远端观看即可看到现场标注。
 - 本地“手绘”用 `ArAnnotationInput`，每个采样读取当时 `DisplayedArFrame`，逆变换 FIT/旋转/镜像。最多 16 点/批，50 ms 触摸批次，ViewModel 单笔有界队列，取消/失败清理整笔。
-- `beginLocalStroke / appendLocalStroke / endLocalStroke` 经 RtcSession/NativeRtcSession 转发，controller 用一笔一个 anchor 和 StrokeBuilder 局部坐标。begin 必须有真实世界定位；短缺口只在锁定表面上预测，超 100 ms 或 5 cm 停止；法线突变不跨面连接。
+- `beginLocalStroke / appendLocalStroke / endLocalStroke` 经 RtcSession/NativeRtcSession 转发，controller 用一笔一个 anchor 和 StrokeBuilder 局部坐标。begin 必须有真实世界定位；短缺口只在最近确认切面上预测，超 100 ms 或 5 cm 停止；渐变曲面可延续，法线突变不跨面连接。
 - 远端 POINT 保持 v1 Create/Remove/Clear；指导方 Stroke 使用独立 v2 通道。旧“箭头”“圈”仍是原有单点符号。
 
 ## 关键文件

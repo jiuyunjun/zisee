@@ -119,11 +119,22 @@ class DepthSnapshot(val width: Int, val height: Int, millimetres: ShortArray) {
         val x = (point.x * width).toInt().coerceAtMost(width - 1)
         val y = (point.y * height).toInt().coerceAtMost(height - 1)
         val centre = sample(x, y)
-        val neighbours = buildList {
-            for (dy in -1..1) for (dx in -1..1) {
+        fun neighbourhood(radius: Int) = buildList {
+            for (dy in -radius..radius) for (dx in -radius..radius) {
                 if (x + dx in 0 until width && y + dy in 0 until height)
                     sample(x + dx, y + dy)?.let { add(it) }
             }
+        }
+        // Expand only for missing depth. Require surrounding support, not extrapolation from
+        // a foreground/background edge; all samples still have to agree within tolerance.
+        var neighbours = neighbourhood(1)
+        if (centre == null && neighbours.size < 5) {
+            fun supported(dx: Int, dy: Int) = (1..HOLE_RADIUS).any { step ->
+                val sx = x + dx * step; val sy = y + dy * step
+                sx in 0 until width && sy in 0 until height && sample(sx, sy) != null
+            }
+            if (!supported(-1, 0) || !supported(1, 0) || !supported(0, -1) || !supported(0, 1)) return null
+            neighbours = neighbourhood(HOLE_RADIUS)
         }
         if (neighbours.isEmpty()) return null
         val median = neighbours.sorted()[neighbours.size / 2]

@@ -10,12 +10,13 @@ data class StrokeGeometry(val origin: WorldPose, val vertices: List<StrokeVertex
 
 /** One local coordinate system and at most one native anchor per stroke. Every resampled
  * vertex retains the input's actual displayed source frame; timestamps are never interpolated.
- * A short missing surface can be projected onto the locked plane, bounded by time AND travel.
+ * A short missing surface uses the latest evidenced tangent, bounded by time AND travel.
  */
 class StrokeBuilder(first: PlacementResult.World, private val spacingMetres: Float = 0.006f) {
     var origin = first.pose
         private set
     private var evidence = first.evidence
+    private var surfacePoint = first.pose.position
     private val vertices = mutableListOf(StrokeVertex(Vec3(0f, 0f, 0f), first.frame, false))
     private var lastInput = first.pose.position
     private var lastFrame = first.frame
@@ -30,6 +31,7 @@ class StrokeBuilder(first: PlacementResult.World, private val spacingMetres: Flo
     fun followAnchor(pose: WorldPose) {
         if (pose == origin) return
         lastInput = pose.transform(origin.inverseTransform(lastInput))
+        surfacePoint = pose.transform(origin.inverseTransform(surfacePoint))
         val inverse = Rotation(-origin.rotation.x, -origin.rotation.y, -origin.rotation.z, origin.rotation.w)
         evidence = evidence.copy(normal = evidence.normal?.let { pose.rotation.rotate(inverse.rotate(it)) })
         origin = pose
@@ -39,6 +41,7 @@ class StrokeBuilder(first: PlacementResult.World, private val spacingMetres: Flo
         if (stopped) return StrokeAppendResult.STOPPED
         if (request.frame.track != lastFrame.track || request.frame.timestampNs < lastFrame.timestampNs)
             return stop()
+        if (placement.frameReference() != request.frame) return stop()
         var estimated = false
         val world = (placement as? PlacementResult.World)?.takeIf {
             it.evidence.method != PlacementMethod.HISTORICAL_RAY_ESTIMATE &&
@@ -46,13 +49,14 @@ class StrokeBuilder(first: PlacementResult.World, private val spacingMetres: Flo
         }?.pose?.position ?: run {
             // Explicit evidence of a different surface must end the segment, not be papered over.
             if (placement is PlacementResult.World) return stop()
-            if (frame == null || frame.frame != request.frame || frame.tracking != ArTracking.TRACKING) return stop()
+            if ((placement as? PlacementResult.Screen)?.reason != SpatialRejection.SURFACE_MISSING ||
+                frame == null || frame.frame != request.frame || frame.tracking != ArTracking.TRACKING) return stop()
             if (request.frame.timestampNs - lastEvidenceNs > AnnotationBudget.MAX_PREDICTION_NS) return stop()
             val normal = evidence.normal ?: return stop()
             val direction = frame.pose.rotation.rotate(frame.intrinsics.cameraRay(request.point)).normalized()
             val denominator = normal.dot(direction)
             if (abs(denominator) < 0.05f) return stop()
-            val distance = (origin.position - frame.pose.position).dot(normal) / denominator
+            val distance = (surfacePoint - frame.pose.position).dot(normal) / denominator
             if (distance !in 0.05f..8f) return stop()
             estimated = true
             frame.pose.position + direction * distance
@@ -61,7 +65,12 @@ class StrokeBuilder(first: PlacementResult.World, private val spacingMetres: Flo
         val length = delta.length()
         if (length > 0.25f) return stop() // A discontinuity is not a long connecting line.
         if (estimated && predictedDistance + length > AnnotationBudget.MAX_PREDICTION_METRES) return stop()
-        if (estimated) predictedDistance += length else { predictedDistance = 0f; lastEvidenceNs = request.frame.timestampNs }
+        if (estimated) predictedDistance += length else {
+            predictedDistance = 0f
+            lastEvidenceNs = request.frame.timestampNs
+            surfacePoint = world
+            evidence = (placement as PlacementResult.World).evidence
+        }
         lastFrame = request.frame
         if (length < spacingMetres) return StrokeAppendResult.SKIPPED
         val count = ceil(length / spacingMetres).toInt()
@@ -87,9 +96,17 @@ class StrokeBuilder(first: PlacementResult.World, private val spacingMetres: Flo
         if (evidence.surfaceId != null && other.surfaceId != null &&
             (!sameKind || evidence.surfaceId != other.surfaceId)) return false
         val normal = evidence.normal
-        return normal == null || other.normal != null && normal.dot(other.normal) >= 0.94f
+        // A valid depth position can temporarily lack a normal at a curved edge. Keep the
+        // position, but clear the tangent so a subsequent hole cannot use a stale orientation.
+        return normal == null || (other.normal?.let { normal.dot(it) >= 0.94f }
+            ?: (other.method == PlacementMethod.DEPTH))
     }
-    private fun absDistanceToSurface(point: Vec3): Float = evidence.normal?.let { abs((point - origin.position).dot(it)) } ?: 0f
+    private fun absDistanceToSurface(point: Vec3): Float = evidence.normal?.let { abs((point - surfacePoint).dot(it)) }
+        ?: (point - surfacePoint).length()
+    private fun PlacementResult.frameReference(): VideoFrameReference? = when (this) {
+        is PlacementResult.World -> frame
+        is PlacementResult.Screen -> frame
+    }
     private fun stop(): StrokeAppendResult { stopped = true; return StrokeAppendResult.STOPPED }
 }
 
