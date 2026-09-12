@@ -96,8 +96,8 @@ internal object ComputeQualitySmoke {
                         if (processor.stats.roiAppliedFrames > 0) return@repeat
                         val roiFrame = send(0.3f)
                         if (processor.stats.roiAppliedFrames > 0) {
-                            val map = requireNotNull(qpMaps.take(roiFrame.timestampNs, 32, 32))
-                            check(map.size == 4 && map.any { it < 0 } && map.any { it > 0 })
+                            val map = requireNotNull(qpMaps.take(roiFrame.timestampNs, 32, 32, roiFrame.rotation))
+                            check(map.size == 4 && map.any { it < 0 } && map.any { it == 0.toByte() })
                         }
                         roiFrame.release(); retained.remove(roiFrame)
                         kotlinx.coroutines.yield()

@@ -90,11 +90,11 @@ class RoiAnalyzer(
     /** Null means unavailable; empty means a fresh successful detection found no regions.
      * Both wall age and frame age are bounded. Never project a future result onto an older frame.
      */
-    fun regions(frameGeometry: RoiGeometry, timestampNs: Long): List<RoiBox>? = synchronized(lock) {
+    fun regions(frameGeometry: RoiGeometry, timestampNs: Long, maxAgeNs: Long = MAX_AGE_NS): List<RoiBox>? = synchronized(lock) {
         val value = result ?: return@synchronized null
         if (closed || failed || frameGeometry != geometry || value.geometry != frameGeometry ||
-            clockNs() - value.startedNs !in 0..MAX_AGE_NS ||
-            timestampNs - value.timestampNs !in 0..MAX_AGE_NS) null else value.boxes.toList()
+            clockNs() - value.startedNs !in 0..minOf(MAX_AGE_NS, maxAgeNs) ||
+            timestampNs - value.timestampNs !in 0..minOf(MAX_AGE_NS, maxAgeNs)) null else value.boxes.toList()
     }
 
     private fun analyze(input: RoiInput, startedNs: Long, submittedRevision: Long) {

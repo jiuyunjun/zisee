@@ -110,7 +110,7 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
     /** Call on RTC owner before changing camera/AR ownership, so an AR frame is never filtered. */
     fun setAllowed(value: Boolean) { if (allowed != value) { allowed = value; resetHistory() } }
     fun resetHistory() { evidenceEpoch.incrementAndGet(); invalidateHistory() }
-    private fun invalidateHistory() { synchronized(roiLock) { epoch.incrementAndGet(); roi?.configure(null); roiFaces = null } }
+    private fun invalidateHistory() { synchronized(roiLock) { epoch.incrementAndGet(); roi?.configure(null); roiFaces = null; roiQpMaps?.invalidate(name) } }
     override fun setSink(sink: VideoSink?) { this.sink = sink }
     override fun onCapturerStarted(success: Boolean) { resetHistory() }
     override fun onCapturerStopped() { resetHistory() }
@@ -334,7 +334,7 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         if (historyKey != key || frame.timestampNs - lastTimestamp !in 1..250_000_000) {
             historyKey = key; historyCount = 0
             scenePolicy.reset(); sceneDecision = SceneDecision(); sceneSampleMs = 0
-            synchronized(roiLock) { roi?.configure(null); roiFaces = null }
+            synchronized(roiLock) { roi?.configure(null); roiFaces = null; roiQpMaps?.invalidate(name) }
         }
         lastTimestamp = frame.timestampNs
         val current = history[index]
@@ -348,8 +348,10 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
         val older = if (historyCount >= 2) history[(index + 1) % 3] else previous
         val roiPlan = if (tier == ProcessingTier.FULL) currentRoiPlan(
             RoiGeometry(frameEpoch, width, height, frame.rotation), frame.timestampNs) else null
-        if (roiPlan != null) roiQpMaps?.record(frame.timestampNs, name,
-            RoiQpMapPlanner.create(width, height, roiPlan))
+        if (roiPlan != null) synchronized(roiLock) {
+            if (!closed && allowed && frameEpoch == epoch.get()) roiQpMaps?.recordPlan(frame.timestampNs, name,
+                RoiGeometry(frameEpoch, width, height, frame.rotation), roiPlan)
+        }
         val result = pool!!.capture(width, height, finish = false) {
             shader!!.denoise(current.textureId, previous.textureId, older.textureId, width, height,
                 if (historyCount == 0) 0f else config.denoiseStrength, roiPlan, check = false)
@@ -372,7 +374,8 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
 
     private fun currentRoiPlan(geometry: RoiGeometry, timestampNs: Long): RoiBackgroundPlan? =
         synchronized(roiLock) {
-            val regions = roi?.regions(geometry, timestampNs) ?: return@synchronized null
+            if (sceneDecision.mode == SceneMode.MOTION) return@synchronized null
+            val regions = roi?.regions(geometry, timestampNs, 150_000_000L) ?: return@synchronized null
             roiFaces = regions.size
             RoiBackgroundPlan.create(regions, geometry.rotation)
         }
@@ -499,6 +502,7 @@ class CameraQualityProcessor(shared: EglBase.Context, private val logger: AppLog
     override fun close() {
         if (closed) return
         closed = true
+        synchronized(roiLock) { roiQpMaps?.invalidate(name) }
         roi?.close(); roiFaces = null
         ThreadUtils.invokeAtFrontUninterruptibly(helper.handler) {
             roiSampler?.close(); roiSampler = null

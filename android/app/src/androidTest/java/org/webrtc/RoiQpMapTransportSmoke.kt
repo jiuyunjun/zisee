@@ -50,7 +50,7 @@ object RoiQpMapTransportSmoke {
         var active = 0
         var neutral = 0
         var failures = 0
-        override fun take(timestampNs: Long, width: Int, height: Int) = next
+        override fun take(timestampNs: Long, width: Int, height: Int, rotation: Int) = next
         override fun configured(codecName: String, supported: Boolean) { configured = supported }
         override fun submitted(codecName: String, active: Boolean) { if (active) this.active++ else neutral++ }
         override fun failed(codecName: String, stage: String) { failures++ }

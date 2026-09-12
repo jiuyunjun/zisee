@@ -136,7 +136,7 @@ internal class RoiCodecController(
         val width = frame.buffer.width
         val height = frame.buffer.height
         val count = ((width + 15) / 16) * ((height + 15) / 16)
-        val candidate = try { qpMaps.take(frame.timestampNs, width, height) }
+        val candidate = try { qpMaps.take(frame.timestampNs, width, height, frame.rotation) }
         catch (_: RuntimeException) { disable("provider"); return false }
         val active = candidate?.size == count
         if (candidate != null && !active) { disable("size"); return false }

@@ -16,7 +16,8 @@ data class RoiQpMapStats(
 /** Bounded timestamp bridge. Duplicate timestamps from different cameras become neutral. */
 class RoiQpMapRegistry(private val logger: AppLogger, private val clockNs: () -> Long = System::nanoTime) :
     RoiQpMapProvider {
-    private data class Entry(val source: String?, val map: RoiQpMap?, val observedNs: Long)
+    private data class Entry(val source: String?, val map: RoiQpMap?, val observedNs: Long,
+        val geometry: RoiGeometry? = null, val plan: RoiBackgroundPlan? = null)
     private val entries = linkedMapOf<Long, Entry>()
     private val configured = mutableMapOf<String, Boolean>()
     private var state = RoiQpMapStats()
@@ -35,15 +36,27 @@ class RoiQpMapRegistry(private val logger: AppLogger, private val clockNs: () ->
         while (entries.size > MAX_ENTRIES) entries.remove(entries.keys.first())
     }
 
-    @Synchronized override fun take(timestampNs: Long, width: Int, height: Int): ByteArray? {
+    /** Store only rectangles; map allocation happens exclusively on a capable encoder's thread. */
+    @Synchronized fun recordPlan(timestampNs: Long, source: String, geometry: RoiGeometry, plan: RoiBackgroundPlan) {
+        record(timestampNs, source, null)
+        val key = timestampNs / 1_000
+        val entry = entries[key] ?: return
+        if (entry.source == source) entries[key] = entry.copy(geometry = geometry, plan = plan)
+    }
+
+    @Synchronized fun invalidate(source: String) {
+        entries.entries.removeAll { it.value.source == source }
+    }
+
+    @Synchronized override fun take(timestampNs: Long, width: Int, height: Int, rotation: Int): ByteArray? {
         val now = clockNs()
         prune(now)
         val entry = entries.remove(timestampNs / 1_000) ?: return null
         if (entry.source == null || now < entry.observedNs) return null
-        val map = entry.map ?: return null
-        return map.bytes().takeIf {
-            map.blocksWide == (width + 15) / 16 && map.blocksHigh == (height + 15) / 16
-        }
+        val geometry = entry.geometry
+        if (geometry != null && (geometry.width != width || geometry.height != height || geometry.rotation != rotation)) return null
+        val map = entry.map ?: RoiQpMapPlanner.create(width, height, entry.plan) ?: return null
+        return if (map.width == width && map.height == height && map.rotation == rotation) map.bytes() else null
     }
 
     @Synchronized override fun configured(codecName: String, supported: Boolean) {
@@ -73,6 +86,6 @@ class RoiQpMapRegistry(private val logger: AppLogger, private val clockNs: () ->
 
     private companion object {
         const val MAX_ENTRIES = 256
-        const val MAX_AGE_NS = 2_000_000_000L
+        const val MAX_AGE_NS = 50_000_000L
     }
 }

@@ -43,7 +43,7 @@ class RoiQpMapRegistryTest {
         val map = requireNotNull(RoiQpMapPlanner.create(16, 16, 0,
             listOf(RoiBox(0f, 0f, 1f, 1f))))
         registry.record(1_000, "front", map)
-        clock.set(2_000_000_001)
+        clock.set(50_000_001)
         assertNull(registry.take(1_000, 16, 16))
         registry.configured("codec", true)
         registry.configured("codec", true)
@@ -55,5 +55,20 @@ class RoiQpMapRegistryTest {
         assertEquals(1, logger.errors.size)
         assertTrue(logger.info.single().second!!.length < 120)
         assertTrue(logger.errors.single().second!!.length < 120)
+    }
+
+    @Test fun deferredPlansRequireExactGeometryAndSurviveOnlyUntilSourceReset() {
+        val registry = RoiQpMapRegistry(Logger(), { 0L })
+        val plan = requireNotNull(RoiBackgroundPlan.create(listOf(RoiBox(0f, 0f, 0.5f, 0.5f)), 90))
+        val geometry = RoiGeometry(1, 30, 30, 90)
+        registry.recordPlan(1_000, "front", geometry, plan)
+        assertNull(registry.take(1_000, 32, 32, 90)) // Same block grid, different pixels.
+        registry.recordPlan(2_000, "front", geometry, plan)
+        assertNull(registry.take(2_000, 30, 30, 0))
+        registry.recordPlan(3_000, "front", geometry, plan)
+        registry.recordPlan(4_000, "back", geometry, plan)
+        registry.invalidate("front")
+        assertNull(registry.take(3_000, 30, 30, 90))
+        assertArrayEquals(RoiQpMapPlanner.create(30, 30, plan)!!.bytes(), registry.take(4_000, 30, 30, 90))
     }
 }

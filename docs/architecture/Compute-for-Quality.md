@@ -6,7 +6,7 @@
 
 > 已增加 Android MediaCodec 能力快照，与 WebRTC hardware formats 分开显示。硬件标志、complexity range、分辨率/FPS 都是设备声明，不是经过热稳定性验证的 DeviceProfile。
 
-> ROI 已推进到 Debug 默认开启的人脸检测、相机取样和背景差异降噪，Release 不含检测 SDK。QP map 已生成但尚无安全的 WebRTC 编码器注入点。构建开关、SDK 遥测与验证边界见 [Face ROI 检测实验](FACE_ROI_EXPERIMENT.md)。
+> ROI 已推进到 Debug 默认开启的人脸检测、相机取样、背景差异降噪和硬编 QP map 注入，Release 不含检测 SDK。构建开关、SDK 遥测与验证边界见 [Face ROI 检测实验](FACE_ROI_EXPERIMENT.md)。
 
 > 真机数据显示现有控制环存在盲目恢复、压力类型混淆、测量口径错误和每帧同步屏障，正在按 [控制环重构设计](COMPUTE_CONTROL_LOOP.md) 分步重做；在重构完成前不以阈值调整代替。
 
@@ -598,7 +598,9 @@ bitrate 被释放给人物。
 
 当前 Android 实现只在 `FULL` 处理档且存在未过期的非空人脸结果时启用背景差异：人脸区域保持原时域降噪权重，背景最多增加 35%，框边缘使用羽化过渡。空结果不能证明背景无人，因此空、未知、过期、切源和降级状态都回到原始全帧策略。
 
-同时可按编码帧方向生成每个 16×16 block 一个有符号字节的 QP-offset map：人脸 `-3`，背景 `+1`。Android 15 起会探测编码器是否声明 `FEATURE_Roi`；但项目固定的 WebRTC Java 硬件编码器没有公开 `MediaCodec` 或逐帧参数入口，所以当前只完成可测试的 map 与能力快照，不宣称编码器已应用。正式接入需要维护可审查的 WebRTC encoder adapter/fork，并在支持设备上验证 QP、码率、延迟和热稳定性。
+ROI 用于差异处理时，检测源帧年龄和墙钟年龄均不得超过 150ms，场景判定为运动时暂停使用。检测仍为 2Hz，未实现光流追踪，因此只做保守的短时保护，不保证移动人脸持续命中历史框。
+
+QP map 为每个 16×16 编码块一个有符号字节：人脸 `-3`，背景 `0`，避免旧框外移动人脸被正 QP 偏移降质。GL 线程仅登记矩形计划；API 35+ 且声明 `FEATURE_Roi` 的硬编在取用时才按矩形覆盖范围生成 map，避免不支持的编码器承担逐块计算。registry 最多保留 256 条、50ms，严格匹配像素宽高及旋转，切源/历史重置时清除对应源。通过同包 `RoiHardwareVideoEncoderFactory` 的 wrapper 逐帧调用 `PARAMETER_KEY_QP_OFFSET_MAP`，无有效计划写全零，失败回退普通硬编。实际 QP、码率、延迟和热稳定性仍需支持设备验收。
 
 
 # 10. 不建议默认做“AI 人脸修复”
