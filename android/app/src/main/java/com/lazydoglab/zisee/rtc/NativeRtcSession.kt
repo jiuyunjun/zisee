@@ -39,6 +39,10 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
     private val arFieldCoordinator: Boolean = false) : RtcSession {
     private val dispatcher = Executors.newSingleThreadExecutor { Thread(it, "ZiseeRtc") }.asCoroutineDispatcher()
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
+    val screenGuidance = com.lazydoglab.zisee.screen.ScreenGuidance(context,
+        { logger.error(AppEvent.SCREEN_SHARE_FAILED, "GUIDANCE") },
+        { paused -> scope.launch { screenShare?.setPaused(paused) } },
+        { scope.launch { stopScreenShare() } })
     override val iceState = MutableStateFlow(IceState.NEW)
     private val mutableLocalArStrokeSupported = MutableStateFlow(false)
     override val localArStrokeSupported = mutableLocalArStrokeSupported.asStateFlow()
@@ -404,6 +408,8 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             } catch (_: Exception) { logger.error(AppEvent.RTC_CAPABILITY_UNAVAILABLE) }
         }
         control = requireNotNull(peer).createDataChannel("camera-state", DataChannel.Init().apply { negotiated = true; id = 0 })
+        screenGuidance.attach(requireNotNull(requireNotNull(peer).createDataChannel("screen-guidance-v1",
+            DataChannel.Init().apply { negotiated = true; id = 6; ordered = true })))
         val arChannel = requireNotNull(requireNotNull(peer).createDataChannel(
                 com.lazydoglab.zisee.ar.annotation.ArProtocol.CHANNEL_LABEL,
                 DataChannel.Init().apply { negotiated = true; id = 2; ordered = true },
@@ -437,7 +443,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
                     return
                 }
                 SharePresentation.decode(text)?.let { value ->
-                    scope.launch { if (!released) remoteShare.value = value }
+                    scope.launch { if (!released) { remoteShare.value = value; screenGuidance.remoteSession(value.session) } }
                     return
                 }
                 ViewRequest.decode(text)?.let { value ->
@@ -1185,6 +1191,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         screenStateJob = scope.launch { session.state.collect {
             if (!released && screenShare === session) {
                 screenShareState.value = it
+                if (screenSharing) screenGuidance.configure(localShare.session, it.contentSize ?: it.size)
                 // applyScreenQuality re-applies on its own only when the tier or the content size
                 // actually changed, so a visibility-only or duplicate-size emission is a no-op here.
                 if (it.phase in setOf(com.lazydoglab.zisee.screen.ScreenSharePhase.STARTING,
@@ -1266,6 +1273,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
         localShare = if (!active) SharePresentation.None
             else SharePresentation(true, java.util.UUID.randomUUID().toString()
                 .replace("-", "").take(SharePresentation.MAX_SESSION))
+        screenGuidance.configure(localShare.session, screenShareState.value.contentSize ?: screenShareState.value.size)
         sendSharePresentation()
         sendPresentation()
     }
@@ -1724,6 +1732,7 @@ class NativeRtcSession(private val context: Context, private val logger: AppLogg
             try { screenShare?.close() } catch (_: Exception) { logger.error(AppEvent.SCREEN_SHARE_FAILED) }
             screenShare = null
             withContext(Dispatchers.Main.immediate) {
+                screenGuidance.close()
                 localFeed?.close(); remoteFeed?.close(); localBackFeed?.close(); remoteBackFeed?.close()
                 localScreenFeed?.close(); remoteScreenFeed?.close()
             }

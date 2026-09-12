@@ -89,7 +89,7 @@ class ScreenShareController(
             projection = factory()
             requireNotNull(projection).start(output, object : ScreenProjectionEvents {
                 override fun stopped() = stop(ScreenShareReason.SYSTEM_STOPPED)
-                override fun resized(size: ScreenSize) = resize(ScreenCaptureSize.of(size.width, size.height))
+                override fun resized(size: ScreenSize) = resize(size)
                 override fun visibilityChanged(visible: Boolean) {
                     checkThread()
                     if (!capturing()) return

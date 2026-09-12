@@ -125,7 +125,9 @@ class MainActivity : ComponentActivity() {
                 if (call.shareConsent == null) return@LaunchedEffect
                 val manager = getSystemService(MediaProjectionManager::class.java)
                 val launched = manager != null && runCatching {
-                    shareConsent.launch(manager.createScreenCaptureIntent())
+                    shareConsent.launch(if (android.os.Build.VERSION.SDK_INT >= 34)
+                        manager.createScreenCaptureIntent(android.media.projection.MediaProjectionConfig.createConfigForDefaultDisplay())
+                        else manager.createScreenCaptureIntent())
                 }.isSuccess
                 // A device without the projection service, or one that refuses the dialog, must
                 // release the pending request rather than leave the share entry stuck.

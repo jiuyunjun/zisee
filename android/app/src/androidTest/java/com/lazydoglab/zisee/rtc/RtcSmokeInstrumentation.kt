@@ -27,6 +27,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
     private var thumbnailSwaps = false
     private var arTap = false
     private var computeQuality = false
+    private var screenGuidance = false
     private var faceRoi = false
     private var encoderTiming = false
     private var codecCapabilities = false
@@ -50,6 +51,7 @@ class RtcSmokeInstrumentation : Instrumentation() {
         thumbnailSwaps = arguments?.getString("thumbnailSwaps") == "true"
         arTap = arguments?.getString("arTap") == "true"
         computeQuality = arguments?.getString("computeQuality") == "true"
+        screenGuidance = arguments?.getString("screenGuidance") == "true"
         faceRoi = arguments?.getString("faceRoi") == "true"
         encoderTiming = arguments?.getString("encoderTiming") == "true"
         codecCapabilities = arguments?.getString("codecCapabilities") == "true"
@@ -72,6 +74,11 @@ class RtcSmokeInstrumentation : Instrumentation() {
     override fun onStart() {
         val output = Bundle()
         try {
+            if (screenGuidance) {
+                ScreenGuidanceSmoke.run(targetContext)
+                output.putString("stream", "PASS: screen guidance SCTP delta/ACK/sync, actor undo, pause, pointer expiry, geometry invalidation and real overlay lifecycle; synthetic capture geometry, not MediaProjection end-to-end\n")
+                finish(Activity.RESULT_OK, output); return
+            }
             if (faceRoi) {
                 RoiDetectorSmoke.run(targetContext, context)
                 output.putString("stream", "PASS: GPU RGBA input, uniform negatives and public portrait face ROI at four rotations; no general accuracy/performance claim\n")

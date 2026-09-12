@@ -50,6 +50,18 @@ class ScreenShareSession(
     private var surface: Surface? = null
     private var capturing = false
     @Volatile private var closed = false
+    @Volatile private var paused = false
+    private val displays = context.getSystemService(android.hardware.display.DisplayManager::class.java)
+    private val displayListener = object : android.hardware.display.DisplayManager.DisplayListener {
+        override fun onDisplayAdded(id: Int) = Unit
+        override fun onDisplayRemoved(id: Int) = Unit
+        override fun onDisplayChanged(id: Int) {
+            if (!closed && capturing && Build.VERSION.SDK_INT < 34 && id == android.view.Display.DEFAULT_DISPLAY)
+                controller.resize(displaySize())
+        }
+    }
+
+    fun setPaused(value: Boolean) { paused = value }
 
     init {
         handler.post {
@@ -129,7 +141,7 @@ class ScreenShareSession(
         surface = output
         helper.startListening(object : VideoSink {
             override fun onFrame(frame: VideoFrame) {
-                if (closed) return
+                if (closed || paused) return
                 source.capturerObserver.onFrameCaptured(frame)
                 // Frames arrive on the texture helper's thread; the controller owns this one.
                 handler.post { if (!closed) controller.onFrame(request) }
@@ -137,6 +149,7 @@ class ScreenShareSession(
         })
         source.capturerObserver.onCapturerStarted(true)
         capturing = true
+        displays.registerDisplayListener(displayListener, handler)
         // getMediaProjection throws without a running mediaProjection foreground service; let the
         // controller turn that into START_FAILED and release whatever is already built.
         val projection: MediaProjection = manager.getMediaProjection(resultCode, data)
@@ -155,6 +168,7 @@ class ScreenShareSession(
 
     /** Idempotent, and safe over a partially built pipeline: every step is attempted. */
     private fun releaseCapture() {
+        displays.unregisterDisplayListener(displayListener)
         if (capturing) {
             capturing = false
             runCatching { source.capturerObserver.onCapturerStopped() }
@@ -172,10 +186,13 @@ class ScreenShareSession(
 
     private fun displaySize(): ScreenSize {
         val manager = context.getSystemService(WindowManager::class.java)
-        val bounds = if (Build.VERSION.SDK_INT >= 30) manager?.currentWindowMetrics?.bounds else null
-        val width = bounds?.width() ?: context.resources.displayMetrics.widthPixels
-        val height = bounds?.height() ?: context.resources.displayMetrics.heightPixels
-        return ScreenCaptureSize.of(width.coerceAtLeast(1), height.coerceAtLeast(1))
+        val bounds = if (Build.VERSION.SDK_INT >= 30) manager?.maximumWindowMetrics?.bounds else null
+        val metrics = android.util.DisplayMetrics()
+        @Suppress("DEPRECATION")
+        if (bounds == null) manager?.defaultDisplay?.getRealMetrics(metrics)
+        val width = bounds?.width() ?: metrics.widthPixels
+        val height = bounds?.height() ?: metrics.heightPixels
+        return ScreenSize(width.coerceAtLeast(1), height.coerceAtLeast(1))
     }
 
     private fun densityDpi() = context.resources.displayMetrics.densityDpi.coerceAtLeast(1)

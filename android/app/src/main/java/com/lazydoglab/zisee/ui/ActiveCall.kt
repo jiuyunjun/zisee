@@ -120,6 +120,8 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
     onStopAr: () -> Unit = {},
     onSelectVideo: (String) -> Unit = {},
     onStartShare: () -> Unit = {}, onStopShare: () -> Unit = {},
+    onScreenPut: (com.lazydoglab.zisee.screen.GuidanceInput) -> Unit = {},
+    onScreenCommand: (com.lazydoglab.zisee.screen.GuidanceOp) -> Unit = {},
     onSetScreenContentMode: (com.lazydoglab.zisee.rtc.ScreenContentMode) -> Unit = {},
     initialMore: Boolean = false,
     arControls: @Composable () -> Unit = {},
@@ -342,6 +344,8 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                 VideoTile(state.remoteScreen, state.remoteShare.sharing && (PeerScreen == main || PeerScreen !in parked),
                     slot(PeerScreen, video = true), PeerScreen != main, corner(PeerScreen))
             }
+            if (main == PeerScreen) ScreenGuidanceLayer(state.guidance, state.remoteScreen,
+                Modifier.fillMaxSize().zIndex(0.5f), onScreenPut, onScreenCommand)
             // §5.1: the peer is only "sharing" once its frames arrive here. Until then say so
             // rather than showing an empty picture that looks like a failure.
             if (main == PeerScreen && !videoReady(state.remoteScreen)) {

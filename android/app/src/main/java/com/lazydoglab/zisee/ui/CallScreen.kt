@@ -88,6 +88,21 @@ import kotlinx.coroutines.launch
  */
 @Composable
 fun CallScreen(state: CallUiState, model: CallViewModel, onMinimize: () -> Unit = {}) {
+    val overlayContext = LocalContext.current
+    var explainOverlay by remember { mutableStateOf(false) }
+    val overlayPermission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        model.startScreenShare()
+    }
+    if (explainOverlay) androidx.compose.material3.AlertDialog(onDismissRequest = { explainOverlay = false },
+        title = { Text("在其他应用上显示远程指导标记") },
+        text = { Text("允许后，对方的画笔和指示可显示在当前应用上方。你可以随时隐藏标注或停止共享；拒绝后仍可共享画面。安全页面可能禁止共享或显示标记。") },
+        confirmButton = { androidx.compose.material3.TextButton(onClick = {
+            explainOverlay = false
+            try { overlayPermission.launch(Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                android.net.Uri.parse("package:${overlayContext.packageName}"))) }
+            catch (_: android.content.ActivityNotFoundException) { model.startScreenShare() }
+        }) { Text("前往授权") } },
+        dismissButton = { androidx.compose.material3.TextButton(onClick = { explainOverlay = false; model.startScreenShare() }) { Text("仅共享画面") } })
     var accepting by remember { mutableStateOf(false) }
     val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
         if (grants[Manifest.permission.CAMERA] == true && grants[Manifest.permission.RECORD_AUDIO] == true) model.accept()
@@ -106,7 +121,8 @@ fun CallScreen(state: CallUiState, model: CallViewModel, onMinimize: () -> Unit 
             onArStroke = model::drawArStroke,
             onStopAr = model::stopAr,
             onSelectVideo = model::selectVideoSource,
-            onStartShare = model::startScreenShare, onStopShare = { model.stopScreenShare() },
+            onStartShare = { if (android.provider.Settings.canDrawOverlays(overlayContext)) model.startScreenShare() else explainOverlay = true }, onStopShare = { model.stopScreenShare() },
+            onScreenPut = model::putScreenMark, onScreenCommand = model::screenMarkCommand,
             onSetScreenContentMode = model::setScreenContentMode,
             arControls = { ArCallControls(state, model) })
         return

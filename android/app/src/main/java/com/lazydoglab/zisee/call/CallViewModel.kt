@@ -68,6 +68,7 @@ data class CallUiState(
     val selectedVideoSource: String? = null,
     val remotePresentation: com.lazydoglab.zisee.rtc.CameraPresentation = com.lazydoglab.zisee.rtc.CameraPresentation(com.lazydoglab.zisee.rtc.CameraMode.FACE, true),
     val localScreen: VideoFeed? = null, val remoteScreen: VideoFeed? = null,
+    val guidance: com.lazydoglab.zisee.screen.GuidanceState = com.lazydoglab.zisee.screen.GuidanceState(),
     /** What this end is publishing, and what the peer says it is publishing. */
     val screenShare: com.lazydoglab.zisee.screen.ScreenShareState = com.lazydoglab.zisee.screen.ScreenShareState(),
     val screenContentMode: com.lazydoglab.zisee.rtc.ScreenContentMode = com.lazydoglab.zisee.rtc.ScreenContentMode.TEXT,
@@ -332,6 +333,9 @@ class CallViewModel(application: Application, private val container: AppContaine
         val media = rtc ?: return
         viewModelScope.launch { media.setScreenContentMode(mode) }
     }
+
+    fun putScreenMark(input: com.lazydoglab.zisee.screen.GuidanceInput) { rtc?.screenGuidance?.submit(input) }
+    fun screenMarkCommand(op: com.lazydoglab.zisee.screen.GuidanceOp) { rtc?.screenGuidance?.command(op) }
 
     private fun releaseSharingType() {
         val current = mutable.value
@@ -828,6 +832,7 @@ class CallViewModel(application: Application, private val container: AppContaine
                                     }
                                     var previousSharePhase = mutable.value.screenShare.phase
                                     shareObservation = launch {
+                                        launch { media.screenGuidance.state.collect { value -> mutable.update { it.copy(guidance = value) } } }
                                         launch { media.screenContentMode.collect { mode ->
                                             mutable.update { it.copy(screenContentMode = mode) } } }
                                         combine(media.screenShareState, media.remoteShare) { local, remote -> local to remote }
@@ -939,6 +944,7 @@ class CallViewModel(application: Application, private val container: AppContaine
                         arCollaboration = com.lazydoglab.zisee.ar.collaboration.ArCollaborationState(),
                         arOwnMarkerCount = 0,
                         localScreen = null, remoteScreen = null, shareConsent = null,
+                        guidance = com.lazydoglab.zisee.screen.GuidanceState(),
                         screenShare = com.lazydoglab.zisee.screen.ScreenShareState(),
                         screenContentMode = com.lazydoglab.zisee.rtc.ScreenContentMode.TEXT,
                         remoteShare = com.lazydoglab.zisee.rtc.SharePresentation.None) }

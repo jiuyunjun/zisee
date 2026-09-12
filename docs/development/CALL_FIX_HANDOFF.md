@@ -1,5 +1,7 @@
 # 通话实测修复持续交接
 
+屏幕共享与跨 App 标注新增 P0 实现、协议与设备验收步骤见 [屏幕指导交接](SCREEN_GUIDANCE_HANDOFF.md)。
+
 新增专项实现与验证请见 [Compute-for-Quality 持续交接](COMPUTE_QUALITY_HANDOFF.md)。本页既有切网/AR 实测记录仍保留，专项 GPU 增强不代表这些真机待办已经完成。
 
 更新：2026-09-11。用户要求：随时维护本文，便于下一代理接手。上轮 UI 提交 8aca17d，截图验收 b32f4e9 不能替代本次真机反馈。
