@@ -19,7 +19,7 @@ class GuidanceOverlay(private val context: Context,
     private val pause: () -> Unit, private val stop: () -> Unit, private val failure: () -> Unit,
     private val clearHighlight: () -> Unit = {}) : AutoCloseable {
     private val wm = context.getSystemService(WindowManager::class.java)
-    private val handler = Handler(Looper.getMainLooper())
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val annotation = GuidanceCanvas(context)
     private var input: GuidanceCanvas? = null
     private val menu = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(0xee12181d.toInt()) }
@@ -62,7 +62,7 @@ class GuidanceOverlay(private val context: Context,
         this.text = text; textSize = 12f; isAllCaps = false
         minWidth = 0; minimumWidth = 0; setPadding(dp(4), dp(4), dp(4), dp(4))
         setTextColor(0xffeeeeee.toInt()); minimumHeight = dp(48)
-        setOnClickListener { handler.removeCallbacks(collapse); action(); if (input == null) handler.postDelayed(collapse, 3_000) }
+        setOnClickListener { mainHandler.removeCallbacks(collapse); action(); if (!closed && input == null) mainHandler.postDelayed(collapse, 3_000) }
         menu.addView(this, LinearLayout.LayoutParams(-1, -2))
     }
     private fun rebuild() {
@@ -134,6 +134,6 @@ class GuidanceOverlay(private val context: Context,
     private fun remove(view: View) { try { if (view.isAttachedToWindow) wm.removeViewImmediate(view) } catch (_: RuntimeException) { failure() } }
     override fun close() {
         if (closed) return
-        closed = true; handler.removeCallbacksAndMessages(null); finishDrawing(); remove(panel); remove(annotation)
+        closed = true; mainHandler.removeCallbacksAndMessages(null); finishDrawing(); remove(panel); remove(annotation)
     }
 }
