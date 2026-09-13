@@ -345,7 +345,7 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                     slot(PeerScreen, video = true), PeerScreen != main, corner(PeerScreen))
             }
             if (main == PeerScreen) ScreenGuidanceLayer(state.guidance, state.remoteScreen,
-                Modifier.fillMaxSize().zIndex(0.5f), onScreenPut, onScreenCommand)
+                Modifier.fillMaxSize().zIndex(2f), onScreenPut, onScreenCommand, bottomControlsHeight + 8.dp)
             // §5.1: the peer is only "sharing" once its frames arrive here. Until then say so
             // rather than showing an empty picture that looks like a failure.
             if (main == PeerScreen && !videoReady(state.remoteScreen)) {
@@ -456,15 +456,15 @@ internal fun ActiveCall(state: CallUiState, onMute: () -> Unit, onCamera: () -> 
                     com.lazydoglab.zisee.ar.session.MarkerKind.ARROW to "箭头",
                     com.lazydoglab.zisee.ar.session.MarkerKind.CIRCLE to "圈",
                 ).forEach { (kind, label) ->
-                    ArToolIcon(label, "ar-${kind.name.lowercase()}",
+                    CollaborationToolIcon(label, "ar-${kind.name.lowercase()}",
                         active = arKind == kind && (!arDrawing || !localArMarking)) {
                         interaction++; arKind = kind; arDrawing = false
                     }
                 }
-                if (strokeAvailable) ArToolIcon("手绘", "ar-pen", active = arDrawing) { interaction++; arDrawing = true }
-                ArToolIcon("撤销", "ar-undo", enabled = state.arOwnMarkerCount > 0) { interaction++; onArUndo() }
-                ArToolIcon("清除我的", "ar-trash", enabled = state.arOwnMarkerCount > 0) { interaction++; confirmArClear = true }
-                if (localArMarking) ArToolIcon("停止 AR", "ar-stop", danger = true, onClick = onStopAr)
+                if (strokeAvailable) CollaborationToolIcon("手绘", "ar-pen", active = arDrawing) { interaction++; arDrawing = true }
+                CollaborationToolIcon("撤销", "ar-undo", enabled = state.arOwnMarkerCount > 0) { interaction++; onArUndo() }
+                CollaborationToolIcon("清除我的", "ar-trash", enabled = state.arOwnMarkerCount > 0) { interaction++; confirmArClear = true }
+                if (localArMarking) CollaborationToolIcon("停止 AR", "ar-stop", danger = true, onClick = onStopAr)
                 }
                 Row(toolModifier, verticalAlignment = Alignment.CenterVertically) { tools() }
             }
@@ -803,7 +803,7 @@ internal fun DockButton(label: String, kind: String, off: Boolean = false, activ
 }
 
 @Composable
-private fun ArToolIcon(label: String, icon: String, active: Boolean = false, enabled: Boolean = true,
+internal fun CollaborationToolIcon(label: String, icon: String, active: Boolean = false, enabled: Boolean = true,
     danger: Boolean = false, onClick: () -> Unit) {
     val ink = when { !enabled -> CallFaint; danger -> CallDanger; active -> CallAccent; else -> CallText }
     IconButton(onClick = onClick, enabled = enabled,
@@ -817,14 +817,8 @@ private fun ArToolIcon(label: String, icon: String, active: Boolean = false, ena
 internal fun DrawScope.callIcon(kind: String, ink: Color, knockout: Color = Color.Transparent, off: Boolean = false) {
     val stroke = Stroke(1.8f, cap = StrokeCap.Round, join = StrokeJoin.Round)
     fun path(data: String, color: Color = ink) = drawPath(PathParser().parsePathString(data).toPath(), color, style = stroke)
+    collaborationIconPath(kind)?.let { path(it); return }
     when (kind) {
-        "ar-pin" -> { drawCircle(ink, 4f, Offset(12f, 8f), style = stroke); path("M12 12v8M8 21h8") }
-        "ar-arrow" -> path("M5 19 19 5M8 5h11v11")
-        "ar-circle" -> drawCircle(ink, 8f, Offset(12f, 12f), style = stroke)
-        "ar-pen" -> path("M4 20l1-5L17 3l4 4L9 19zM14 6l4 4M4 20l5-1")
-        "ar-undo" -> path("M8 5 3 10l5 5M3 10h11a6 6 0 0 1 0 12")
-        "ar-trash" -> path("M4 6h16M9 3h6M6 6l1 15h10l1-15M10 10v7M14 10v7")
-        "ar-stop" -> drawRoundRect(ink, Offset(5f, 5f), Size(14f, 14f), CornerRadius(3f))
         "mic" -> {
             drawRoundRect(ink, Offset(9f, 2.5f), Size(6f, 11.5f), CornerRadius(3f), style = stroke)
             path("M5.5 11.5a6.5 6.5 0 0 0 13 0")

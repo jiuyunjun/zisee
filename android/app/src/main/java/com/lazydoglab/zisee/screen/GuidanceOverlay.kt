@@ -3,6 +3,7 @@ package com.lazydoglab.zisee.screen
 import android.content.Context
 import android.content.Intent
 import android.graphics.PixelFormat
+import androidx.compose.ui.graphics.asAndroidPath
 import android.hardware.input.InputManager
 import android.os.Build
 import android.os.Handler
@@ -22,8 +23,12 @@ class GuidanceOverlay(private val context: Context,
     private val mainHandler = Handler(Looper.getMainLooper())
     private val annotation = GuidanceCanvas(context)
     private var input: GuidanceCanvas? = null
-    private val menu = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(0xee12181d.toInt()) }
-    private val panel = ScrollView(context).apply { addView(menu) }
+    private val menu = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+    private fun rounded(color: Int, radius: Int) = android.graphics.drawable.GradientDrawable().apply {
+        setColor(color); cornerRadius = dp(radius).toFloat()
+        setStroke(dp(1), 0x405ed4d6)
+    }
+    private val panel = ScrollView(context).apply { addView(menu); background = rounded(0xee12181d.toInt(), 22); clipToOutline = true; isVerticalScrollBarEnabled = false }
     private var state = GuidanceState()
     private var expanded = false
     private var hidden = false
@@ -55,21 +60,44 @@ class GuidanceOverlay(private val context: Context,
     }
     // Overlay uses application context and platform theme, not an AppCompat Activity theme.
     @android.annotation.SuppressLint("AppCompatCustomView")
-    private class MenuButton(context: Context) : Button(context) {
+    private class MenuButton(context: Context, icon: String?, private val ink: Int) : Button(context) {
+        private val glyph = icon?.let { com.lazydoglab.zisee.ui.collaborationIconPath(it) }
+            ?.let { androidx.compose.ui.graphics.vector.PathParser().parsePathString(it).toPath().asAndroidPath() }
+        private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = ink; style = android.graphics.Paint.Style.STROKE; strokeWidth = 1.8f
+            strokeCap = android.graphics.Paint.Cap.ROUND; strokeJoin = android.graphics.Paint.Join.ROUND
+        }
+        override fun onDraw(canvas: android.graphics.Canvas) {
+            if (glyph == null) { super.onDraw(canvas); return }
+            val side = 24f * resources.displayMetrics.density
+            canvas.save(); canvas.translate((width - side) / 2f, (height - side) / 2f)
+            canvas.scale(side / 24f, side / 24f)
+            paint.alpha = if (isEnabled) 255 else 80
+            canvas.drawPath(glyph, paint); canvas.restore()
+        }
         override fun performClick(): Boolean = super.performClick()
     }
-    private fun button(text: String, action: () -> Unit): MenuButton = MenuButton(context).apply {
-        this.text = text; textSize = 12f; isAllCaps = false
+    private fun button(text: String, icon: String? = null, active: Boolean = false, danger: Boolean = false,
+        action: () -> Unit): MenuButton = MenuButton(context, icon,
+            if (danger) 0xffff6b6b.toInt() else if (active) 0xff5ed4d6.toInt() else 0xffeeeeee.toInt()).apply {
+        this.text = if (icon == null) text else ""
+        contentDescription = text; tooltipText = text; textSize = 12f; isAllCaps = false
         minWidth = 0; minimumWidth = 0; setPadding(dp(4), dp(4), dp(4), dp(4))
         setTextColor(0xffeeeeee.toInt()); minimumHeight = dp(48)
+        background = android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x405ed4d6),
+            rounded(if (active) 0x305ed4d6 else android.graphics.Color.TRANSPARENT, 12), null)
         setOnClickListener { mainHandler.removeCallbacks(collapse); action(); if (!closed && input == null) mainHandler.postDelayed(collapse, 3_000) }
-        menu.addView(this, LinearLayout.LayoutParams(-1, -2))
+        menu.addView(this, LinearLayout.LayoutParams(-1, if (icon == null) -2 else dp(48)))
+    }
+    private fun confirmation() {
+        menu.removeAllViews(); panel.scrollTo(0, 0); controls.width = dp(180); position()
     }
     private fun rebuild() {
         if (closed) return
-        menu.removeAllViews(); panel.scrollTo(0, 0); controls.width = dp(if (expanded) 170 else 56)
+        menu.removeAllViews(); panel.scrollTo(0, 0); controls.width = dp(56)
         controls.height = if (expanded) minOf(dp(440), (context.resources.displayMetrics.heightPixels - dp(80)).coerceAtLeast(dp(56))) else dp(56)
-        val bubble = button(if (input != null) "完成标注 ✓" else if (state.paused) "Ⅱ" else if (!state.connected) "!" else "共享") {
+        val bubble = button(if (input != null) "完成标注 ✓" else if (state.paused) "Ⅱ" else if (!state.connected) "!" else "共享",
+            if (input != null) "guide-check" else if (state.paused) "guide-pause" else "guide-share", active = expanded) {
             if (input != null) finishDrawing() else expanded = !expanded
             rebuild()
         }
@@ -90,25 +118,25 @@ class GuidanceOverlay(private val context: Context,
             }
         }
         if (expanded) {
-            if (!state.semanticAvailable) button("开启 UI 元素高亮") {
+            if (!state.semanticAvailable) button("开启 UI 元素高亮", "guide-ui") {
                 try { context.startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: android.content.ActivityNotFoundException) { failure() }
             }
-            if (input != null) button("正在标注 · 完成后可操作手机") { finishDrawing(); rebuild() }
-            else button("画笔") { if (!state.paused && state.connected) beginDrawing() }
-            button("撤销我的标注") { command(GuidanceOp.UNDO, null) }
-            button("清除…") {
-                menu.removeAllViews()
+            if (input != null) button("完成标注，恢复操作手机", "guide-check", active = true) { finishDrawing(); rebuild() }
+            else button("画笔", "ar-pen") { beginDrawing() }.apply { isEnabled = !state.paused && state.connected }
+            button("撤销标注 / 高亮", "ar-undo") { command(GuidanceOp.UNDO, null) }
+            button("清除…", "ar-trash") {
+                confirmation()
                 button("清除我的标注") { command(GuidanceOp.CLEAR_OWN, null); rebuild() }
                 button("清除全部标注") { command(GuidanceOp.CLEAR_ALL, null); rebuild() }
                 button("取消") { rebuild() }
             }
-            button(if (hidden) "显示标注" else "隐藏标注") { hidden = !hidden; if (hidden) clearHighlight(); annotation.visibility = if (hidden) View.INVISIBLE else View.VISIBLE; rebuild() }
-            button(if (state.paused) "恢复共享" else "暂停共享") { pause() }
-            button("停止共享…") {
-                menu.removeAllViews(); button("停止共享（通话继续）") { stop() }; button("取消") { rebuild() }
+            button(if (hidden) "显示标注" else "隐藏标注", if (hidden) "guide-eye-off" else "guide-eye", active = !hidden) { hidden = !hidden; if (hidden) clearHighlight(); annotation.visibility = if (hidden) View.INVISIBLE else View.VISIBLE; rebuild() }
+            button(if (state.paused) "恢复共享" else "暂停共享", if (state.paused) "guide-play" else "guide-pause") { pause() }
+            button("停止共享…", "ar-stop", danger = true) {
+                confirmation(); button("停止共享（通话继续）") { stop() }; button("取消") { rebuild() }
             }
-            button("返回咫尺") {
+            button("返回咫尺", "guide-home") {
                 context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP))
             }
         }

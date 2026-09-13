@@ -1,5 +1,10 @@
 package com.lazydoglab.zisee.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.unit.Dp
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
@@ -16,7 +21,7 @@ import kotlinx.coroutines.delay
 
 @Composable
 internal fun ScreenGuidanceLayer(state: GuidanceState, feed: VideoFeed?, modifier: Modifier,
-    put: (GuidanceInput) -> Unit, command: (GuidanceOp) -> Unit) {
+    put: (GuidanceInput) -> Unit, command: (GuidanceOp) -> Unit, bottomInset: Dp = 100.dp) {
     var tool by remember { mutableStateOf<GuidanceTool?>(null) }
     var clear by remember { mutableStateOf(false) }
     // Whole-display capture commonly includes the field overlay. Permanent local drawing is opt-in.
@@ -38,21 +43,32 @@ internal fun ScreenGuidanceLayer(state: GuidanceState, feed: VideoFeed?, modifie
             else if (!state.overlay) Text("对方未开启跨应用标注", color = CallMuted)
             else if (!state.semanticAvailable) Text("UI 元素吸附未开启，指针仍按坐标显示", color = CallMuted)
             if (state.notice.isNotEmpty()) Text(state.notice, color = CallDanger)
-            if (state.overlay || state.semanticAvailable) Surface(color = CallPanel.copy(alpha = .9f)) {
-                Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = { tool = null }) { Text("浏览") }
-                    GuidanceTool.entries.forEach { item -> TextButton(enabled = ready && (state.overlay || item == GuidanceTool.POINTER && state.semanticAvailable),
-                        onClick = { tool = item }) { Text((if (tool == item) "✓" else "") + when (item) {
-                            GuidanceTool.POINTER -> "指针"; GuidanceTool.PEN -> "画笔"; GuidanceTool.CIRCLE -> "圈选"
-                            GuidanceTool.ARROW -> "箭头"; GuidanceTool.NUMBER -> "编号"
-                        }) } }
-                    TextButton(enabled = state.connected && (state.overlay || state.semanticAvailable), onClick = { command(GuidanceOp.UNDO) }) { Text("撤销") }
-                    TextButton(enabled = state.connected && (state.overlay || state.semanticAvailable), onClick = { clear = true }) { Text("清除") }
-                    TextButton(onClick = { preview = !preview }) { Text(if (preview) "关闭本地叠加" else "本地叠加") }
+        }
+        if (state.overlay || state.semanticAvailable) Row(
+            Modifier.align(Alignment.BottomCenter).safeDrawingPadding()
+                .padding(horizontal = 16.dp).padding(bottom = bottomInset)
+                .clip(RoundedCornerShape(22.dp)).background(DockInk.copy(alpha = .88f))
+                .border(1.dp, CallAccent.copy(alpha = .25f), RoundedCornerShape(22.dp))
+                .horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            CollaborationToolIcon("浏览", "guide-browse", active = tool == null) { tool = null }
+            GuidanceTool.entries.forEach { item ->
+                val (label, icon) = when (item) {
+                    GuidanceTool.POINTER -> "指针" to "ar-pin"
+                    GuidanceTool.PEN -> "画笔" to "ar-pen"
+                    GuidanceTool.CIRCLE -> "圈选" to "ar-circle"
+                    GuidanceTool.ARROW -> "箭头" to "ar-arrow"
+                    GuidanceTool.NUMBER -> "编号" to "guide-number"
                 }
+                CollaborationToolIcon(label, icon, active = tool == item,
+                    enabled = ready && (state.overlay || item == GuidanceTool.POINTER && state.semanticAvailable)) { tool = item }
             }
+            CollaborationToolIcon("撤销", "ar-undo", enabled = state.connected) { command(GuidanceOp.UNDO) }
+            CollaborationToolIcon("清除", "ar-trash", enabled = state.connected) { clear = true }
+            CollaborationToolIcon(if (preview) "关闭本地叠加" else "本地叠加", "guide-eye", active = preview) { preview = !preview }
         }
     }
+
     if (clear) AlertDialog(onDismissRequest = { clear = false }, title = { Text("清除标注") },
         text = { Text("清除全部会同时移除双方的标注。") },
         confirmButton = { TextButton(onClick = { command(GuidanceOp.CLEAR_ALL); clear = false }) { Text("清除全部") } },
