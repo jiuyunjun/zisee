@@ -46,8 +46,8 @@ internal fun ScreenGuidanceLayer(state: GuidanceState, feed: VideoFeed?, modifie
                             GuidanceTool.POINTER -> "指针"; GuidanceTool.PEN -> "画笔"; GuidanceTool.CIRCLE -> "圈选"
                             GuidanceTool.ARROW -> "箭头"; GuidanceTool.NUMBER -> "编号"
                         }) } }
-                    TextButton(enabled = ready && state.overlay, onClick = { command(GuidanceOp.UNDO) }) { Text("撤销") }
-                    TextButton(enabled = ready && state.overlay, onClick = { clear = true }) { Text("清除") }
+                    TextButton(enabled = state.connected && (state.overlay || state.semanticAvailable), onClick = { command(GuidanceOp.UNDO) }) { Text("撤销") }
+                    TextButton(enabled = state.connected && (state.overlay || state.semanticAvailable), onClick = { clear = true }) { Text("清除") }
                     TextButton(onClick = { preview = !preview }) { Text(if (preview) "关闭本地叠加" else "本地叠加") }
                 }
             }

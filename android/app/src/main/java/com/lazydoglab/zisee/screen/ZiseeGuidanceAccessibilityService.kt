@@ -25,7 +25,11 @@ class ZiseeGuidanceAccessibilityService : AccessibilityService() {
     private var active: ResolvedSemanticTarget? = null
     private var pendingRequest: String? = null
     private var highlight: HighlightView? = null
-    private val track = Runnable { trackActive() }
+    private var trackingQueued = false
+    private val track = Runnable { trackingQueued = false; trackActive() }
+    private fun scheduleTracking(delayMs: Long = 60) {
+        if (!trackingQueued) { trackingQueued = true; handler.postDelayed(track, delayMs) }
+    }
 
     override fun onServiceConnected() {
         serviceInfo = serviceInfo.apply {
@@ -42,13 +46,15 @@ class ZiseeGuidanceAccessibilityService : AccessibilityService() {
             AccessibilityEvent.TYPE_VIEW_SCROLLED,
             AccessibilityEvent.TYPE_WINDOWS_CHANGED,
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
-                handler.removeCallbacks(track)
-                handler.postDelayed(track, 60)
+                scheduleTracking()
             }
         }
     }
 
-    override fun onInterrupt() = Unit
+    override fun onInterrupt() {
+        clearTarget()
+        SemanticAccessibilityBridge.lost(null, UiTargetLostReason.WINDOW_CHANGED)
+    }
 
     fun resolve(requestId: String, point: VideoPoint, showCoordinateFallback: Boolean) {
         pendingRequest = requestId
@@ -62,6 +68,7 @@ class ZiseeGuidanceAccessibilityService : AccessibilityService() {
         active = result
         show(result.target)
         SemanticAccessibilityBridge.resolved(requestId, result.target)
+        scheduleTracking()
     }
 
     private fun showFallback(point: VideoPoint) {
@@ -75,6 +82,7 @@ class ZiseeGuidanceAccessibilityService : AccessibilityService() {
 
     fun clearTarget() {
         handler.removeCallbacks(track)
+        trackingQueued = false
         active = null
         pendingRequest = null
         removeHighlight()
@@ -94,6 +102,7 @@ class ZiseeGuidanceAccessibilityService : AccessibilityService() {
             show(stable.target)
             SemanticAccessibilityBridge.updated(stable.target)
         }
+        scheduleTracking(250)
     }
 
     @Suppress("DEPRECATION") // recycle() is still required below API 33, which this app supports.

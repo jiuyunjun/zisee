@@ -16,7 +16,8 @@ import com.lazydoglab.zisee.ar.annotation.VideoPoint
 class GuidanceOverlay(private val context: Context,
     private val put: (GuidanceInput) -> Unit,
     private val command: (GuidanceOp, GuidanceMark?) -> Unit,
-    private val pause: () -> Unit, private val stop: () -> Unit, private val failure: () -> Unit) : AutoCloseable {
+    private val pause: () -> Unit, private val stop: () -> Unit, private val failure: () -> Unit,
+    private val clearHighlight: () -> Unit = {}) : AutoCloseable {
     private val wm = context.getSystemService(WindowManager::class.java)
     private val handler = Handler(Looper.getMainLooper())
     private val annotation = GuidanceCanvas(context)
@@ -58,15 +59,17 @@ class GuidanceOverlay(private val context: Context,
         override fun performClick(): Boolean = super.performClick()
     }
     private fun button(text: String, action: () -> Unit): MenuButton = MenuButton(context).apply {
-        this.text = text; textSize = 12f; setTextColor(0xffeeeeee.toInt()); minimumHeight = dp(48)
+        this.text = text; textSize = 12f; isAllCaps = false
+        minWidth = 0; minimumWidth = 0; setPadding(dp(4), dp(4), dp(4), dp(4))
+        setTextColor(0xffeeeeee.toInt()); minimumHeight = dp(48)
         setOnClickListener { handler.removeCallbacks(collapse); action(); if (input == null) handler.postDelayed(collapse, 3_000) }
         menu.addView(this, LinearLayout.LayoutParams(-1, -2))
     }
     private fun rebuild() {
         if (closed) return
-        menu.removeAllViews(); controls.width = dp(if (expanded) 170 else 56)
+        menu.removeAllViews(); panel.scrollTo(0, 0); controls.width = dp(if (expanded) 170 else 56)
         controls.height = if (expanded) minOf(dp(440), (context.resources.displayMetrics.heightPixels - dp(80)).coerceAtLeast(dp(56))) else dp(56)
-        val bubble = button(if (input != null) "完成标注 ✓" else if (state.paused) "Ⅱ" else if (!state.connected) "!" else "●") {
+        val bubble = button(if (input != null) "完成标注 ✓" else if (state.paused) "Ⅱ" else if (!state.connected) "!" else "共享") {
             if (input != null) finishDrawing() else expanded = !expanded
             rebuild()
         }
@@ -82,6 +85,7 @@ class GuidanceOverlay(private val context: Context,
                 }
                 MotionEvent.ACTION_UP -> { if (moved) { val width = context.resources.displayMetrics.widthPixels
                     controls.x = if (controls.x < width/2) 0 else width-controls.width; position() } else view.performClick(); true }
+                MotionEvent.ACTION_CANCEL -> { moved = false; view.parent.requestDisallowInterceptTouchEvent(false); true }
                 else -> false
             }
         }
@@ -99,7 +103,7 @@ class GuidanceOverlay(private val context: Context,
                 button("清除全部标注") { command(GuidanceOp.CLEAR_ALL, null); rebuild() }
                 button("取消") { rebuild() }
             }
-            button(if (hidden) "显示标注" else "隐藏标注") { hidden = !hidden; annotation.visibility = if (hidden) View.INVISIBLE else View.VISIBLE; rebuild() }
+            button(if (hidden) "显示标注" else "隐藏标注") { hidden = !hidden; if (hidden) clearHighlight(); annotation.visibility = if (hidden) View.INVISIBLE else View.VISIBLE; rebuild() }
             button(if (state.paused) "恢复共享" else "暂停共享") { pause() }
             button("停止共享…") {
                 menu.removeAllViews(); button("停止共享（通话继续）") { stop() }; button("取消") { rebuild() }

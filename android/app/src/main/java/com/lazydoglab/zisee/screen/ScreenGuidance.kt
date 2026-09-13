@@ -65,6 +65,7 @@ class ScreenGuidance(private val context: Context, private val failure: () -> Un
         value.registerObserver(object : DataChannel.Observer {
             override fun onBufferedAmountChange(previousAmount: Long) = Unit
             override fun onStateChange() = onMain {
+                if (local && !open()) clearSemantic()
                 publish()
                 if (open()) { if (local) sync()
                     else { awaitingSync = true; send(GuidancePacket(GuidancePacket.REQUEST)) } }
@@ -93,7 +94,7 @@ class ScreenGuidance(private val context: Context, private val failure: () -> Un
         val allowed = local && Settings.canDrawOverlays(context)
         if (allowed && window == null) {
             try { window = GuidanceOverlay(context, ::submit, { op, mark -> command(op, mark) },
-                { setPaused(!engine.state.paused) }, stopCapture, failure) }
+                { setPaused(!engine.state.paused) }, stopCapture, failure, ::clearSemantic) }
             catch (_: RuntimeException) { failure() }
         }
         val oldGeometry = engine.state.geometry
@@ -107,6 +108,7 @@ class ScreenGuidance(private val context: Context, private val failure: () -> Un
     }
     fun setPaused(value: Boolean) = onMain {
         if (!local) return@onMain
+        if (value) clearSemantic()
         pauseCapture(value)
         engine.configure(engine.state.session, engine.state.width, engine.state.height, value, window != null)
         sync(); publish()
@@ -130,6 +132,14 @@ class ScreenGuidance(private val context: Context, private val failure: () -> Un
     fun command(op: GuidanceOp, mark: GuidanceMark? = null, expectedSession: String? = null, expectedGeometry: Int? = null) = onMain {
         val current = engine.state
         if (expectedSession != null && (current.session != expectedSession || current.geometry != expectedGeometry)) return@onMain
+        val clearsHighlight = op in setOf(GuidanceOp.UNDO, GuidanceOp.CLEAR_OWN, GuidanceOp.CLEAR_ALL)
+        if (clearsHighlight && current.session.isNotEmpty() && (local || open())) {
+            if (local) clearSemantic()
+            else if (!send(GuidancePacket(GuidancePacket.UI_HIGHLIGHT_CLEAR, current.session, current.geometry))) {
+                transportNotice = "高亮清除失败，请稍后重试"; publish(); return@onMain
+            }
+            if (op == GuidanceOp.UNDO && current.semanticTarget != null) { publish(); return@onMain }
+        }
         val semanticPointer = !local && mark?.tool == GuidanceTool.POINTER && current.semanticAvailable
         if (current.session.isEmpty() || current.paused || (!current.overlay && !semanticPointer) || (!local && !open())) return@onMain
         val packet = GuidancePacket(GuidancePacket.COMMAND, current.session, current.geometry,
@@ -146,6 +156,7 @@ class ScreenGuidance(private val context: Context, private val failure: () -> Un
             else { transportNotice = "标注未接受：已过期或数量达到上限"; publish() }
             return
         }
+        if (packet.op in setOf(GuidanceOp.UNDO, GuidanceOp.CLEAR_OWN, GuidanceOp.CLEAR_ALL)) clearSemantic()
         val canonical = packet.copy(kind = GuidancePacket.ACK, author = actor, state = engine.state,
             marks = if (packet.op == GuidanceOp.PUT) engine.state.marks.filter { it.id == packet.marks.single().id } else emptyList())
         if (!send(canonical)) needsSync = true
@@ -165,8 +176,8 @@ class ScreenGuidance(private val context: Context, private val failure: () -> Un
             } else if (p.kind == GuidancePacket.COMMAND && engine.state.overlay) apply(p, AnnotationAuthor.GUIDE)
             else if (p.kind == GuidancePacket.UI_TARGET_REQUEST && validSemantic(p)) {
                 p.point?.let { SemanticAccessibilityBridge.resolve(p.id, it, !engine.state.overlay) }
-            } else if (p.kind == GuidancePacket.UI_HIGHLIGHT_CLEAR && validSemantic(p)) {
-                SemanticAccessibilityBridge.clear(); engine.setSemanticTarget(null); publish()
+            } else if (p.kind == GuidancePacket.UI_HIGHLIGHT_CLEAR && p.session == engine.state.session && p.geometry == engine.state.geometry) {
+                clearSemantic()
             }
             return
         }
@@ -191,6 +202,7 @@ class ScreenGuidance(private val context: Context, private val failure: () -> Un
                 engine.setSemanticTarget(p.semantic); transportNotice = ""; publish()
             }
         } else if (p.kind == GuidancePacket.UI_TARGET_LOST || p.kind == GuidancePacket.UI_HIGHLIGHT_CLEAR) {
+            if (p.geometry != engine.state.geometry) return
             engine.setSemanticTarget(null)
             if (p.kind == GuidancePacket.UI_TARGET_LOST && p.lostReason == UiTargetLostReason.NO_ACCESSIBILITY_SERVICE)
                 transportNotice = "对方未开启 UI 语义高亮，已使用普通指针"
@@ -199,6 +211,12 @@ class ScreenGuidance(private val context: Context, private val failure: () -> Un
             engine.setSemanticAvailability(p.state?.semanticAvailable == true)
             publish()
         }
+    }
+    private fun clearSemantic() {
+        SemanticAccessibilityBridge.clear()
+        engine.setSemanticTarget(null)
+        if (local && !send(GuidancePacket(GuidancePacket.UI_HIGHLIGHT_CLEAR, engine.state.session, engine.state.geometry))) needsSync = true
+        publish()
     }
     private fun validSemantic(p: GuidancePacket) = p.session == engine.state.session && p.geometry == engine.state.geometry &&
         !engine.state.paused && engine.state.semanticAvailable
@@ -220,7 +238,7 @@ class ScreenGuidance(private val context: Context, private val failure: () -> Un
         val semantic = engine.state.semanticTarget?.let {
             send(GuidancePacket(GuidancePacket.UI_TARGET_UPDATE, engine.state.session, engine.state.geometry,
                 it.targetId, semantic = it))
-        } ?: true
+        } ?: send(GuidancePacket(GuidancePacket.UI_HIGHLIGHT_CLEAR, engine.state.session, engine.state.geometry))
         needsSync = !snapshot || !capability || !semantic
     }
     private fun open() = channel?.state() == DataChannel.State.OPEN

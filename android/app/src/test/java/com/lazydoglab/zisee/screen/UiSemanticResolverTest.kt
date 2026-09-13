@@ -42,6 +42,16 @@ class UiSemanticResolverTest {
         assertEquals(2, result.target.treeRevision)
     }
 
+    @Test fun vanishedTargetDoesNotRelocateToAnotherWidgetOrWindow() {
+        val originalNode = node(id = "app:id/wifi", text = "Wi-Fi", clickable = true)
+        val original = requireNotNull(UiSemanticResolver.resolve(listOf(originalNode), VideoPoint(.2f, .15f), 1))
+        assertNull(UiSemanticResolver.relocate(listOf(originalNode.copy(viewIdResourceName = "app:id/bluetooth")), original.locator, 2))
+        assertNull(UiSemanticResolver.relocate(listOf(originalNode.copy(windowId = 8)), original.locator, 2))
+        assertNull(UiSemanticResolver.relocate(listOf(originalNode.copy(text = "Bluetooth")), original.locator, 2))
+        val textOnly = requireNotNull(UiSemanticResolver.resolve(listOf(originalNode.copy(viewIdResourceName = null)), VideoPoint(.2f, .15f), 1))
+        assertNull(UiSemanticResolver.relocate(listOf(originalNode.copy(viewIdResourceName = null, text = "Bluetooth")), textOnly.locator, 2))
+    }
+
     @Test fun semanticPacketsAreBoundedAndRoundTripWithoutText() {
         val target = SemanticTarget("ui-1", 7, UiRole.BUTTON, NormalizedRect(.1f, .2f, .8f, .3f),
             true, true, 1, .94f, 11)

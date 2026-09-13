@@ -59,7 +59,13 @@ object UiSemanticResolver {
                 (locator.textHash == null || safeHash(node.text, node.password || node.editable) == locator.textHash) &&
                 (locator.contentDescriptionHash == null || safeHash(node.contentDescription, node.password || node.editable) == locator.contentDescriptionHash)
         }
-        val pool = when { byId.isNotEmpty() -> byId; semantic.isNotEmpty() -> semantic; else -> inWindow.filter { nodes[it].className == locator.className } }
+        // A vanished ID or semantic identity must not jump to an unrelated same-class widget.
+        val pool = when {
+            locator.viewIdResourceName != null -> byId.filter { it in semantic }
+            locator.textHash != null || locator.contentDescriptionHash != null -> semantic
+            else -> semantic.filter { hierarchy(nodes, it).contentEquals(locator.hierarchyHint) &&
+                distance(nodes[it].bounds, locator.lastBounds) < .05f }
+        }
         val index = pool.minByOrNull { distance(nodes[it].bounds, locator.lastBounds) } ?: return null
         return result(nodes, index, treeRevision, if (byId.isNotEmpty()) .98f else .82f)
     }
