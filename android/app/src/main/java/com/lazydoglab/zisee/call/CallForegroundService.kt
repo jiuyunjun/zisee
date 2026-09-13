@@ -51,7 +51,10 @@ class CallForegroundService : Service() {
         val muted = intent?.getBooleanExtra(EXTRA_MUTED, false) == true
         // Sharing is a property of the call, not of this particular command: a mute update must not
         // drop the mediaProjection type out from under a live projection.
+        val previousSharing = sharing
         if (intent?.hasExtra(EXTRA_SHARING) == true) sharing = intent.getBooleanExtra(EXTRA_SHARING, false)
+        @Suppress("DEPRECATION")
+        val reply = intent?.getParcelableExtra<android.os.ResultReceiver>(EXTRA_REPLY)
         ensureChannel(this)
         // The manifest declares the union of types this service can ever take. Selecting them here
         // is what keeps them honest: claiming mediaProjection before a projection exists is
@@ -59,7 +62,16 @@ class CallForegroundService : Service() {
         val types = ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
             if (sharing) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION else 0
-        ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(peer, muted, sharing), types)
+        try {
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(peer, muted, sharing), types)
+            reply?.send(android.app.Activity.RESULT_OK, null)
+        } catch (error: RuntimeException) {
+            sharing = previousSharing
+            android.util.Log.e("Zisee", "SCREEN_SHARE_SERVICE_FAILED ${error.javaClass.simpleName}")
+            reply?.send(android.app.Activity.RESULT_CANCELED, null)
+            // A projection type refusal must leave the existing call service alive.
+            if (intent?.hasExtra(EXTRA_SHARING) != true) throw error
+        }
         return START_NOT_STICKY
     }
 
@@ -114,6 +126,7 @@ class CallForegroundService : Service() {
         private const val EXTRA_PEER = "peer"
         private const val EXTRA_MUTED = "muted"
         private const val EXTRA_SHARING = "sharing"
+        private const val EXTRA_REPLY = "sharingReply"
         private const val ACTION_START = "com.lazydoglab.zisee.call.START"
         private const val ACTION_UPDATE = "com.lazydoglab.zisee.call.UPDATE"
         private const val ACTION_STOP = "com.lazydoglab.zisee.call.STOP"
@@ -143,18 +156,36 @@ class CallForegroundService : Service() {
             context.startService(intent(context, ACTION_UPDATE, peer, muted))
         }
 
-        /**
-         * Claims or releases the mediaProjection foreground type, and must complete before
-         * MediaProjectionManager.getMediaProjection is called. Releasing it keeps the camera and
-         * microphone types the ongoing call still needs.
-         *
-         * Returns whether the service accepted the change; a refusal means the share must not
-         * start, rather than the call ending.
+        /** Await onStartCommand's successful startForeground before obtaining MediaProjection.
+         * startForegroundService only enqueues a command; its return is not that acknowledgement.
          */
+        suspend fun awaitSharing(context: Context, peer: String, muted: Boolean): Boolean {
+            val result = kotlinx.coroutines.CompletableDeferred<Boolean>()
+            val receiver = object : android.os.ResultReceiver(android.os.Handler(android.os.Looper.getMainLooper())) {
+                override fun onReceiveResult(resultCode: Int, resultData: android.os.Bundle?) {
+                    result.complete(resultCode == android.app.Activity.RESULT_OK)
+                }
+            }
+            var accepted = false
+            try {
+                ContextCompat.startForegroundService(context,
+                    intent(context, ACTION_UPDATE, peer, muted).putExtra(EXTRA_SHARING, true).putExtra(EXTRA_REPLY, receiver))
+                accepted = kotlinx.coroutines.withTimeoutOrNull(3_000) { result.await() } == true
+                return accepted
+            } catch (error: kotlinx.coroutines.CancellationException) { throw error }
+            catch (error: RuntimeException) {
+                android.util.Log.e("Zisee", "SCREEN_SHARE_SERVICE_FAILED ${error.javaClass.simpleName}")
+                return false
+            } finally {
+                // Also compensates a command delivered after its caller timed out or was cancelled.
+                if (!accepted) setSharing(context, peer, muted, false)
+            }
+        }
+
+        /** Queue a type release; only awaitSharing may be used as the startup barrier. */
         fun setSharing(context: Context, peer: String, muted: Boolean, sharing: Boolean): Boolean =
             runCatching {
-                ContextCompat.startForegroundService(context,
-                    intent(context, ACTION_UPDATE, peer, muted).putExtra(EXTRA_SHARING, sharing))
+                context.startService(intent(context, ACTION_UPDATE, peer, muted).putExtra(EXTRA_SHARING, sharing))
             }.isSuccess
 
         fun stop(context: Context) {

@@ -49,6 +49,7 @@ interface ScreenProjection : AutoCloseable {
  */
 class ScreenShareController(
     private val callId: String,
+    private val onFailure: (String) -> Unit = {},
     private val onEvent: (ScreenShareEvent) -> Unit = {},
 ) : AutoCloseable {
     private val owner = Thread.currentThread()
@@ -85,8 +86,10 @@ class ScreenShareController(
         val output = ScreenCaptureSize.of(size.width, size.height)
         mutableState.value = state.value.copy(phase = ScreenSharePhase.STARTING, size = output, contentSize = size)
         onEvent(ScreenShareEvent.STARTING)
+        var stage = "PROJECTION"
         try {
             projection = factory()
+            stage = "VIRTUAL_DISPLAY"
             requireNotNull(projection).start(output, object : ScreenProjectionEvents {
                 override fun stopped() = stop(ScreenShareReason.SYSTEM_STOPPED)
                 override fun resized(size: ScreenSize) = resize(size)
@@ -99,7 +102,8 @@ class ScreenShareController(
                 override fun failed() = stop(ScreenShareReason.CAPTURE_FAILED)
             })
             return capturing()
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            onFailure("$stage:${error.javaClass.simpleName}")
             stop(ScreenShareReason.START_FAILED)
             return false
         }

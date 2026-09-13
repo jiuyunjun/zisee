@@ -329,10 +329,14 @@ class CallViewModel(application: Application, private val container: AppContaine
             // The projection cannot be obtained until the service already holds the type, and the
             // call keeps its camera/microphone types either way.
             val current = mutable.value
-            if (!CallForegroundService.setSharing(getApplication(), current.peerName, current.muted, true)) {
+            if (!CallForegroundService.awaitSharing(getApplication(), current.peerName, current.muted)) {
                 container.logger.error(AppEvent.SCREEN_SHARE_SERVICE_FAILED)
                 media.stopScreenShare(ScreenShareReason.START_FAILED)
                 arNotice("无法开始共享，请稍后再试。")
+                return@launch
+            }
+            if (rtc !== media || media.screenShareState.value.request != request) {
+                releaseSharingType()
                 return@launch
             }
             if (!media.startScreenShare(request, resultCode, data)) {

@@ -65,7 +65,7 @@ class ScreenShareSession(
 
     init {
         handler.post {
-            controller = ScreenShareController(callId) { event ->
+            controller = ScreenShareController(callId, onFailure = { logger.error(AppEvent.SCREEN_SHARE_FAILED, it) }) { event ->
                 logger.info(AppEvent.SCREEN_SHARE_STATE, event.name)
                 val current = controller.state.value
                 mutableState.value = current

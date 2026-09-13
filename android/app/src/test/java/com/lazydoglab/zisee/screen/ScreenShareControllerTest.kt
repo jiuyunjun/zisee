@@ -181,7 +181,7 @@ class ScreenShareControllerTest {
 
     @Test fun resizeFailureAndCleanupFailureAreObservable() {
         val events = mutableListOf<ScreenShareEvent>()
-        val controller = ScreenShareController("call", events::add)
+        val controller = ScreenShareController("call", onEvent = events::add)
         val backend = Backend().apply { failResize = true; failClose = true }
         controller.start(controller.request(), portrait) { backend }
         controller.resize(landscape)
@@ -191,6 +191,21 @@ class ScreenShareControllerTest {
         assertEquals(ScreenShareEvent.FAILED, events.last())
         controller.stop()
         assertEquals(1, backend.closes)
+    }
+
+    @Test fun startupDiagnosticsIdentifyStageWithoutLeakingExceptionMessage() {
+        val diagnostics = mutableListOf<String>()
+        val controller = ScreenShareController("call", onFailure = diagnostics::add)
+        assertFalse(controller.start(controller.request(), portrait) { throw SecurityException("private consent token") })
+        assertEquals(listOf("PROJECTION:SecurityException"), diagnostics)
+        assertEquals(ScreenShareReason.START_FAILED, controller.state.value.reason)
+        val display = ScreenShareController("call", onFailure = diagnostics::add)
+        assertFalse(display.start(display.request(), portrait) { object : ScreenProjection {
+            override fun start(size: ScreenSize, events: ScreenProjectionEvents) { throw IllegalStateException("private details") }
+            override fun resize(size: ScreenSize) = Unit
+            override fun close() = Unit
+        } })
+        assertEquals("VIRTUAL_DISPLAY:IllegalStateException", diagnostics.last())
     }
 
     @Test fun ownerThreadAndDimensionsAreValidated() {

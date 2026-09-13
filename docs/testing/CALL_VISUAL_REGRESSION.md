@@ -29,3 +29,12 @@
 ## 验证环境
 
 使用 Android Studio 自带 JBR 执行 `:app:testDebugUnitTest :app:assembleDebug :app:lintDebug`。当前无 ADB 设备连接，以上真机检查未执行。
+
+
+## 2026-09-14 日志定位补充
+
+设备崩溃缓冲区确认：03:18:40，`GuidanceOverlay.button` 的点击回调发生 `NullPointerException`，对空 `Handler` 调用 `postDelayed`。`Button.apply` 中的 `handler` 实际绑定到 `View.getHandler()`；点击动作重建菜单后旧按钮脱离窗口，handler 变为 null。改用明确命名的 overlay 所有者 `mainHandler`，且关闭后不再安排收起任务。这是应用崩溃导致通话结束，并非用户触发挂断。
+
+共享启动检查另发现：原 `setSharing(true)` 仅等待 `startForegroundService` 返回，并未等待 `onStartCommand` 成功添加 mediaProjection 类型。现在通过 ResultReceiver 确认 `startForeground` 成功后才获取 MediaProjection；3 秒超时、拒绝和取消均回收类型请求，授权返回后再次校验当前 RTC 与共享 request。获取投影和创建 VirtualDisplay 的失败分别记录阶段与异常类名，不记录异常消息或授权数据。
+
+当前保留的 03:18:28 日志显示共享已收到 FIRST_FRAME，没有该次首次失败的直接证据，因此前台服务竞态是代码确认的问题，不能认定为所有首次失败的唯一原因。本轮只读取设备日志，未安装 APK 或操作设备复现。
