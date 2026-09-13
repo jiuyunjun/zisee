@@ -40,6 +40,8 @@ class FrontCameraPreview(private val context: Context) {
     private var owner: LifecycleOwner? = null
     private var helper: SurfaceTextureHelper? = null
     private var cameraInfo: CameraInfo? = null
+    private var preview: Preview? = null
+    private var closed = false
 
     /** Returns whether a first frame arrived within the timeout; false leaves [feed] with no source. */
     suspend fun start(): Boolean = withContext(Dispatchers.Main.immediate) {
@@ -64,21 +66,21 @@ class FrontCameraPreview(private val context: Context) {
             val surfaceHelper = requireNotNull(SurfaceTextureHelper.create("ZiseeIncomingPreview", egl.eglBaseContext))
             helper = surfaceHelper
             val firstFrame = CompletableDeferred<Unit>()
-            var transform: CameraTextureTransform? = null
-            val preview = Preview.Builder().build()
+            val transform = java.util.concurrent.atomic.AtomicReference<CameraTextureTransform?>()
+            val preview = Preview.Builder().build().also { this@FrontCameraPreview.preview = it }
             preview.setSurfaceProvider(ContextCompat.getMainExecutor(context)) { request ->
                 surfaceHelper.setTextureSize(request.resolution.width, request.resolution.height)
                 request.setTransformationInfoListener(ContextCompat.getMainExecutor(context)) { info ->
-                    transform = CameraTextureTransform(
+                    transform.set(CameraTextureTransform(
                         info.rotationDegrees, info.hasCameraTransform(),
                         frontCameraInfo.getSensorRotationDegrees(Surface.ROTATION_0), true,
-                    )
+                    ))
                 }
                 val surface = Surface(surfaceHelper.surfaceTexture)
                 request.provideSurface(surface, ContextCompat.getMainExecutor(context)) { surface.release() }
             }
             surfaceHelper.startListening { frame ->
-                val current = transform ?: return@startListening
+                val current = transform.get() ?: return@startListening
                 val buffer = frame.buffer as TextureBufferImpl
                 val corrected = buffer.applyTransformMatrix(current.textureCorrection(), buffer.width, buffer.height)
                 val output = VideoFrame(corrected, current.rotationDegrees, frame.timestampNs)
@@ -86,7 +88,10 @@ class FrontCameraPreview(private val context: Context) {
             }
             cameraProvider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_FRONT_CAMERA, preview)
             withTimeoutOrNull(3_000) { firstFrame.await() } != null
+        } catch (error: kotlinx.coroutines.CancellationException) {
+            throw error
         } catch (error: Exception) {
+            android.util.Log.w("ZiseePreview", "Unable to start front camera preview", error)
             close()
             false
         }
@@ -98,9 +103,12 @@ class FrontCameraPreview(private val context: Context) {
      * Camera2's close is asynchronous underneath CameraX's synchronous-looking unbind.
      */
     suspend fun close() = withContext(Dispatchers.Main.immediate + NonCancellable) {
+        if (closed) return@withContext
+        closed = true
         val info = cameraInfo
         (owner?.lifecycle as? LifecycleRegistry)?.currentState = Lifecycle.State.DESTROYED
-        if (owner != null) provider?.unbindAll()
+        preview?.let { provider?.unbind(it) }
+        preview = null
         owner = null
         helper?.stopListening()
         helper?.dispose()

@@ -51,6 +51,7 @@ data class CallUiState(
     val notice: String = "",
     val status: String = "邀请朋友开始视频通话，或输入对方的邀请码。",
     val machine: CallState = CallState(), val local: VideoFeed? = null, val remote: VideoFeed? = null,
+    val waitingPreview: VideoFeed? = null,
     val cameraEnabled: Boolean = true, val muted: Boolean = false, val stats: MediaStats = MediaStats(),
     val pendingInvite: String = "", val contacts: List<Contact> = emptyList(), val contactsStatus: String = "",
     /** False until the first fetch resolves, so the home screen can hold its layout rather than
@@ -87,6 +88,7 @@ class CallViewModel(application: Application, private val container: AppContaine
     private var identity: LocalIdentity? = null
     private var job: Job? = null
     private var rtc: NativeRtcSession? = null
+    private var waitingPreviewJob: Job? = null
     private val commands = Channel<String>(4)
     private var foreground = false
     private var idleJob: Job? = null
@@ -183,10 +185,31 @@ class CallViewModel(application: Application, private val container: AppContaine
         }
     }
 
+    /** The UI owns visibility; the call owner awaits release before opening RTC capture. */
+    suspend fun previewWhileWaiting() {
+        if (!foreground || rtc != null || !state.value.busy ||
+            state.value.machine.phase == CallPhase.CONNECTING) return
+        waitingPreviewJob?.cancelAndJoin()
+        if (!foreground || rtc != null || !state.value.busy ||
+            state.value.machine.phase == CallPhase.CONNECTING) return
+        val owner = kotlinx.coroutines.currentCoroutineContext()[Job]!!
+        waitingPreviewJob = owner
+        val preview = com.lazydoglab.zisee.rtc.FrontCameraPreview(getApplication())
+        try {
+            if (preview.start()) mutable.update { it.copy(waitingPreview = preview.feed) }
+            kotlinx.coroutines.awaitCancellation()
+        } finally {
+            mutable.update { it.copy(waitingPreview = null) }
+            preview.close()
+            if (waitingPreviewJob === owner) waitingPreviewJob = null
+        }
+    }
+
     fun setForeground(value: Boolean, videoVisible: Boolean = value) {
         foreground = value
         if (!value) {
             idleJob?.cancel()
+            waitingPreviewJob?.cancel()
             // Only established native media has an ongoing-call service. Ringing and external
             // authorization still stop, which prevents a background callback starting capture.
             val media = rtc
@@ -211,7 +234,7 @@ class CallViewModel(application: Application, private val container: AppContaine
         }
     }
     fun close() { stop(); mutable.update { it.copy(visible = false) } }
-    fun stop() { arActivation.invalidate(); job?.cancel() }
+    fun stop() { arActivation.invalidate(); waitingPreviewJob?.cancel(); job?.cancel() }
     fun accept() { commands.trySend("accept") }
     fun reject() { commands.trySend("reject") }
     fun permissionsDenied() { mutable.update { it.copy(notice = "视频通话需要摄像头和麦克风权限，请允许后重试。") } }
@@ -748,6 +771,7 @@ class CallViewModel(application: Application, private val container: AppContaine
                                     val media = NativeRtcSession(getApplication<Application>(), container.logger,
                                         current.caller == identity.identityId)
                                     rtc = media // Assign before start so partial initialization is always released.
+                                    waitingPreviewJob?.cancelAndJoin()
                                     media.start(ice)
                                     candidateObservation = launch {
                                         media.localCandidateRevision.collect { routeWake.trySend(Unit) }
@@ -925,6 +949,7 @@ class CallViewModel(application: Application, private val container: AppContaine
             } finally {
                 socket?.close()
                 withContext(NonCancellable) {
+                    waitingPreviewJob?.cancelAndJoin()
                     cameraJob?.cancelAndJoin(); cameraJob = null
                     cameraObservation?.cancelAndJoin()
                     screenLock?.close()

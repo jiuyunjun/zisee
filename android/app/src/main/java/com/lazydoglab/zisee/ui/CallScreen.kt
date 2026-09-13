@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -35,7 +36,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -77,8 +77,6 @@ import com.lazydoglab.zisee.call.state.CallPhase
 import com.lazydoglab.zisee.invite.InviteLink
 import com.lazydoglab.zisee.rtc.TextureViewRenderer
 import com.lazydoglab.zisee.rtc.VideoFeed
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
 
 /**
  * Invite.dc.html: the call surface, entered only once a call or an invitation actually exists.
@@ -125,6 +123,8 @@ fun CallScreen(state: CallUiState, model: CallViewModel, onMinimize: () -> Unit 
         else model.permissionsDenied()
         accepting = false
     }
+    WaitingCameraPreview(model, state.busy && !state.inviting && state.local == null &&
+        state.machine.phase != CallPhase.CONNECTING && !accepting)
     BackHandler { if (state.local != null && state.busy) onMinimize() else model.close() }
     if (state.local != null && state.busy) {
         ArCallGeometry(state, model)
@@ -151,14 +151,14 @@ fun CallScreen(state: CallUiState, model: CallViewModel, onMinimize: () -> Unit 
         contentColor = MaterialTheme.colorScheme.onBackground, modifier = Modifier.fillMaxSize()) {
         when {
             state.busy && state.machine.phase == CallPhase.INCOMING ->
-                IncomingCall(state.peerName, busy = accepting, onReject = model::reject, onAccept = {
+                IncomingCall(state.peerName, state.waitingPreview, busy = accepting, onReject = model::reject, onAccept = {
                     accepting = true
                     permissions.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
                 })
             // Shown from the first frame, code or not: the code arrives one request later and the
             // page fills in, rather than a "calling" screen flashing at a peer who does not exist yet.
             state.inviting -> InvitePending(state.invite, onClose = model::close)
-            else -> ConnectingCall(state.peerName, state.status, onEnd = model::stop)
+            else -> ConnectingCall(state.peerName, state.status, state.waitingPreview, onEnd = model::stop)
         }
     }
 }
@@ -220,37 +220,25 @@ private fun InvitePending(invite: String, onClose: () -> Unit) {
 }
 
 /**
- * No incoming-call mock exists; built from the shared avatar + Foundations control-ball pattern.
- * The background is the caller's own front camera once permission and a first frame are in, so
- * deciding whether to answer looks like the call surface itself rather than a static card; a
- * denied or unavailable camera falls back to the plain avatar it always showed.
+ * Both waiting screens use a local-only front preview, released before RTC capture starts.
+ * Denied permission or an unavailable camera leaves the avatar visible.
  */
 @Composable
-private fun IncomingCall(peerName: String, busy: Boolean, onAccept: () -> Unit, onReject: () -> Unit) {
+private fun WaitingCameraPreview(model: CallViewModel, enabled: Boolean) {
     val context = LocalContext.current
     var cameraGranted by remember { mutableStateOf(
         ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
-    val cameraPermission = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()) { granted -> cameraGranted = granted }
-    LaunchedEffect(Unit) { if (!cameraGranted) cameraPermission.launch(Manifest.permission.CAMERA) }
-    var previewFeed by remember { mutableStateOf<VideoFeed?>(null) }
-    // Keyed on `busy` (the accept tap) as well as the leave-composition case: NativeRtcSession
-    // opens the same front camera moments after accept, so this must let go of it right away
-    // rather than waiting for IncomingCall to actually leave composition.
-    if (cameraGranted && !busy) {
-        DisposableEffect(Unit) {
-            val preview = com.lazydoglab.zisee.rtc.FrontCameraPreview(context.applicationContext)
-            val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate)
-            val starting = scope.launch { if (preview.start()) previewFeed = preview.feed }
-            onDispose {
-                previewFeed = null
-                starting.cancel()
-                // This composition's scope is being disposed with it, so the close has to outlive
-                // that cancellation; it cancels the scope itself only once the camera is released.
-                scope.launch { preview.close() }.invokeOnCompletion { scope.cancel() }
-            }
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { cameraGranted = it }
+    LaunchedEffect(enabled, cameraGranted) {
+        if (enabled) {
+            if (!cameraGranted) permission.launch(Manifest.permission.CAMERA)
+            else model.previewWhileWaiting()
         }
     }
+}
+
+@Composable
+private fun IncomingCall(peerName: String, previewFeed: VideoFeed?, busy: Boolean, onAccept: () -> Unit, onReject: () -> Unit) {
     Box(Modifier.fillMaxSize().background(CallInk)) {
         previewFeed?.let { feed ->
             VideoRenderer(feed, Modifier.fillMaxSize(), crop = true)
@@ -277,21 +265,30 @@ private fun IncomingCall(peerName: String, busy: Boolean, onAccept: () -> Unit, 
 
 /** Covers dialing, connecting and reconnecting: one hero, one hangup control. */
 @Composable
-private fun ConnectingCall(peerName: String, status: String, onEnd: () -> Unit) {
-    Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 20.dp),
-        horizontalAlignment = Alignment.CenterHorizontally) {
-        Spacer(Modifier.weight(1f))
-        PersonAvatar(peerName, size = 108.dp)
-        Spacer(Modifier.height(22.dp))
-        Text(peerName, fontSize = 27.sp, fontWeight = FontWeight.Medium, letterSpacing = (-0.3).sp)
-        Spacer(Modifier.height(10.dp))
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-            CircularProgressIndicator(Modifier.size(13.dp), color = MaterialTheme.colorScheme.onSurfaceVariant, strokeWidth = 1.6.dp)
-            Text(status, fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+private fun ConnectingCall(peerName: String, status: String, previewFeed: VideoFeed?, onEnd: () -> Unit) {
+    Box(Modifier.fillMaxSize().background(CallInk)) {
+        previewFeed?.let {
+            VideoRenderer(it, Modifier.fillMaxSize(), crop = true)
+            Box(Modifier.fillMaxSize().background(Brush.verticalGradient(
+                listOf(Color.Black.copy(alpha = 0.1f), Color.Black.copy(alpha = 0.6f)))))
         }
-        Spacer(Modifier.weight(1f))
-        ControlBall("挂断", "end", danger = true, onClick = onEnd)
-        Spacer(Modifier.height(48.dp))
+        androidx.compose.runtime.CompositionLocalProvider(androidx.compose.material3.LocalContentColor provides CallText) {
+            Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally) {
+                Spacer(Modifier.weight(1f))
+                if (previewFeed == null) PersonAvatar(peerName, size = 108.dp)
+                Spacer(Modifier.height(22.dp))
+                Text(peerName, fontSize = 27.sp, fontWeight = FontWeight.Medium, letterSpacing = (-0.3).sp)
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                    CircularProgressIndicator(Modifier.size(13.dp), color = CallMuted, strokeWidth = 1.6.dp)
+                    Text(status, fontSize = 15.sp, color = CallMuted, textAlign = TextAlign.Center)
+                }
+                Spacer(Modifier.weight(1f))
+                ControlBall("挂断", "end", danger = true, onClick = onEnd)
+                Spacer(Modifier.height(48.dp))
+            }
+        }
     }
 }
 
@@ -377,7 +374,7 @@ internal fun VideoRenderer(feed: VideoFeed, modifier: Modifier, corner: Dp = 0.d
                 val height = if (crop) maxOf(maxHeight, width / aspect.coerceAtLeast(0.001f))
                     else minOf(maxHeight, width / aspect.coerceAtLeast(0.001f))
                 AndroidView(factory = { context -> TextureViewRenderer(context).also { renderer = it; feed.attach(it) } },
-                    modifier = Modifier.size(width, height),
+                    modifier = Modifier.requiredSize(width, height),
                     update = {},
                     onRelease = { feed.detach(it); if (renderer === it) renderer = null })
             }
