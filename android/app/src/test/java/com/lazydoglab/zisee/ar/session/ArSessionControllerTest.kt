@@ -203,6 +203,75 @@ class ArSessionControllerTest {
         controller.close()
     }
 
+    @Test fun missingSurfaceKeepsDashedScreenStrokeWithoutAllocatingAnchorAndExpires() {
+        var now = 10L
+        val controller = ArSessionController(epoch, { backend }, monotonicNs = { now })
+        backend.next = snapshot(1, depth = null)
+        controller.start(); controller.capture()
+        val id = UUID.randomUUID()
+        assertTrue(controller.beginStroke(epoch, id, request(), AnnotationAuthor.GUIDE))
+        assertTrue(controller.appendStroke(epoch, id, listOf(request().copy(point = VideoPoint(.6f, .5f))), AnnotationAuthor.GUIDE))
+        assertTrue(controller.endStroke(epoch, id, AnnotationAuthor.GUIDE))
+        assertEquals(PlacementState.SCREEN_LOCKED, controller.annotationSnapshot().single().state)
+        assertEquals(2, controller.screenStrokeSnapshot().single().points.size)
+        assertTrue(controller.strokeSnapshot().isEmpty())
+        assertTrue(backend.created.isEmpty())
+        assertFalse(controller.cancelStroke(epoch, id, AnnotationAuthor.FIELD))
+        now += AnnotationBudget.SCREEN_TTL_NS
+        assertTrue(controller.screenStrokeSnapshot().isEmpty())
+        assertTrue(controller.annotationSnapshot().isEmpty())
+        controller.close()
+    }
+
+    @Test fun surfaceLossConvertsStrokeToScreenFeedbackAndDetachesAnchor() {
+        val controller = controller()
+        controller.start(); controller.capture()
+        val id = UUID.randomUUID()
+        assertTrue(controller.beginStroke(epoch, id, request()))
+        backend.next = snapshot(200_000_000, depth = null)
+        controller.capture()
+        assertTrue(controller.appendStroke(epoch, id, listOf(request(200_000_000).copy(point = VideoPoint(.6f, .5f)))))
+        assertTrue(controller.endStroke(epoch, id))
+        assertTrue(controller.strokeSnapshot().isEmpty())
+        assertEquals(2, controller.screenStrokeSnapshot().single().points.size)
+        assertEquals(1, backend.created.single().detaches)
+        assertEquals(PlacementState.SCREEN_LOCKED, controller.annotationSnapshot().single().state)
+        assertTrue(controller.removeMarker(epoch, id))
+        assertTrue(controller.screenStrokeSnapshot().isEmpty())
+        controller.close()
+    }
+
+    @Test fun screenStrokeRejectsMissingHistoricalFrameAndNeverPromotesOnNewSurface() {
+        val controller = controller()
+        backend.next = snapshot(1, depth = null)
+        controller.start(); controller.capture()
+        assertFalse(controller.beginStroke(epoch, UUID.randomUUID(), request(99)))
+        val id = UUID.randomUUID()
+        assertTrue(controller.beginStroke(epoch, id, request()))
+        backend.next = snapshot(2)
+        controller.capture()
+        assertTrue(controller.appendStroke(epoch, id, listOf(request(2).copy(point = VideoPoint(.6f, .5f)))))
+        assertTrue(backend.created.isEmpty())
+        assertEquals(PlacementState.SCREEN_LOCKED, controller.annotationSnapshot().single().state)
+        controller.pause()
+        assertTrue(controller.screenStrokeSnapshot().isEmpty())
+        assertTrue(controller.annotationSnapshot().isEmpty())
+        controller.close()
+    }
+
+    @Test fun invalidHistoricalSampleCannotRemainInCompletedScreenStroke() {
+        val controller = controller()
+        backend.next = snapshot(1, depth = null)
+        controller.start(); controller.capture()
+        val id = UUID.randomUUID()
+        assertTrue(controller.beginStroke(epoch, id, request()))
+        assertTrue(controller.appendStroke(epoch, id, listOf(request().copy(point = VideoPoint(.6f, .5f)))))
+        assertFalse(controller.appendStroke(epoch, id, listOf(request(99).copy(point = VideoPoint(.9f, .9f)))))
+        assertTrue(controller.endStroke(epoch, id))
+        assertEquals(2, controller.screenStrokeSnapshot().single().points.size)
+        controller.close()
+    }
+
     @Test fun cameraResumeFailureClosesAcquiredBackend() {
         backend.failResume = true
         val controller = controller()

@@ -126,6 +126,7 @@ object StrokeRibbon {
         val points = geometry.vertices.map { it.local }
         val output = ArrayList<Float>((points.size - 1).coerceAtLeast(0) * 18)
         for (index in 1 until points.size) {
+            if (geometry.vertices[index].estimated && index % 4 >= 2) continue
             val a = points[index - 1]; val b = points[index]
             val tangent = b - a
             if (tangent.length() < 1e-6f) continue

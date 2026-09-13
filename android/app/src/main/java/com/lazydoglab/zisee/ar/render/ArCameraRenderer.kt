@@ -70,6 +70,11 @@ class ArCameraRenderer : AutoCloseable {
         annotations.strokes(strokes, camera, intrinsics, width, height)
     }
 
+    fun drawScreenStrokes(strokes: List<com.lazydoglab.zisee.ar.annotation.ScreenStroke>, width: Int, height: Int) {
+        checkOwner()
+        annotations.screenStrokes(strokes, width, height)
+    }
+
     private fun createMarkerProgram(): Int {
         fun shader(type: Int, source: String): Int = GLES20.glCreateShader(type).also {
             GLES20.glShaderSource(it, source); GLES20.glCompileShader(it)

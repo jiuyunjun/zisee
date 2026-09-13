@@ -105,6 +105,21 @@ internal class AnnotationOverlayRenderer : AutoCloseable {
         flush()
     }
 
+    fun screenStrokes(strokes: List<com.lazydoglab.zisee.ar.annotation.ScreenStroke>, outputWidth: Int, outputHeight: Int) {
+        begin(outputWidth, outputHeight)
+        color(0.37f, 0.83f, 0.84f, 0.7f)
+        var remaining = 4096
+        for (stroke in strokes) {
+            if (remaining <= 0) break
+            for ((a, b) in com.lazydoglab.zisee.ar.annotation.screenStrokeDashes(stroke.points,
+                outputWidth, outputHeight, maxDashes = minOf(1024, remaining))) {
+                line(a.x * width, a.y * height, b.x * width, b.y * height, 3.5f)
+                remaining--
+            }
+        }
+        flush()
+    }
+
     private fun begin(w: Int, h: Int) { require(w > 0 && h > 0); width = w.toFloat(); height = h.toFloat(); vertices.clear() }
     private fun color(r: Float, g: Float, b: Float, a: Float) { red = r; green = g; blue = b; alpha = a }
     private fun vertex(x: Float, y: Float) {

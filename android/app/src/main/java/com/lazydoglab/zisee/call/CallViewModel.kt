@@ -498,7 +498,7 @@ class CallViewModel(application: Application, private val container: AppContaine
                                     arOwnMarkers.addLast(input.sessionId to input.id)
                                     mutable.update { it.copy(arOwnMarkerCount = arOwnMarkers.size,
                                         arNotice = if (remote) "手绘已发送，正在等待对方现场确认。"
-                                        else "手绘已固定，可按整笔撤销。") }
+                                        else "手绘已完成；虚线为临时标注，可按整笔撤销。") }
                                 } else if (rtc === media) arNotice("这一笔太短或现场已变化，请重新绘制。")
                                 break
                             }
@@ -836,7 +836,7 @@ class CallViewModel(application: Application, private val container: AppContaine
                                                  if (lastArStrokeResult != key) {
                                                      lastArStrokeResult = key
                                                      if (result.rejection != null) arOwnMarkers.remove(key)
-                                                     arNotice(if (result.rejection == null) "手绘已由对方现场确认。"
+                                                     arNotice(if (result.rejection == null) "手绘已由对方接收；虚线为临时标注。"
                                                          else "手绘未能固定在对方现场，请重新绘制。")
                                                  }
                                              }

@@ -57,6 +57,7 @@ class ArVideoCapture private constructor(
                             renderer.drawMarkers(projected, width, height, rotationDegrees)
                             if (snapshot.tracking == com.lazydoglab.zisee.ar.spatial.ArTracking.TRACKING)
                                 renderer.drawStrokes(controller.strokeSnapshot(), snapshot.pose, snapshot.intrinsics, width, height)
+                            renderer.drawScreenStrokes(controller.screenStrokeSnapshot(), width, height)
                             true
                         }
                     }

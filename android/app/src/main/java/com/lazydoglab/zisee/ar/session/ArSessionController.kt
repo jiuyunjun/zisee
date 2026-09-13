@@ -70,6 +70,7 @@ class ArSessionController(
     private val pointRefiners = HashMap<UUID, PoseRefiner>()
     private val pointAnchorPositions = HashMap<UUID, Vec3>()
     private val strokes = LinkedHashMap<UUID, StrokeBuilder>()
+    private val strokeTraces = LinkedHashMap<UUID, StrokeTrace>()
     private var lastRefineNs = 0L
     init { require(maxAnchors in 1..128) }
     private fun checkThread() = check(Thread.currentThread() === owner) { "AR session accessed outside owner thread" }
@@ -170,15 +171,19 @@ class ArSessionController(
         author: AnnotationAuthor = AnnotationAuthor.FIELD): Boolean {
         checkThread()
         if (epoch != sessionId || !active() || annotations.rejectionFor(id) != null ||
-            strokes.values.any { !it.stopped } || strokes.values.sumOf { it.size } >= AnnotationBudget.MAX_TOTAL_POINTS) return false
+            strokeTraces.values.any { !it.finished } || totalStrokePoints() >= AnnotationBudget.MAX_TOTAL_POINTS) return false
         val placement = resolvePlacement(request, allowEstimate = false)
-        // The UI always renders its touch preview. A stroke needs one real world starting point;
-        // without it the user is explicitly asked to start again, never given a fake world path.
-        if (placement !is PlacementResult.World) { onEvent(ArEvent.MARKER_REJECTED); return false }
-        val installed = installPlacement(id, placement, request)
-        if (installed !is PlacementResult.World) return false
-        annotations.create(id, author, AnnotationType.STROKE, installed, PlacementState.ANCHORED)
-        strokes[id] = StrokeBuilder(installed)
+        if (placement is PlacementResult.Screen) {
+            if (placement.reason != SpatialRejection.SURFACE_MISSING) { onEvent(ArEvent.MARKER_REJECTED); return false }
+            annotations.create(id, author, AnnotationType.STROKE, placement, PlacementState.SCREEN_LOCKED)
+            strokeTraces[id] = StrokeTrace(request, screenLocked = true)
+        } else {
+            val installed = installPlacement(id, placement, request)
+            if (installed !is PlacementResult.World) return false
+            annotations.create(id, author, AnnotationType.STROKE, installed, PlacementState.ANCHORED)
+            strokes[id] = StrokeBuilder(installed)
+            strokeTraces[id] = StrokeTrace(request, screenLocked = false)
+        }
         return true
     }
 
@@ -186,18 +191,34 @@ class ArSessionController(
         author: AnnotationAuthor = AnnotationAuthor.FIELD): Boolean {
         checkThread()
         if (epoch != sessionId || !active() || !owns(id, author) || requests.size !in 1..AnnotationBudget.MAX_BATCH_POINTS) return false
-        val stroke = strokes[id] ?: return false
-        try { anchors[id]?.second?.let { stroke.followAnchor(it.pose) } }
+        val trace = strokeTraces[id] ?: return false
+        val stroke = strokes[id]
+        try { anchors[id]?.second?.let { stroke?.followAnchor(it.pose) } }
         catch (_: Exception) { fail(); return false }
         for (request in requests) {
-            // Conservative reservation bounds the total even when one input expands into many samples.
-            if (strokes.values.sumOf { it.size } + 42 > AnnotationBudget.MAX_TOTAL_POINTS) {
-                stroke.finish(); onEvent(ArEvent.MARKER_REJECTED); return false
+            val placement = resolvePlacement(request, allowEstimate = false)
+            if (placement is PlacementResult.Screen && placement.reason != SpatialRejection.SURFACE_MISSING) {
+                trace.finish(); stroke?.finish(); onEvent(ArEvent.MARKER_REJECTED); return false
             }
-            val result = stroke.append(request, resolvePlacement(request, allowEstimate = false), history.find(request.frame))
-            if (result == StrokeAppendResult.STOPPED || result == StrokeAppendResult.LIMIT_REACHED) {
-                onEvent(ArEvent.MARKER_REJECTED); return false
+            if (totalStrokePoints() + 43 > AnnotationBudget.MAX_TOTAL_POINTS || !trace.append(request)) {
+                trace.finish(); stroke?.finish(); onEvent(ArEvent.MARKER_REJECTED); return false
             }
+            if (!trace.screenLocked) {
+                val result = requireNotNull(stroke).append(request, placement, history.find(request.frame))
+                if (result == StrokeAppendResult.LIMIT_REACHED) { trace.finish(); return false }
+                if (result == StrokeAppendResult.STOPPED) {
+                    if (placement !is PlacementResult.Screen) { trace.finish(); onEvent(ArEvent.MARKER_REJECTED); return false }
+                    // Surface evidence ran out: discard the spatial interpretation, retaining only
+                    // a temporary dashed screen path. Do not bridge a known depth discontinuity.
+                    val anchor = anchors.remove(id)?.second
+                    if (anchor != null && !detach(anchor)) { fail(); return false }
+                    strokes.remove(id)
+                    trace.screenLocked = true
+                }
+            }
+            if (trace.screenLocked) annotations.update(id,
+                PlacementResult.Screen(request.point, request.frame, monotonicNs() + AnnotationBudget.SCREEN_TTL_NS,
+                    SpatialRejection.SURFACE_MISSING), PlacementState.SCREEN_LOCKED)
         }
         return true
     }
@@ -205,15 +226,26 @@ class ArSessionController(
     fun endStroke(epoch: UUID, id: UUID, author: AnnotationAuthor = AnnotationAuthor.FIELD): Boolean {
         checkThread()
         if (epoch != sessionId || !owns(id, author)) return false
-        val stroke = strokes[id] ?: return false
-        stroke.finish()
-        if (stroke.size < 2) { removeMarker(epoch, id, author); return false }
+        val trace = strokeTraces[id] ?: return false
+        trace.finish()
+        val stroke = strokes[id]
+        stroke?.finish()
+        if ((stroke?.size ?: trace.samples.size) < 2) { removeMarker(epoch, id, author); return false }
         return true
     }
 
     fun cancelStroke(epoch: UUID, id: UUID, author: AnnotationAuthor = AnnotationAuthor.FIELD): Boolean {
         checkThread()
-        return epoch == sessionId && owns(id, author) && id in strokes && removeMarker(epoch, id, author)
+        return epoch == sessionId && owns(id, author) && id in strokeTraces && removeMarker(epoch, id, author)
+    }
+
+    private fun totalStrokePoints() = strokes.values.sumOf { it.size } + strokeTraces.values.sumOf { it.samples.size }
+
+    fun screenStrokeSnapshot(): List<ScreenStroke> {
+        checkThread()
+        if (!active()) return emptyList()
+        expireScreens()
+        return strokeTraces.filterValues { it.screenLocked }.map { (id, trace) -> ScreenStroke(id, trace.samples.map { it.point }) }
     }
 
     fun selectAnnotation(epoch: UUID, id: UUID?): Boolean {
@@ -349,7 +381,7 @@ class ArSessionController(
         if (epoch != sessionId || !annotations.canRemove(id, actor)) return false
         val anchor = anchors.remove(id)?.second
         annotations.remove(id, actor)
-        pointRefiners.remove(id); pointAnchorPositions.remove(id); strokes.remove(id)
+        pointRefiners.remove(id); pointAnchorPositions.remove(id); strokes.remove(id); strokeTraces.remove(id)
         if (anchor == null || detach(anchor)) return true
         // A failed detach must not leave an untracked native resource in a running session.
         fail()
@@ -361,7 +393,7 @@ class ArSessionController(
         if (epoch != sessionId || state.value == ArSessionState.CLOSED) return false
         var success = true
         annotations.clear(actor).forEach { id ->
-            pointRefiners.remove(id); pointAnchorPositions.remove(id); strokes.remove(id)
+            pointRefiners.remove(id); pointAnchorPositions.remove(id); strokes.remove(id); strokeTraces.remove(id)
             anchors.remove(id)?.second?.let { if (!detach(it)) success = false }
         }
         if (!success) fail()
@@ -400,7 +432,7 @@ class ArSessionController(
     private fun cleanup() {
         anchors.values.forEach { detach(it.second) }
         anchors.clear()
-        strokes.clear(); pointRefiners.clear(); pointAnchorPositions.clear()
+        strokes.clear(); strokeTraces.clear(); pointRefiners.clear(); pointAnchorPositions.clear()
         annotations.clear(AnnotationAuthor.FIELD)
         history.clear()
         val closing = backend
