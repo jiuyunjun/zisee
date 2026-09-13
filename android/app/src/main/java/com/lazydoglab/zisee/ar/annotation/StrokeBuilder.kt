@@ -45,7 +45,7 @@ class StrokeBuilder(first: PlacementResult.World, private val spacingMetres: Flo
         var estimated = false
         val world = (placement as? PlacementResult.World)?.takeIf {
             it.evidence.method != PlacementMethod.HISTORICAL_RAY_ESTIMATE &&
-                compatible(it.evidence) && absDistanceToSurface(it.pose.position) <= 0.03f
+                compatible(it.evidence) && continuousPosition(it.pose.position)
         }?.pose?.position ?: run {
             // Explicit evidence of a different surface must end the segment, not be papered over.
             if (placement is PlacementResult.World) return stop()
@@ -98,11 +98,18 @@ class StrokeBuilder(first: PlacementResult.World, private val spacingMetres: Flo
         val normal = evidence.normal
         // A valid depth position can temporarily lack a normal at a curved edge. Keep the
         // position, but clear the tangent so a subsequent hole cannot use a stale orientation.
-        return normal == null || (other.normal?.let { normal.dot(it) >= 0.94f }
+        return normal == null || (other.normal?.let { normal.dot(it) >= 0.82f }
             ?: (other.method == PlacementMethod.DEPTH))
     }
-    private fun absDistanceToSurface(point: Vec3): Float = evidence.normal?.let { abs((point - surfacePoint).dot(it)) }
-        ?: (point - surfacePoint).length()
+    private fun continuousPosition(point: Vec3): Boolean {
+        val delta = point - surfacePoint
+        // Without a measured normal, distance is travel, not distance across a surface.
+        // Allow a short real depth step, but do not invent a tangent for hole prediction.
+        val normal = evidence.normal ?: return delta.length() <= 0.08f
+        // Modest curvature/noise tolerance grows with sampling distance, capped at 6 cm.
+        val tolerance = (0.03f + delta.length() * 0.15f).coerceAtMost(0.06f)
+        return abs(delta.dot(normal)) <= tolerance
+    }
     private fun PlacementResult.frameReference(): VideoFrameReference? = when (this) {
         is PlacementResult.World -> frame
         is PlacementResult.Screen -> frame

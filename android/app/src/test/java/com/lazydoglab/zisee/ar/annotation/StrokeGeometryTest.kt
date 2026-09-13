@@ -29,6 +29,22 @@ class StrokeGeometryTest {
         assertEquals(StrokeAppendResult.STOPPED, another.append(request(3), world(3, 0.2f), null))
     }
 
+    @Test fun normalLessDepthAllowsSixCentimetresOfRealTravel() {
+        val first = world(1, 0f).let { it.copy(evidence = it.evidence.copy(normal = null)) }
+        val next = world(2, .06f).let { it.copy(evidence = it.evidence.copy(normal = null)) }
+        val stroke = StrokeBuilder(first)
+        assertEquals(StrokeAppendResult.ADDED, stroke.append(request(2), next, null))
+        assertFalse(stroke.snapshot().vertices.any { it.estimated })
+        assertEquals(StrokeAppendResult.STOPPED, stroke.append(request(3), world(3, .3f), null))
+    }
+
+    @Test fun moderateNormalNoiseAndCurvatureDoNotEndTheStroke() {
+        val stroke = StrokeBuilder(world(1, 0f))
+        val tilted = world(2, .1f, Vec3(-.422618f, 0f, .906308f))
+            .copy(pose = WorldPose(Vec3(.1f, 0f, -.96f)))
+        assertEquals(StrokeAppendResult.ADDED, stroke.append(request(2), tilted, null))
+    }
+
     @Test fun predictionUsesLatestSurfacePositionAndRejectsWrongEvidenceFrame() {
         val stroke = StrokeBuilder(world(1, 0f))
         for (time in 2L..4L) {
