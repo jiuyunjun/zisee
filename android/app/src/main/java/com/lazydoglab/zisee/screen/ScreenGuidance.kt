@@ -29,6 +29,26 @@ class ScreenGuidance(private val context: Context, private val failure: () -> Un
     private var needsSync = false
     private var awaitingSync = false
     private var transportNotice = ""
+    private val semanticListener = object : SemanticAccessibilityBridge.Listener {
+        override fun onAvailabilityChanged(available: Boolean) = onMain {
+            if (local && engine.setSemanticAvailability(available)) { sendSemanticCapability(); publish() }
+        }
+        override fun onResolved(requestId: String, target: SemanticTarget) = onMain {
+            if (!local || engine.state.session.isEmpty()) return@onMain
+            engine.setSemanticTarget(target); sendSemantic(GuidancePacket.UI_TARGET_RESOLVED, requestId, target)
+        }
+        override fun onUpdated(target: SemanticTarget) = onMain {
+            if (!local || engine.state.session.isEmpty()) return@onMain
+            engine.setSemanticTarget(target); sendSemantic(GuidancePacket.UI_TARGET_UPDATE, target.targetId, target)
+        }
+        override fun onLost(requestId: String?, reason: UiTargetLostReason) = onMain {
+            if (!local || engine.state.session.isEmpty()) return@onMain
+            engine.setSemanticTarget(null)
+            send(GuidancePacket(GuidancePacket.UI_TARGET_LOST, engine.state.session, engine.state.geometry,
+                requestId.orEmpty(), lostReason = reason))
+            publish()
+        }
+    }
     private val displays = context.getSystemService(android.hardware.display.DisplayManager::class.java)
     private val displayListener = object : android.hardware.display.DisplayManager.DisplayListener {
         override fun onDisplayAdded(id: Int) = Unit
@@ -46,7 +66,8 @@ class ScreenGuidance(private val context: Context, private val failure: () -> Un
             override fun onBufferedAmountChange(previousAmount: Long) = Unit
             override fun onStateChange() = onMain {
                 publish()
-                if (open()) { if (local) sync() else { awaitingSync = true; send(GuidancePacket(GuidancePacket.REQUEST)) } }
+                if (open()) { if (local) sync()
+                    else { awaitingSync = true; send(GuidancePacket(GuidancePacket.REQUEST)) } }
             }
             override fun onMessage(buffer: DataChannel.Buffer) {
                 if (!buffer.binary || buffer.data.remaining() > GuidanceWire.MAX_BYTES) return
@@ -67,16 +88,21 @@ class ScreenGuidance(private val context: Context, private val failure: () -> Un
     }
     fun configure(session: String, size: ScreenSize?) = onMain {
         local = session.isNotEmpty()
-        if (!local) { window?.close(); window = null }
+        SemanticAccessibilityBridge.setListener(if (local) semanticListener else null)
+        if (!local) { window?.close(); window = null; SemanticAccessibilityBridge.clear() }
         val allowed = local && Settings.canDrawOverlays(context)
         if (allowed && window == null) {
             try { window = GuidanceOverlay(context, ::submit, { op, mark -> command(op, mark) },
                 { setPaused(!engine.state.paused) }, stopCapture, failure) }
             catch (_: RuntimeException) { failure() }
         }
+        val oldGeometry = engine.state.geometry
         if (engine.configure(session, size?.width ?: 0, size?.height ?: 0,
                 if (local && session == engine.state.session) engine.state.paused else false, window != null,
-                displays.getDisplay(android.view.Display.DEFAULT_DISPLAY)?.rotation ?: 0)) { pending.clear(); sync() }
+                displays.getDisplay(android.view.Display.DEFAULT_DISPLAY)?.rotation ?: 0)) {
+            pending.clear(); sync()
+        }
+        if (local && engine.state.geometry != oldGeometry) SemanticAccessibilityBridge.clear()
         publish()
     }
     fun setPaused(value: Boolean) = onMain {
@@ -89,12 +115,23 @@ class ScreenGuidance(private val context: Context, private val failure: () -> Un
         if (points.isEmpty() || points.size > 128) return
         command(GuidanceOp.PUT, GuidanceMark(id, AnnotationAuthor.GUIDE, tool, points.toList()))
     }
-    fun submit(input: GuidanceInput) = command(GuidanceOp.PUT,
-        GuidanceMark(input.id, AnnotationAuthor.GUIDE, input.tool, input.points.toList()), input.session, input.geometry)
+    fun submit(input: GuidanceInput) {
+        command(GuidanceOp.PUT, GuidanceMark(input.id, AnnotationAuthor.GUIDE, input.tool, input.points.toList()),
+            input.session, input.geometry)
+        if (input.tool == GuidanceTool.POINTER) onMain {
+            val current = engine.state
+            val point = input.points.firstOrNull()
+            if (!local && point != null && current.semanticAvailable && current.session == input.session &&
+                current.geometry == input.geometry && open()) {
+                send(GuidancePacket(GuidancePacket.UI_TARGET_REQUEST, current.session, current.geometry, input.id, point = point))
+            }
+        }
+    }
     fun command(op: GuidanceOp, mark: GuidanceMark? = null, expectedSession: String? = null, expectedGeometry: Int? = null) = onMain {
         val current = engine.state
         if (expectedSession != null && (current.session != expectedSession || current.geometry != expectedGeometry)) return@onMain
-        if (current.session.isEmpty() || current.paused || !current.overlay || (!local && !open())) return@onMain
+        val semanticPointer = !local && mark?.tool == GuidanceTool.POINTER && current.semanticAvailable
+        if (current.session.isEmpty() || current.paused || (!current.overlay && !semanticPointer) || (!local && !open())) return@onMain
         val packet = GuidancePacket(GuidancePacket.COMMAND, current.session, current.geometry,
             UUID.randomUUID().toString(), op, marks = listOfNotNull(mark))
         if (local) apply(packet, AnnotationAuthor.FIELD)
@@ -126,6 +163,11 @@ class ScreenGuidance(private val context: Context, private val failure: () -> Un
                 val now = android.os.SystemClock.elapsedRealtime()
                 if (now - lastSyncRequest > 500) { lastSyncRequest = now; sync() }
             } else if (p.kind == GuidancePacket.COMMAND && engine.state.overlay) apply(p, AnnotationAuthor.GUIDE)
+            else if (p.kind == GuidancePacket.UI_TARGET_REQUEST && validSemantic(p)) {
+                p.point?.let { SemanticAccessibilityBridge.resolve(p.id, it, !engine.state.overlay) }
+            } else if (p.kind == GuidancePacket.UI_HIGHLIGHT_CLEAR && validSemantic(p)) {
+                SemanticAccessibilityBridge.clear(); engine.setSemanticTarget(null); publish()
+            }
             return
         }
         if (expectedRemote.isEmpty() || p.session != expectedRemote) return
@@ -144,10 +186,43 @@ class ScreenGuidance(private val context: Context, private val failure: () -> Un
                 send(GuidancePacket(GuidancePacket.REQUEST)); return
             }
             engine.apply(p, p.author); publish()
+        } else if (p.kind == GuidancePacket.UI_TARGET_RESOLVED || p.kind == GuidancePacket.UI_TARGET_UPDATE) {
+            if (p.geometry == engine.state.geometry && p.semantic != null) {
+                engine.setSemanticTarget(p.semantic); transportNotice = ""; publish()
+            }
+        } else if (p.kind == GuidancePacket.UI_TARGET_LOST || p.kind == GuidancePacket.UI_HIGHLIGHT_CLEAR) {
+            engine.setSemanticTarget(null)
+            if (p.kind == GuidancePacket.UI_TARGET_LOST && p.lostReason == UiTargetLostReason.NO_ACCESSIBILITY_SERVICE)
+                transportNotice = "对方未开启 UI 语义高亮，已使用普通指针"
+            publish()
+        } else if (p.kind == GuidancePacket.UI_CAPABILITY) {
+            engine.setSemanticAvailability(p.state?.semanticAvailable == true)
+            publish()
         }
     }
-    private fun sync() { if (local) needsSync = !send(GuidancePacket(GuidancePacket.SYNC, engine.state.session,
-        engine.state.geometry, marks = engine.state.marks, state = engine.state)) }
+    private fun validSemantic(p: GuidancePacket) = p.session == engine.state.session && p.geometry == engine.state.geometry &&
+        !engine.state.paused && engine.state.semanticAvailable
+    private fun sendSemantic(kind: Int, id: String, target: SemanticTarget) {
+        if (!send(GuidancePacket(kind, engine.state.session, engine.state.geometry, id, semantic = target))) needsSync = true
+        publish()
+    }
+    private fun sendSemanticCapability() {
+        if (!local || engine.state.session.isEmpty()) return
+        send(GuidancePacket(GuidancePacket.UI_CAPABILITY, engine.state.session, engine.state.geometry,
+            state = GuidanceState(semanticAvailable = engine.state.semanticAvailable)))
+    }
+    private fun sync() {
+        if (!local) return
+        val snapshot = send(GuidancePacket(GuidancePacket.SYNC, engine.state.session,
+            engine.state.geometry, marks = engine.state.marks, state = engine.state))
+        val capability = send(GuidancePacket(GuidancePacket.UI_CAPABILITY, engine.state.session, engine.state.geometry,
+            state = GuidanceState(semanticAvailable = engine.state.semanticAvailable)))
+        val semantic = engine.state.semanticTarget?.let {
+            send(GuidancePacket(GuidancePacket.UI_TARGET_UPDATE, engine.state.session, engine.state.geometry,
+                it.targetId, semantic = it))
+        } ?: true
+        needsSync = !snapshot || !capability || !semantic
+    }
     private fun open() = channel?.state() == DataChannel.State.OPEN
     private fun send(packet: GuidancePacket): Boolean {
         val value = channel ?: return false
@@ -175,6 +250,7 @@ class ScreenGuidance(private val context: Context, private val failure: () -> Un
     override fun close() {
         val release = {
             closed = true; main.removeCallbacksAndMessages(null); window?.close(); window = null
+            SemanticAccessibilityBridge.setListener(null); if (local) SemanticAccessibilityBridge.clear()
             displays.unregisterDisplayListener(displayListener)
             val oldChannel = channel; channel = null
             for (cleanup in listOf<() -> Unit>({ oldChannel?.unregisterObserver() }, { oldChannel?.close() }, { oldChannel?.dispose() })) {

@@ -1,16 +1,20 @@
 # 咫尺 Android 屏幕共享 + 跨 App 远程标注专项设计
 
-版本：v1.0  
+版本：v1.1
 平台：Android  
 适用场景：视频通话、远程协助、屏幕共享、跨 App 标注
 
-> 2026-09-12 可行性评估与实现：普通应用的全屏共享 + 跨 App 标注可实现；已接入本文 P0 主流程。复用现有 `CallForegroundService`、进程持有的 `CallViewModel` / `NativeRtcSession` 和 `ScreenShareSession`，不再创建竞争的第二个投屏服务。代码和验收边界见 [屏幕指导交接](../development/SCREEN_GUIDANCE_HANDOFF.md)。P1/P2 尚未实现。
+> 2026-09-12 可行性评估与实现：普通应用的全屏共享 + 跨 App 标注可实现；已接入本文 P0 主流程。复用现有 `CallForegroundService`、进程持有的 `CallViewModel` / `NativeRtcSession` 和 `ScreenShareSession`，不再创建竞争的第二个投屏服务。代码和验收边界见 [屏幕指导交接](../development/SCREEN_GUIDANCE_HANDOFF.md)。
 >
-> 平台约束修正：第三方 App 的 `FLAG_SECURE` / `HIDE_OVERLAY_WINDOWS` 没有供本应用可靠查询的通用接口，不能根据黑屏推断其原因或保证显示本文第 30/31 节的精确提示。本版在权限说明中告知限制，不绕过安全窗口。全屏投影也没有可依赖的公共 API 来排除自身 Overlay；第 32 节“纯内容视频”是目标而非当前保证，ACK 只代表逻辑接受，不代表标注已出现在某一视频帧。
+> 平台约束修正：第三方 App 的 `FLAG_SECURE` / `HIDE_OVERLAY_WINDOWS` 没有供本应用可靠查询的通用接口，不能根据黑屏推断其原因或保证显示本文第 31/32 节的精确提示。本版在权限说明中告知限制，不绕过安全窗口。全屏投影也没有可依赖的公共 API 来排除自身 Overlay；第 33 节“纯内容视频”是目标而非当前保证，ACK 只代表逻辑接受，不代表标注已出现在某一视频帧。
 >
 > 当前协议使用有界二进制 `screen-guidance-v1`（可靠有序 DataChannel id=6）。字段语义对应本文示例，复用现有 `VideoPoint` / `AnnotationAuthor`；屏幕归一化坐标与 AR 世界坐标继续分离。PUT 合并 ADD/UPDATE，手绘每 40ms 最多更新一次当前路径，单笔最多 128 点、总计 32 笔。只在首次同步、状态/几何变化、重连或丢失增量时发送完整快照。尺寸/旋转变更清空旧标注；输入携带开始绘制时所属会话和几何版本。
 >
 > 指导方默认“浏览”，选择工具后绘制；默认只显示即时绘制预览，避免全屏视频中的标注被永久重复叠加。若设备未回传 Overlay，可手动开启“本地叠加”。横屏展开菜单可滚动，具备拖动、边缘吸附和安全边距；自动 IME 避让及按网络质量细分颜色仍待设备 UX 完善。视频与 DataChannel 无逐帧几何绑定，当前采用宽高比校验及几何稳定等待，不能宣称消除了旋转瞬间所有旧视频帧的误标风险。
+
+> 2026-09-13 v1.1 设计更新：新增“UI 语义高亮”能力。通过 `AccessibilityService` 读取 Accessibility Tree（不是原始 View Tree），将指导方在共享画面上的点击解析为 `AccessibilityNodeInfo` 语义目标，并在被指导方当前窗口上动态高亮。默认不上传完整 UI Tree；优先在被指导端本地解析目标，仅同步目标 ID、几何、能力与必要的最小语义元数据。无法获取节点时回退到 OCR/Vision，再回退到普通坐标标注。该能力只负责识别/高亮，不默认执行远程点击。
+>
+> 2026-09-13 v1.1 第一阶段实现：已接入 Accessibility 授权入口、当前 active window 命中、可点击祖先提升、`TYPE_ACCESSIBILITY_OVERLAY` 边框高亮、滚动/窗口变化后的 60ms 防抖重定位、`UI_TARGET_*` 协议、敏感文本过滤及普通 Pointer 回退。P0 包保持原 wire version，旧端仍可使用普通标注。OCR/Vision、窗口绑定 SurfaceControl 高亮、远程操作仍未实现。
 
 ---
 
@@ -32,7 +36,9 @@
    - 箭头标记
    - 编号标记
    - 指针指示
-5. 标注通过 DataChannel 发送给被指导方。
+   - 点击/悬停某个真实 UI 元素并让指针自动吸附到该元素
+   - 将目标 UI 以边框、聚光灯、箭头或编号方式持续高亮
+5. 标注与 UI Target 事件通过 DataChannel 发送给被指导方。
 6. 被指导方通过系统 Overlay，将这些标注真正显示在当前 App 上方。
 7. 即使咫尺 Activity 已经进入后台，标注与控制菜单仍然存在。
 8. 被指导方拥有一个持续可见的悬浮控制菜单，可执行：
@@ -93,16 +99,21 @@ Screen Video ───────────>│ RemoteScreenView      │
 │                                                  │
 │  ┌────────────────────────────────────────────┐  │
 │  │ AnnotationEngine                           │  │
-│  │                                            │  │
-│  │ Annotation State                          │  │
-│  │ Undo / Clear / Lifetime                   │  │
+│  │ Annotation State / Undo / Lifetime        │  │
 │  │ Coordinate Mapping                       │  │
 │  └───────────────┬────────────────────────────┘  │
 │                  │                               │
-│         ┌────────┴─────────┐                     │
-│         ▼                  ▼                     │
-│ AnnotationOverlay    ControlOverlay              │
-│ 全屏标注层           小型交互控制层               │
+│  ┌───────────────▼────────────────────────────┐  │
+│  │ UiSemanticEngine                          │  │
+│  │ Accessibility Tree → Target Resolver     │  │
+│  │ Node Tracking / Snap / Highlight         │  │
+│  └───────────────┬────────────────────────────┘  │
+│                  │                               │
+│      ┌───────────┼──────────────┐                │
+│      ▼           ▼              ▼                │
+│ Annotation   SemanticHighlight  ControlOverlay   │
+│ Overlay      Overlay            小型交互控制层    │
+│ 全屏标注层    UI 语义高亮层                        │
 │                                                  │
 └──────────────────────────────────────────────────┘
 ```
@@ -918,14 +929,14 @@ actorId == self
 
 第一版建议：
 
-| Button | 功能 |
-|---|---|
-| ✎ | 本地画笔 |
-| ↶ | 撤销 |
-| ⌫ | 清除 |
-| ◉ | 显示/隐藏标注 |
-| ▌▌ | 暂停发送画面 |
-| ■ | 停止共享 |
+| Button | 功能          |
+| ------ | ------------- |
+| ✎      | 本地画笔      |
+| ↶      | 撤销          |
+| ⌫      | 清除          |
+| ◉      | 显示/隐藏标注 |
+| ▌▌     | 暂停发送画面  |
+| ■      | 停止共享      |
 
 另加：
 
@@ -1162,7 +1173,858 @@ Pointer
 
 ---
 
-# 23. 标注生命周期
+# 23. UI 语义高亮（Accessibility Tree）
+
+这是 v1.1 新增的核心能力。
+
+目标不是继续把所有指导动作都理解为：
+
+```text
+“在屏幕坐标 (x, y) 画一个圈”
+```
+
+而是尽量升级为：
+
+```text
+“指导方指的是当前窗口中的某个真实 UI 元素”
+```
+
+例如：
+
+```text
+指导方点击共享画面中的「Wi‑Fi」
+        ↓
+被指导端收到 normalized point
+        ↓
+UiSemanticEngine 查询 Accessibility Tree
+        ↓
+找到 AccessibilityNodeInfo
+        ↓
+解析出目标 bounds / windowId / class / viewId / actions
+        ↓
+高亮整个 Wi‑Fi 行，而不是只显示一个像素坐标圆点
+```
+
+必须明确：Accessibility Tree **不是原始 View Tree**，节点与真实 View 层级不保证 1:1；窗口内容也会随时变化，因此 `AccessibilityNodeInfo` 只能视为某一时刻的语义快照，不能长期持有并假定永远有效。
+
+---
+
+## 23.1 能力边界
+
+UI 语义高亮依赖：
+
+```text
+AccessibilityService
++
+canRetrieveWindowContent=true
+```
+
+并建议启用：
+
+```text
+FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+FLAG_REPORT_VIEW_IDS
+```
+
+用途分别为：
+
+```text
+FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+→ 获取当前可交互窗口集合
+
+FLAG_REPORT_VIEW_IDS
+→ 尽可能获取 package:id/name 形式的 viewIdResourceName
+```
+
+服务可从：
+
+```text
+rootInActiveWindow
+getWindows()
+AccessibilityEvent.getSource()
+```
+
+获取节点树或变化来源。
+
+不要把该能力描述成：
+
+> “读取任何 App 的完整内部 UI。”
+
+更准确的定义是：
+
+> “读取目标 App 向 Android Accessibility 框架暴露的可访问性语义结构。”
+
+---
+
+## 23.2 默认隐私模型：本地解析，不上传整棵 UI Tree
+
+第一版不要持续把完整 Accessibility Tree 发送给指导方。
+
+推荐：
+
+```text
+指导方
+点击共享视频中的某一点
+      ↓
+UI_TARGET_REQUEST
+      ↓
+被指导方本地 UiTargetResolver
+      ↓
+Accessibility Tree
+      ↓
+找到目标节点
+      ↓
+只返回目标结果
+```
+
+因此默认网络侧不需要出现：
+
+```text
+整页 text
+整页 contentDescription
+所有输入框内容
+完整 hierarchy dump
+```
+
+这样可以显著降低：
+
+```text
+隐私暴露
+协议体积
+敏感信息泄漏
+Tree 版本同步复杂度
+```
+
+只有未来确实需要“指导端语义浏览器”时，才设计显式的 `SEMANTIC_TREE_SNAPSHOT`，并单独加入用户授权与字段过滤。
+
+---
+
+## 23.3 AccessibilityService 配置
+
+建议独立：
+
+```text
+ZiseeGuidanceAccessibilityService
+```
+
+职责只包含：
+
+```text
+读取当前可交互窗口语义
+目标节点解析
+目标跟踪
+Accessibility Overlay 高亮
+```
+
+不要把 MediaProjection、WebRTC 或通话生命周期塞进 AccessibilityService。
+
+示意配置：
+
+```xml
+<accessibility-service
+    android:canRetrieveWindowContent="true"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeViewScrolled|typeWindowsChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:notificationTimeout="40" />
+```
+
+运行时根据需要设置：
+
+```kotlin
+serviceInfo = serviceInfo.apply {
+    flags = flags or
+        AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
+        AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
+}
+```
+
+事件范围必须控制，不要订阅所有事件后无差别 dump 整棵树。
+
+---
+
+## 23.4 指导方点击如何解析成真实 UI
+
+指导方仍然只操作共享视频。
+
+第一步继续复用现有坐标系统：
+
+```text
+RemoteScreenView touch
+      ↓
+contentRect
+      ↓
+normalized screen coordinate
+      ↓
+UI_TARGET_REQUEST
+```
+
+协议示例：
+
+```json
+{
+  "type": "UI_TARGET_REQUEST",
+  "requestId": "req-97",
+  "geometryRevision": 52,
+  "x": 0.5372,
+  "y": 0.2811,
+  "mode": "SNAP"
+}
+```
+
+被指导方：
+
+```text
+normalized point
+      ↓
+ProjectionGeometryManager
+      ↓
+screen coordinate
+      ↓
+UiTargetResolver
+      ↓
+当前 Accessibility Window
+      ↓
+命中候选 AccessibilityNodeInfo
+```
+
+不要让指导端自己根据旧 Tree 猜目标。
+
+**目标解析权放在被指导端**，因为只有被指导端最接近当前真实窗口状态。
+
+---
+
+## 23.5 Node 命中算法
+
+给定屏幕点：
+
+```text
+P(x, y)
+```
+
+先收集：
+
+```text
+bounds.contains(P)
+```
+
+的候选节点。
+
+过滤：
+
+```text
+visibleToUser
+bounds 非空
+bounds 与当前可交互 window 相交
+不是纯装饰性巨大根节点
+```
+
+评分建议：
+
+```text
+score =
+    + clickable / checkable / focusable
+    + importantForAccessibility
+    + 有 viewIdResourceName
+    + 有 text / contentDescription / role
+    + point 靠近节点中心
+    + bounds 面积较小且合理
+    - 覆盖整个窗口的大容器
+    - 不可见
+    - disabled
+```
+
+优先选择：
+
+```text
+最具体、可交互、可解释的节点
+```
+
+而不是简单选择 Tree 最深节点。
+
+例如：
+
+```text
+RecyclerView Row        clickable=true
+ ├─ Icon                clickable=false
+ └─ Text "Wi‑Fi"        clickable=false
+```
+
+指导方点到文字时，最终目标更可能应该提升为：
+
+```text
+RecyclerView Row
+```
+
+因为它才是真正可点击区域。
+
+---
+
+## 23.6 SemanticTarget 数据模型
+
+不要把 `AccessibilityNodeInfo` 本体跨线程、跨进程或跨网络持久化。
+
+统一转换为：
+
+```kotlin
+data class SemanticTarget(
+    val targetId: String,
+    val packageName: String?,
+    val windowId: Int,
+    val className: String?,
+    val viewIdResourceName: String?,
+    val role: UiRole,
+    val bounds: NormalizedRect,
+    val clickable: Boolean,
+    val enabled: Boolean,
+    val actionMask: Long,
+    val locator: NodeLocator,
+    val confidence: Float,
+    val treeRevision: Long,
+)
+```
+
+其中 `locator` 用于后续重新寻找节点，而不是保存旧 Node 对象。
+
+推荐：
+
+```kotlin
+data class NodeLocator(
+    val windowId: Int,
+    val viewIdResourceName: String?,
+    val className: String?,
+    val textHash: String?,
+    val contentDescriptionHash: String?,
+    val hierarchyHint: IntArray?,
+    val lastBounds: NormalizedRect,
+)
+```
+
+注意：
+
+```text
+textHash / contentDescriptionHash
+```
+
+只用于本地重定位匹配时可以保留明文；如果要发往远端，默认优先 hash 或省略原文。
+
+密码字段、敏感输入框默认永远不传其文本内容。
+
+---
+
+## 23.7 UI 高亮协议
+
+建议新增：
+
+```text
+UI_TARGET_REQUEST
+UI_TARGET_RESOLVED
+UI_TARGET_UPDATE
+UI_TARGET_LOST
+UI_HIGHLIGHT_CLEAR
+```
+
+成功解析：
+
+```json
+{
+  "type": "UI_TARGET_RESOLVED",
+  "requestId": "req-97",
+  "targetId": "ui-183",
+  "treeRevision": 911,
+  "windowId": 42,
+  "role": "BUTTON",
+  "bounds": [0.041, 0.263, 0.962, 0.331],
+  "clickable": true,
+  "confidence": 0.94
+}
+```
+
+指导方收到后：
+
+```text
+原始 Pointer Preview
+      ↓
+吸附动画
+      ↓
+整个 UI bounds 高亮
+```
+
+如果没有找到：
+
+```json
+{
+  "type": "UI_TARGET_LOST",
+  "requestId": "req-97",
+  "reason": "NO_ACCESSIBILITY_NODE"
+}
+```
+
+指导方立即回退普通 Pointer / Circle，不阻断远程指导。
+
+---
+
+## 23.8 高亮渲染
+
+语义高亮建议与普通 Annotation 分离：
+
+```text
+Annotation
+→ 用户创建的指导内容
+
+SemanticHighlight
+→ 系统根据真实 UI 节点自动维护的瞬时/跟踪内容
+```
+
+推荐视觉：
+
+```text
+┌─────────────────────────────┐
+│                             │
+│  ╔═══════════════════════╗  │
+│  ║        Wi‑Fi          ║  │
+│  ╚═══════════════════════╝  │
+│              ↑              │
+│           请点这里          │
+└─────────────────────────────┘
+```
+
+支持：
+
+```text
+OUTLINE       边框
+SPOTLIGHT     周围压暗
+ARROW         箭头
+NUMBER        步骤编号
+PULSE         轻微脉冲
+```
+
+默认推荐：
+
+```text
+OUTLINE + PULSE
+```
+
+避免大面积不透明遮罩影响底层 App 操作。
+
+---
+
+## 23.9 Accessibility Overlay 策略
+
+当 AccessibilityService 已启用时，语义高亮优先使用：
+
+```text
+TYPE_ACCESSIBILITY_OVERLAY
+```
+
+而不是继续把所有语义高亮都塞进普通 `TYPE_APPLICATION_OVERLAY`。
+
+API 34+ 优先：
+
+```text
+AccessibilityNodeInfo.getBoundsInWindow()
++
+AccessibilityService.attachAccessibilityOverlayToWindow()
+```
+
+这样高亮与目标 window 建立更直接的坐标关系。
+
+窗口：
+
+```text
+移动
+分屏 resize
+freeform resize
+```
+
+时更容易保持一致。
+
+API < 34：
+
+```text
+AccessibilityNodeInfo.getBoundsInScreen()
++
+TYPE_ACCESSIBILITY_OVERLAY
+```
+
+按屏幕坐标布局。
+
+如果 AccessibilityService 未启用：
+
+```text
+无法做 Semantic Highlight
+↓
+退化为现有 AnnotationOverlayWindow + normalized coordinate
+```
+
+Accessibility Overlay 不能被当作规避 `FLAG_SECURE`、安全窗口或其他系统保护策略的手段。
+
+---
+
+## 23.10 节点跟踪
+
+高亮 UI 不能只解析一次。
+
+例如：
+
+```text
+目标：Wi‑Fi
+用户滚动
+↓
+Wi‑Fi bounds 改变
+```
+
+需要监听：
+
+```text
+TYPE_WINDOW_CONTENT_CHANGED
+TYPE_VIEW_SCROLLED
+TYPE_WINDOWS_CHANGED
+TYPE_WINDOW_STATE_CHANGED
+```
+
+当存在 active SemanticTarget 时：
+
+```text
+AccessibilityEvent
+      ↓
+UiTargetTracker
+      ↓
+根据 locator 重新 resolve
+      ↓
+新 bounds
+      ↓
+UI_TARGET_UPDATE
+      ↓
+Overlay 平滑移动
+```
+
+不要在每个 AccessibilityEvent 后无脑完整遍历全树。
+
+策略：
+
+```text
+优先 event.source / affected subtree
+找不到再查 root
+40~80ms debounce
+同一 target bounds 未变化则不发网络包
+```
+
+---
+
+## 23.11 NodeLocator 重定位优先级
+
+建议：
+
+```text
+1. windowId + viewIdResourceName
+2. class + semantic hash + hierarchyHint
+3. class + near(lastBounds)
+4. 当前点附近重新 hit-test
+5. Lost
+```
+
+不要只使用：
+
+```text
+text == "Wi‑Fi"
+```
+
+因为同一页面可能存在重复文本，也可能因为语言切换而改变。
+
+不要只依赖：
+
+```text
+hierarchy child index path
+```
+
+列表插入一项后 path 就可能全部改变。
+
+---
+
+## 23.12 指导方“元素吸附” UX
+
+指导方默认仍然是 Pointer。
+
+手指点击：
+
+```text
+立即：显示本地 Pointer Prediction
+      ↓
+几十毫秒后：收到 UI_TARGET_RESOLVED
+      ↓
+Pointer 吸附成目标矩形
+```
+
+效果：
+
+```text
+       ·
+       ↓
+  ┌─────────────┐
+  │   Bluetooth │
+  └─────────────┘
+       ↓
+  ╔═════════════╗
+  ║   Bluetooth ║
+  ╚═════════════╝
+```
+
+拖动 Pointer 时可以做：
+
+```text
+SNAP_PREVIEW
+```
+
+但不要以 60/120Hz 向对端请求 Tree 命中。
+
+建议：
+
+```text
+pointer move local = display refresh rate
+semantic resolve request = 10~20Hz max
+```
+
+最终点击时再强制进行一次最新 resolve。
+
+---
+
+## 23.13 能力回退链
+
+UI Target 统一采用三层解析：
+
+```text
+L1 Accessibility Semantic
+        ↓ fail
+L2 OCR / Vision UI Detection
+        ↓ fail
+L3 Raw Coordinate Annotation
+```
+
+即：
+
+```text
+                 UiTargetResolver
+                       │
+          ┌────────────┼────────────┐
+          ▼            ▼            ▼
+ Accessibility      Vision         Raw
+    Tree             OCR/CV      Coordinate
+          │            │            │
+          └────────────┴────────────┘
+                       │
+                 SemanticTarget
+```
+
+典型覆盖：
+
+| UI 类型                       | Accessibility | 建议    |
+| ----------------------------- | ------------: | ------- |
+| 原生 View                     |            高 | L1      |
+| Compose（正确提供 semantics） |        高～中 | L1      |
+| WebView / HTML                |            中 | L1 → L2 |
+| 自绘 Canvas                   |            低 | L2      |
+| Unity / OpenGL / 游戏         |          很低 | L2 → L3 |
+| 视频内容                      |    无语义节点 | L2 / L3 |
+
+因此“高亮 UI”不能写成 100% 保证能力。
+
+---
+
+## 23.14 敏感节点处理
+
+UI Tree 本身可能包含敏感信息。
+
+必须本地过滤：
+
+```text
+node.isPassword == true
+→ 永不传 text
+
+editable text
+→ 默认不传内容，只传 role / bounds / capability
+
+OTP / PIN / password / payment
+→ 不建立可远端读取的文本语义
+```
+
+默认协议返回：
+
+```text
+bounds
+role
+clickable
+enabled
+action mask
+confidence
+```
+
+而不是：
+
+```text
+所有 text / contentDescription
+```
+
+“共享屏幕已经能看到像素”并不等于应该额外结构化并上传所有可访问性文本，两者的隐私风险并不相同。
+
+---
+
+## 23.15 与远程点击严格解耦
+
+本节能力只定义：
+
+```text
+识别目标
+吸附目标
+跟踪目标
+高亮目标
+```
+
+不要因为已经拿到：
+
+```text
+AccessibilityNodeInfo.ACTION_CLICK
+```
+
+就默认执行：
+
+```text
+node.performAction(ACTION_CLICK)
+```
+
+如果未来加入远程操作，必须单独定义：
+
+```text
+Remote Control Permission
+Session Grant
+User Confirmation
+Dangerous Action Gate
+Audit / Revoke
+```
+
+也就是说：
+
+```text
+Semantic Highlight ≠ Remote Control
+```
+
+这是安全边界。
+
+---
+
+## 23.16 状态机扩展
+
+Semantic Highlight 不需要新增顶层 ScreenShare State。
+
+在 `SHARING` 内增加子状态：
+
+```text
+SHARING
+ │
+ ├─ SEMANTIC_OFF
+ │
+ ├─ SEMANTIC_READY
+ │      │
+ │      ├─ TARGET_RESOLVING
+ │      ├─ TARGET_TRACKING
+ │      └─ TARGET_LOST
+ │
+ └─ DRAWING
+```
+
+Accessibility 权限被用户关闭时：
+
+```text
+SEMANTIC_READY
+      ↓
+SEMANTIC_OFF
+      ↓
+立即清除 SemanticHighlight
+      ↓
+普通 Annotation 继续工作
+```
+
+绝对不能因此停止整个屏幕共享 Session。
+
+---
+
+## 23.17 推荐类设计扩展
+
+增加：
+
+```text
+ZiseeGuidanceAccessibilityService
+│
+├── AccessibilityWindowRepository
+├── UiTargetResolver
+├── UiTargetTracker
+├── NodeLocatorMatcher
+├── SensitiveNodeFilter
+└── AccessibilityHighlightHost
+```
+
+业务层：
+
+```text
+UiSemanticEngine
+│
+├── requestTarget(normalizedPoint)
+├── track(targetId)
+├── clear(targetId)
+└── observeTargetUpdates()
+```
+
+网络层：
+
+```text
+SemanticTargetTransport
+└── WebRTC DataChannel id=6
+```
+
+仍然复用当前可靠有序 guidance channel，不为 UI 高亮单独建立新的 PeerConnection。
+
+---
+
+## 23.18 第一阶段实现范围
+
+UI 语义高亮的第一版只做：
+
+```text
+✓ AccessibilityService 授权状态
+✓ 当前 active window Tree
+✓ normalized point → node hit-test
+✓ clickable ancestor promotion
+✓ bounds 高亮
+✓ UI_TARGET_RESOLVED / UPDATE / LOST
+✓ scroll / content change 后重新定位
+✓ 无节点时回退普通 Pointer
+✓ password / editable text 脱敏
+```
+
+暂不做：
+
+```text
+× 上传整棵 UI Tree
+× AI 自动阅读整页 UI
+× 自动 performAction
+× 自动输入文字
+× 批量扫描后台窗口
+```
+
+这样已经可以把屏幕指导体验从：
+
+```text
+“点这个位置”
+```
+
+升级为：
+
+```text
+“点这个真实 UI 元素”
+```
+
+---
+
+# 24. 标注生命周期
 
 每个 Annotation 增加：
 
@@ -1206,7 +2068,7 @@ Persistent。
 
 ---
 
-# 24. 推荐悬浮菜单 UX
+# 25. 推荐悬浮菜单 UX
 
 最终建议设计成：
 
@@ -1248,7 +2110,7 @@ IME avoidance
 
 ---
 
-# 25. Overlay Window 结构
+# 26. Overlay Window 结构
 
 最终 Window 层级：
 
@@ -1279,7 +2141,7 @@ Chrome / Settings / Gallery
 
 ---
 
-# 26. 推荐类设计
+# 27. 推荐类设计
 
 ```text
 ScreenShareService
@@ -1304,6 +2166,12 @@ ScreenShareService
 ├── AnnotationTransport
 │   └── WebRTCDataChannel
 │
+├── UiSemanticEngine
+│   ├── UiTargetResolver
+│   ├── UiTargetTracker
+│   ├── NodeLocatorMatcher
+│   └── SensitiveNodeFilter
+│
 ├── ProjectionGeometryManager
 │
 └── SessionStateMachine
@@ -1311,7 +2179,7 @@ ScreenShareService
 
 ---
 
-# 27. State Machine
+# 28. State Machine
 
 建议统一：
 
@@ -1357,7 +2225,7 @@ IDLE
 
 ---
 
-# 28. Stop Sharing
+# 29. Stop Sharing
 
 这是危险操作，按钮应该醒目但避免误触。
 
@@ -1405,7 +2273,7 @@ IDLE
 
 ---
 
-# 29. MediaProjection.onStop()
+# 30. MediaProjection.onStop()
 
 必须实现：
 
@@ -1440,7 +2308,7 @@ Android 官方也要求应用正确处理该 callback 并释放相关资源。
 
 ---
 
-# 30. 特殊 App 限制
+# 31. 特殊 App 限制
 
 这里必须明确：
 
@@ -1476,7 +2344,7 @@ HIDE_OVERLAY_WINDOWS
 
 ---
 
-# 31. Secure Screen
+# 32. Secure Screen
 
 另外某些 App 使用：
 
@@ -1508,7 +2376,7 @@ FLAG_SECURE
 
 ---
 
-# 32. Remote Annotation 与视频回传重复问题
+# 33. Remote Annotation 与视频回传重复问题
 
 如果整个 Display capture 最终把 Overlay 也捕获回来，指导方可能看到：
 
@@ -1573,7 +2441,7 @@ AnnotationState
 
 ---
 
-# 33. Annotation ACK
+# 34. Annotation ACK
 
 推荐：
 
@@ -1606,7 +2474,7 @@ timeout
 
 ---
 
-# 34. 网络恢复
+# 35. 网络恢复
 
 DataChannel 断线重新连接后不能只继续发送新事件。
 
@@ -1642,7 +2510,7 @@ AnnotationState resync
 
 ---
 
-# 35. 模块关系
+# 36. 模块关系
 
 推荐最终模块：
 
@@ -1684,7 +2552,7 @@ AnnotationEngine
 
 ---
 
-# 36. 与 AR 标注系统统一
+# 37. 与 AR 标注系统统一
 
 之前 ARCore 已经需要：
 
@@ -1742,7 +2610,7 @@ AR 标记
 
 ---
 
-# 37. P0 实现范围
+# 38. P0 实现范围
 
 第一阶段不要一次做太复杂。
 
@@ -1793,9 +2661,21 @@ AR 标记
 
 ---
 
-# 38. P1
+# 39. P1
 
-第二阶段再增加：
+第二阶段优先增加 UI 语义高亮：
+
+```text
+AccessibilityService
+Accessibility Tree 本地解析
+UI 元素吸附
+Semantic Highlight
+目标滚动/窗口变化跟踪
+UI_TARGET_RESOLVED / UPDATE / LOST
+敏感节点过滤
+```
+
+同时补齐：
 
 ```text
 文字标注
@@ -1812,9 +2692,9 @@ AR 标记
 
 ---
 
-# 39. P2
+# 40. P2
 
-最后再进入：
+最后再进入视觉与 AI 回退能力：
 
 ```text
 Screen → AR 转换
@@ -1822,7 +2702,10 @@ Screen → AR 转换
 Object Tracking
 Feature Tracking
 OCR Anchor
-UI Element Detection
+Vision UI Element Detection
+Accessibility 缺失时的 OCR/Vision Target Fallback
+跨版本 UI 语义匹配
+AI 辅助步骤识别
 ```
 
 例如指导方圈：
@@ -1847,7 +2730,7 @@ UI Element Detection
 
 ---
 
-# 40. 最终推荐交互
+# 41. 最终推荐交互
 
 我建议最后做成这种体验：
 
@@ -1921,7 +2804,7 @@ DRAW MODE
 
 ---
 
-# 41. 最终架构结论
+# 42. 最终架构结论
 
 这套功能不要理解为：
 
@@ -1933,20 +2816,24 @@ DRAW MODE
 Remote Guidance System
 ```
 
-核心由四个部分组成：
+核心由五个部分组成：
 
 ```text
 ① MediaProjection
    负责“看见”
 
 ② WebRTC DataChannel
-   负责“传递指导动作”
+   负责“传递指导动作与 UI Target”
 
 ③ AnnotationEngine
-   负责“理解和同步标注”
+   负责“理解和同步普通标注”
 
-④ TYPE_APPLICATION_OVERLAY
-   负责“把指导真正显示在对方当前手机界面”
+④ UiSemanticEngine + AccessibilityService
+   负责“把屏幕坐标解析为真实 UI 语义目标并持续跟踪”
+
+⑤ Overlay Renderer
+   TYPE_APPLICATION_OVERLAY / TYPE_ACCESSIBILITY_OVERLAY
+   负责“把指导与语义高亮真正显示在对方当前手机界面”
 ```
 
 其中被指导方 Overlay 最终采用：
@@ -1976,4 +2863,4 @@ DrawingInputWindow
 ●
 ```
 
-这套结构既能满足当前的屏幕共享远程指导，也能直接作为以后 **ARCore 3D 标注、OCR UI 识别、远程操作指导** 的基础 Annotation Framework。
+这套结构既能满足当前的屏幕共享远程指导，也能直接作为以后 **Accessibility UI 语义高亮、ARCore 3D 标注、OCR/Vision 回退、经授权的远程操作指导** 的基础 Remote Guidance Framework。

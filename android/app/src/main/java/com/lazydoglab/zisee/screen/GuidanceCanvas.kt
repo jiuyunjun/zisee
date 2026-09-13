@@ -30,8 +30,17 @@ class GuidanceCanvas(context: Context) : View(context) {
         val rect = rect(); if (rect.isEmpty) return
         canvas.save(); canvas.clipRect(rect)
         if (renderConfirmed) state.marks.filter { it.id != draft?.id }.forEach { draw(canvas, rect, it) }
+        state.semanticTarget?.let { drawSemantic(canvas, rect, it) }
         draft?.let { draw(canvas, rect, it) }
         canvas.restore()
+    }
+    private fun drawSemantic(canvas: Canvas, content: RectF, target: SemanticTarget) {
+        val bounds = target.bounds
+        paint.color = 0xff5fd4d6.toInt(); paint.strokeWidth = max(3f, min(content.width(), content.height()) * .008f)
+        paint.style = Paint.Style.STROKE
+        val rect = RectF(content.left + bounds.left * content.width(), content.top + bounds.top * content.height(),
+            content.left + bounds.right * content.width(), content.top + bounds.bottom * content.height())
+        canvas.drawRoundRect(rect, paint.strokeWidth * 2, paint.strokeWidth * 2, paint)
     }
     private fun draw(c: Canvas, r: RectF, mark: GuidanceMark) {
         fun x(p: VideoPoint) = r.left + p.x * r.width()
@@ -62,7 +71,7 @@ class GuidanceCanvas(context: Context) : View(context) {
     }
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val selected = tool ?: return false
-        if (state.paused || !state.connected || !state.overlay) return false
+        if (state.paused || !state.connected || (!state.overlay && !(selected == GuidanceTool.POINTER && state.semanticAvailable))) return false
         val r = rect(); if (r.isEmpty) return false
         if (event.actionMasked == MotionEvent.ACTION_DOWN && !r.contains(event.x, event.y)) return false
         val point = VideoPoint(((event.x - r.left) / r.width()).coerceIn(0f, 1f), ((event.y - r.top) / r.height()).coerceIn(0f, 1f))

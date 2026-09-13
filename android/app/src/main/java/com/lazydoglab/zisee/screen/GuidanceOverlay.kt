@@ -86,6 +86,10 @@ class GuidanceOverlay(private val context: Context,
             }
         }
         if (expanded) {
+            if (!state.semanticAvailable) button("开启 UI 元素高亮") {
+                try { context.startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: android.content.ActivityNotFoundException) { failure() }
+            }
             if (input != null) button("正在标注 · 完成后可操作手机") { finishDrawing(); rebuild() }
             else button("画笔") { if (!state.paused && state.connected) beginDrawing() }
             button("撤销我的标注") { command(GuidanceOp.UNDO, null) }

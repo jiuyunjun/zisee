@@ -26,26 +26,28 @@ internal fun ScreenGuidanceLayer(state: GuidanceState, feed: VideoFeed?, modifie
     LaunchedEffect(state.session, state.geometry, geometry) { settled = false; delay(300); settled = true }
     val matches = geometry != null && state.width > 0 && state.height > 0 &&
         kotlin.math.abs(geometry.displayWidth.toFloat() / geometry.displayHeight - state.width.toFloat() / state.height) < .01f
-    val enabled = state.connected && state.overlay && !state.paused && matches && settled
+    val ready = state.connected && !state.paused && matches && settled
     Box(modifier) {
         AndroidView(factory = { GuidanceCanvas(it) }, modifier = Modifier.fillMaxSize(), update = {
-            it.state = state; it.tool = tool.takeIf { enabled }; it.renderConfirmed = preview; it.onPut = put
+            val toolEnabled = ready && (state.overlay || (tool == GuidanceTool.POINTER && state.semanticAvailable))
+            it.state = state; it.tool = tool.takeIf { toolEnabled }; it.renderConfirmed = preview; it.onPut = put
         })
         Column(Modifier.align(Alignment.TopCenter).padding(top = 90.dp).fillMaxWidth()) {
             if (state.paused) Text("对方已暂停屏幕共享", color = CallText)
             else if (state.overlay && !state.connected) Text("连接中断，标注已暂停", color = CallMuted)
             else if (!state.overlay) Text("对方未开启跨应用标注", color = CallMuted)
+            else if (!state.semanticAvailable) Text("UI 元素吸附未开启，指针仍按坐标显示", color = CallMuted)
             if (state.notice.isNotEmpty()) Text(state.notice, color = CallDanger)
-            if (state.overlay) Surface(color = CallPanel.copy(alpha = .9f)) {
+            if (state.overlay || state.semanticAvailable) Surface(color = CallPanel.copy(alpha = .9f)) {
                 Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onClick = { tool = null }) { Text("浏览") }
-                    GuidanceTool.entries.forEach { item -> TextButton(enabled = enabled,
+                    GuidanceTool.entries.forEach { item -> TextButton(enabled = ready && (state.overlay || item == GuidanceTool.POINTER && state.semanticAvailable),
                         onClick = { tool = item }) { Text((if (tool == item) "✓" else "") + when (item) {
                             GuidanceTool.POINTER -> "指针"; GuidanceTool.PEN -> "画笔"; GuidanceTool.CIRCLE -> "圈选"
                             GuidanceTool.ARROW -> "箭头"; GuidanceTool.NUMBER -> "编号"
                         }) } }
-                    TextButton(enabled = enabled, onClick = { command(GuidanceOp.UNDO) }) { Text("撤销") }
-                    TextButton(enabled = enabled, onClick = { clear = true }) { Text("清除") }
+                    TextButton(enabled = ready && state.overlay, onClick = { command(GuidanceOp.UNDO) }) { Text("撤销") }
+                    TextButton(enabled = ready && state.overlay, onClick = { clear = true }) { Text("清除") }
                     TextButton(onClick = { preview = !preview }) { Text(if (preview) "关闭本地叠加" else "本地叠加") }
                 }
             }

@@ -90,7 +90,11 @@ import kotlinx.coroutines.launch
 fun CallScreen(state: CallUiState, model: CallViewModel, onMinimize: () -> Unit = {}) {
     val overlayContext = LocalContext.current
     var explainOverlay by remember { mutableStateOf(false) }
+    var explainSemantic by remember { mutableStateOf(false) }
     val overlayPermission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        explainSemantic = true
+    }
+    val semanticPermission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         model.startScreenShare()
     }
     if (explainOverlay) androidx.compose.material3.AlertDialog(onDismissRequest = { explainOverlay = false },
@@ -103,6 +107,18 @@ fun CallScreen(state: CallUiState, model: CallViewModel, onMinimize: () -> Unit 
             catch (_: android.content.ActivityNotFoundException) { model.startScreenShare() }
         }) { Text("前往授权") } },
         dismissButton = { androidx.compose.material3.TextButton(onClick = { explainOverlay = false; model.startScreenShare() }) { Text("仅共享画面") } })
+    if (explainSemantic) androidx.compose.material3.AlertDialog(onDismissRequest = {
+        explainSemantic = false; model.startScreenShare()
+    }, title = { Text("识别并高亮真实 UI 元素") },
+        text = { Text("可选开启咫尺的无障碍服务。它只在远程指导时读取当前应用公开的可访问性结构，在本机解析目标并显示边框；不会远程点击、输入或上传完整界面结构。") },
+        confirmButton = { androidx.compose.material3.TextButton(onClick = {
+            explainSemantic = false
+            try { semanticPermission.launch(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+            catch (_: android.content.ActivityNotFoundException) { model.startScreenShare() }
+        }) { Text("前往开启") } },
+        dismissButton = { androidx.compose.material3.TextButton(onClick = {
+            explainSemantic = false; model.startScreenShare()
+        }) { Text("暂不开启") } })
     var accepting by remember { mutableStateOf(false) }
     val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
         if (grants[Manifest.permission.CAMERA] == true && grants[Manifest.permission.RECORD_AUDIO] == true) model.accept()
@@ -121,7 +137,11 @@ fun CallScreen(state: CallUiState, model: CallViewModel, onMinimize: () -> Unit 
             onArStroke = model::drawArStroke,
             onStopAr = model::stopAr,
             onSelectVideo = model::selectVideoSource,
-            onStartShare = { if (android.provider.Settings.canDrawOverlays(overlayContext)) model.startScreenShare() else explainOverlay = true }, onStopShare = { model.stopScreenShare() },
+            onStartShare = {
+                if (!android.provider.Settings.canDrawOverlays(overlayContext)) explainOverlay = true
+                else if (!com.lazydoglab.zisee.screen.SemanticAccessibilityBridge.isAvailable()) explainSemantic = true
+                else model.startScreenShare()
+            }, onStopShare = { model.stopScreenShare() },
             onScreenPut = model::putScreenMark, onScreenCommand = model::screenMarkCommand,
             onSetScreenContentMode = model::setScreenContentMode,
             arControls = { ArCallControls(state, model) })
